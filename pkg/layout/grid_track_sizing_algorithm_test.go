@@ -196,9 +196,13 @@ func TestGridSizingReviewRound2(t *testing.T) {
 		{"spanning item's margins at min-content",
 			`<div id=g style="display:inline-grid; width:min-content; grid-template-columns:1fr 1fr"><div style="grid-column:1/3; margin-left:20px; height:10px"></div></div>`,
 			"g", func(b *Box) bool { return b.Width == 20 }, "20 wide"},
+		// The item overflows both axes, so it has both overflow:auto
+		// scrollbars (LOU-307), and its auto min-size resolves to its
+		// border + scrollbar + padding (ResolveMinInlineLength,
+		// length_utils.h:111-125): margins plus the vertical scrollbar.
 		{"scroll container's margins at min-content",
 			`<div id=g style="display:inline-grid; width:min-content"><div style="overflow:auto; margin:0 15px; height:10px"><div style="width:100px;height:10px"></div></div></div>`,
-			"g", func(b *Box) bool { return b.Width == 30 }, "30 wide"},
+			"g", func(b *Box) bool { return b.Width == 30+classicScrollbarWidth(&css.Style{}) }, "30 + the scrollbar wide"},
 		{"contained auto-fit rows collapse",
 			`<div id=g style="display:grid; contain:size; grid-template-rows:repeat(auto-fit, 100px)"><div style="height:10px"></div></div><div id=after style="height:5px"></div>`,
 			"after", func(b *Box) bool { return b.Y == 0 }, "at y=0 (the contained grid 0 tall)"},

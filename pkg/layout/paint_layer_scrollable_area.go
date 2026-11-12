@@ -3,6 +3,7 @@ package layout
 import (
 	"math"
 
+	"louis14/pkg/css"
 	"louis14/pkg/geometry"
 	"louis14/pkg/html"
 )
@@ -239,4 +240,63 @@ func (b *Box) ScrollPosition() html.ScrollOffset {
 		X: b.ScrollOffset.X - b.MinimumScrollOffset.X,
 		Y: b.ScrollOffset.Y - b.MinimumScrollOffset.Y,
 	}
+}
+
+// updateScrollbarsAfterLayout decides node's overflow:auto scrollbars from
+// result's scrollable overflow and reports whether they changed: an auto
+// axis needs its scrollbar when the scroll size rounds above the client
+// size, and when both axes are auto and the overflow fits the client size
+// with the scrollbars included, neither is needed. A frozen scrollbar
+// keeps its state. A change marks the ancestors' intrinsic inline sizes
+// dirty for their relayout check. Mirrors PaintLayerScrollableArea::UpdateAfterLayout /
+// ComputeScrollbarExistence / HasHorizontalOverflow / HasVerticalOverflow
+// / TryRemovingAutoScrollbars (core/paint/paint_layer_scrollable_area.cc:
+// 1021-1075, :1732-1830, :1368-1389, :1851-1890 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Divergence:
+// HasHorizontalOverflow's widening of the client width by a vertical
+// scrollbar that is about to appear is not ported.
+func updateScrollbarsAfterLayout(node *LayoutInputNode, result *LayoutResult) bool {
+	style := node.Style()
+	if result == nil || result.Status != LayoutResultSuccess || style == nil ||
+		classicScrollbarWidth(style) == 0 {
+		return false
+	}
+	autoX, autoY := style.GetOverflowX() == css.OverflowAuto, style.GetOverflowY() == css.OverflowAuto
+	if !autoX && !autoY {
+		return false
+	}
+	a := NewPaintLayerScrollableArea(result.Fragment)
+	if a == nil {
+		return false
+	}
+	needsHorizontal, needsVertical := node.hasHorizontalScrollbar, node.hasVerticalScrollbar
+	overflowX, overflowY := a.computeScrollableSize()
+	if autoX {
+		needsHorizontal = overflowX > 0
+	}
+	if autoY {
+		needsVertical = overflowY > 0
+	}
+	frozenH, frozenV := node.frozenHorizontalScrollbar, node.frozenVerticalScrollbar
+	if autoX && autoY && !frozenH && !frozenV && (needsHorizontal || needsVertical) {
+		_, scrollbar := a.borderScrollbarOutsets()
+		scrollWidth, scrollHeight := a.overflowRect.Size.WidthF64(), a.overflowRect.Size.HeightF64()
+		if scrollWidth <= a.clientWidth+scrollbar.Left+scrollbar.Right &&
+			scrollHeight <= a.clientHeight+scrollbar.Top+scrollbar.Bottom {
+			needsHorizontal, needsVertical = false, false
+		}
+	}
+	changed := false
+	if !frozenH && needsHorizontal != node.hasHorizontalScrollbar {
+		node.hasHorizontalScrollbar, changed = needsHorizontal, true
+	}
+	if !frozenV && needsVertical != node.hasVerticalScrollbar {
+		node.hasVerticalScrollbar, changed = needsVertical, true
+	}
+	if changed {
+		for p := node.parent; p != nil; p = p.parent {
+			p.intrinsicLogicalWidthsDirty = true
+		}
+	}
+	return changed
 }

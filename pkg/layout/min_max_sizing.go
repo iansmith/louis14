@@ -32,7 +32,7 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 	}
 
 	wdm := space.WritingDirection
-	geom := ComputeFragmentGeometry(style, wdm)
+	geom := NodeFragmentGeometry(node, style, wdm)
 
 	// Table with table-layout:fixed + percentage inline-size: max-content is effectively
 	// infinite. Mirrors Blink's TableLayoutAlgorithm::ComputeMinMaxSizes
@@ -500,7 +500,7 @@ func ComputeSpannersMinMaxSizes(searchParent *LayoutInputNode, ctx *LayoutContex
 			// transfer resolve against it (cla.cc:544).
 			childSpace := buildParallelChildMinMaxSpace(space, childWDM, ctx, nodeBlockSize, true)
 			childMM := ComputeMinMaxSizes(ctx, child, childSpace)
-			childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+			childGeom := NodeFragmentGeometry(child, childStyle, childWDM)
 			extra := childGeom.InlineBorderPadding() +
 				ResolveMargins(childStyle, childWDM, 0).InlineSum()
 			childResult = MinMaxSizes{
@@ -710,7 +710,7 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 		return MinMaxSizes{}
 	}
 	wdm := space.WritingDirection
-	geom := ComputeFragmentGeometry(style, wdm)
+	geom := NodeFragmentGeometry(node, style, wdm)
 
 	if node.IsReplaced() {
 		// A replaced box's own min/max-content size is its intrinsic
@@ -772,7 +772,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 	// Resolve the container's definite cross-size for aspect-ratio transfer.
 	// Only needed for row flex (cross = block-size). For column flex, the cross
 	// IS the inline-size we're computing, so it's never definite here.
-	containerGeom := ComputeFragmentGeometry(style, wdm)
+	containerGeom := NodeFragmentGeometry(node, style, wdm)
 	var containerCrossContent float64
 	var hasDefiniteCross bool
 	if isRow {
@@ -851,7 +851,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 		}
 		childSpace := csb.Build()
 
-		childGeom := ComputeFragmentGeometry(childStyle, childWDM, space.PercentageResolutionInlineSize)
+		childGeom := NodeFragmentGeometry(child, childStyle, childWDM, space.PercentageResolutionInlineSize)
 
 		childBP := childGeom.InlineBorderPadding()
 		// Item margin percentages resolve against the flex container's inline
@@ -942,7 +942,7 @@ func measureFlexMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constrai
 				childMax = oMax
 			} else if isRow {
 				outerExtra := childBP + childMargins.InlineSum()
-				childGeom2 := ComputeFragmentGeometry(childStyle, childWDM)
+				childGeom2 := NodeFragmentGeometry(child, childStyle, childWDM)
 
 				// Pure content intrinsic sizes (content-box, ignores explicit width).
 				contentMM := computeContentMinMaxSizes(ctx, child, childSpace)
@@ -1078,12 +1078,12 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		// grid_layout_algorithm.cc:1460-1500); the additional column pass
 		// measures it again against its rows.
 		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space, Indefinite, Indefinite)
-		edges = ComputeFragmentGeometry(cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
+		edges = NodeFragmentGeometry(node, cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
 		return minContrib, maxContrib, edges
 	}
 	// Parallel: compute intrinsic sizes in the child's writing mode, then add
 	// border/padding and margins in the child's own writing mode.
-	childGeom := ComputeFragmentGeometry(cs, childWDM)
+	childGeom := NodeFragmentGeometry(node, cs, childWDM)
 	childBP := childGeom.InlineBorderPadding()
 	margins := ResolveMargins(cs, childWDM, 0)
 	childSpace := NewConstraintSpaceBuilder(containerWDM, childWDM, false).
@@ -1253,7 +1253,7 @@ func nodeChildBlockSizes(node *LayoutInputNode, space ConstraintSpace) (avail, p
 		return Indefinite, Indefinite
 	}
 	wdm := space.WritingDirection
-	nodeGeom := ComputeFragmentGeometry(nodeStyle, wdm, space.PercentageResolutionInlineSize)
+	nodeGeom := NodeFragmentGeometry(node, nodeStyle, wdm, space.PercentageResolutionInlineSize)
 	fixed := float64(Indefinite)
 	if space.IsFixedBlockSize && !space.IsFixedBlockSizeIndefinite &&
 		space.AvailableSize.BlockSize.Float64() >= 0 {
@@ -1456,7 +1456,7 @@ func childInlineContribution(ctx *LayoutContext, child *LayoutInputNode, space C
 	}
 	childSpace := buildParallelChildMinMaxSpace(space, childWDM, ctx, nodeBlockSize, false)
 	childMM := computeMinMaxSizesImpl(ctx, child, childSpace, childInColumnBfc)
-	extra := ComputeFragmentGeometry(childStyle, childWDM).InlineBorderPadding() +
+	extra := NodeFragmentGeometry(child, childStyle, childWDM).InlineBorderPadding() +
 		ResolveMargins(childStyle, childWDM, 0).InlineSum()
 	return childMM.MinContent + extra, childMM.MaxContent + extra
 }

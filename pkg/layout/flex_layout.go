@@ -1982,7 +1982,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		}
 
 		childWDM := NewWritingDirectionMode(childStyle)
-		childGeom := ComputeFragmentGeometry(childStyle, childWDM, contentInlineSize)
+		childGeom := NodeFragmentGeometry(child, childStyle, childWDM, contentInlineSize)
 
 		// Resolve margins for the item.
 		// In flex layout, margin auto is used for alignment — resolve to 0 for now,
