@@ -6815,26 +6815,63 @@ func parseCounterSymbolList(val string) []string {
 
 // parseAdditiveSymbols parses additive-symbols like "100 C, 50 L, 10 X, 5 V, 1 I"
 func parseAdditiveSymbols(val string) []AdditiveSymbol {
-	var result []AdditiveSymbol
-	entries := strings.Split(val, ",")
-	for _, entry := range entries {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
+	// ConsumeCounterStyleAdditiveSymbols
+	// (at_rule_counter_style_descriptor_parser.cc:230-279 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): [ <integer [0,∞]> &&
+	// <symbol> ]#, in strictly descending weight; anything else makes the
+	// descriptor invalid (nil).
+	s := newComponentStream(val)
+	var out []AdditiveSymbol
+	for {
+		var entry AdditiveSymbol
+		haveWeight, haveSymbol := false, false
+		for !haveWeight || !haveSymbol {
+			if !haveWeight {
+				if n, ok := consumeInteger(s.peek(), 0); ok {
+					s.consume()
+					entry.Value, haveWeight = n, true
+					continue
+				}
+			}
+			if !haveSymbol {
+				if sym, ok := consumeCounterStyleSymbol(s); ok {
+					entry.Symbol, haveSymbol = sym, true
+					continue
+				}
+			}
+			return nil
 		}
-		// Format: "<integer> <symbol>"
-		parts := strings.SplitN(entry, " ", 2)
-		if len(parts) != 2 {
-			continue
+		if n := len(out); n > 0 && entry.Value >= out[n-1].Value {
+			return nil
 		}
-		n, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-		if err != nil {
-			continue
+		out = append(out, entry)
+		if !s.consumeComma() {
+			break
 		}
-		sym := unquoteCounterString(strings.TrimSpace(parts[1]))
-		result = append(result, AdditiveSymbol{Value: n, Symbol: sym})
 	}
-	return result
+	if !s.atEnd() {
+		return nil
+	}
+	return out
+}
+
+// consumeCounterStyleSymbol is ConsumeCounterStyleSymbol
+// (at_rule_counter_style_descriptor_parser.cc:19-40): a <string>
+// (unquoted) or a <custom-ident>. The <image> branch is behind the
+// CSSAtRuleCounterStyleImageSymbols runtime flag, which has no status
+// (off by default; platform/runtime_enabled_features.json5:1533), so it is
+// not taken.
+func consumeCounterStyleSymbol(s *componentStream) (string, bool) {
+	tok := s.peek()
+	switch {
+	case isQuotedStringValue(tok):
+		s.consume()
+		return unquoteCounterString(tok), true
+	case isIdentToken(tok):
+		s.consume()
+		return tok, true
+	}
+	return "", false
 }
 
 // unquoteCounterString strips surrounding quotes from a CSS string value.

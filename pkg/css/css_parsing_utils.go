@@ -1,6 +1,7 @@
 package css
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -695,6 +696,31 @@ func isValidBackgroundSizeValue(value string) bool {
 			return s.atEnd()
 		}
 	}
+}
+
+// consumeInteger is ConsumeInteger (css_parsing_utils.cc:1154-1198 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an integer literal no smaller
+// than minimum, or a math function of category number, whose value
+// CSSMathFunctionValue::ClampToPermittedRange (css_math_function_value.cc:
+// 190-204) clamps to minimum and rounds half toward +infinity. Pass
+// math.Inf(-1) for no minimum.
+func consumeInteger(tok string, minimum float64) (int, bool) {
+	if !isUnitlessMath(tok) {
+		n, err := strconv.Atoi(tok)
+		if err != nil || float64(n) < minimum {
+			return 0, false
+		}
+		return n, true
+	}
+	v, ok := EvalMathFunction(tok, calcContext{})
+	if !ok {
+		return 0, false
+	}
+	if math.IsNaN(v) { // CensorNaNToZero
+		v = 0
+	}
+	v = math.Floor(math.Max(v, minimum) + 0.5)
+	return int(max(math.MinInt32, min(math.MaxInt32, v))), true // ClampTo<int>
 }
 
 // Ports of Blink's grid track-list and grid-template consumers in
