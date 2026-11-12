@@ -53,6 +53,7 @@ func TestLineTruncator_TruncateLine(t *testing.T) {
 	const block = "font:100px/1 Ahem;width:400px;white-space:pre;overflow:hidden;text-overflow:ellipsis"
 	cases := []struct {
 		name       string
+		tag        string // the block's element; div when empty
 		style      string
 		body       string
 		want       string
@@ -74,6 +75,19 @@ func TestLineTruncator_TruncateLine(t *testing.T) {
 			style: `text-overflow:"XX"`,
 			body:  "ppppp",
 			want:  `"pp"@0+200 "XX"@200+200 ellipsis`,
+		},
+		{
+			name:  "a centered line is truncated from the start edge (LOU-834)",
+			style: "text-align:center",
+			body:  "ppppp",
+			want:  `"ppp"@0+300 "…"@300+100 ellipsis`,
+		},
+		{
+			name:  "a <button>, centered by the UA, is truncated from its start edge (#421 review)",
+			tag:   "button",
+			style: "border:0;padding:0",
+			body:  "ppppp",
+			want:  `"ppp"@0+300 "…"@300+100 ellipsis`,
 		},
 		{
 			name: "a line that fits is not truncated",
@@ -111,8 +125,12 @@ func TestLineTruncator_TruncateLine(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			src := fmt.Sprintf(`<!doctype html><style>body{margin:0}#t{%s;%s}</style><div id=t>%s</div>`,
-				block, tc.style, tc.body)
+			tag := tc.tag
+			if tag == "" {
+				tag = "div"
+			}
+			src := fmt.Sprintf(`<!doctype html><style>body{margin:0}#t{%s;%s}</style><%s id=t>%s</%s>`,
+				block, tc.style, tag, tc.body, tag)
 			root := layoutRootTestHTML(t, src)
 			div := findBoxByID(root, "t")
 			if div == nil {
