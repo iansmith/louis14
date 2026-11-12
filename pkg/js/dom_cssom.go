@@ -228,11 +228,10 @@ func (s *ruleStyleAccessor) Get(key string) goja.Value {
 func (s *ruleStyleAccessor) Set(key string, val goja.Value) bool {
 	prop := camelToKebab(key)
 	if v := val.String(); strings.TrimSpace(v) == "" {
-		s.declarations().RemoveDeclaration(prop)
+		s.sheet.RemoveRuleDeclaration(s.rule, prop)
 	} else if cssomValueAccepted(prop, v) {
-		s.declarations().SetDeclaration(prop, v)
+		s.sheet.SetRuleDeclaration(s.rule, prop, v)
 	}
-	s.sheet.MarkRuleChanged(s.rule)
 	return true
 }
 
@@ -241,8 +240,7 @@ func (s *ruleStyleAccessor) Has(key string) bool {
 }
 
 func (s *ruleStyleAccessor) Delete(key string) bool {
-	s.declarations().RemoveDeclaration(camelToKebab(key))
-	s.sheet.MarkRuleChanged(s.rule)
+	s.sheet.RemoveRuleDeclaration(s.rule, camelToKebab(key))
 	return true
 }
 

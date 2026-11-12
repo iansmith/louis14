@@ -121,9 +121,22 @@ func (s *StyleSheetContents) RuleDeclarations(r *CSSOMRule) *DeclarationResult {
 	return r.decls
 }
 
-// MarkRuleChanged records that r's declarations changed through its CSSOM
-// style, so a re-parse writes them back into its text first.
-func (s *StyleSheetContents) MarkRuleChanged(r *CSSOMRule) { r.changed = true }
+// SetRuleDeclaration sets property on r's declarations through its CSSOM
+// style. url()s in value resolve against the sheet's base, as the sheet's
+// own declarations did when parsed (Blink resolves a url() when it parses
+// the value, CSSUrlData); the re-parse after a rule mutation does not
+// resolve them again.
+func (s *StyleSheetContents) SetRuleDeclaration(r *CSSOMRule, property, value string) {
+	s.RuleDeclarations(r).SetDeclaration(property, s.Context.RewriteURLs(value))
+	r.changed = true
+}
+
+// RemoveRuleDeclaration removes property from r's declarations through
+// its CSSOM style.
+func (s *StyleSheetContents) RemoveRuleDeclaration(r *CSSOMRule, property string) {
+	s.RuleDeclarations(r).RemoveDeclaration(property)
+	r.changed = true
+}
 
 // InsertRule is CSSStyleSheet::insertRule: it inserts rule, which must parse
 // as exactly one rule, before the rule at index, and returns index.
