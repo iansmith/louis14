@@ -128,17 +128,31 @@ func TestNestedScope(t *testing.T) {
 	}
 }
 
-// A conditional rule inside @scope keeps the scope.
-func TestScopeWrapsMedia(t *testing.T) {
-	styles := cascadeHTML(t, `<style>
-		@scope (.a) { @media all { .t { color: green } } }
-	</style>
-	<div class="t" id="out"></div><div class="a"><div class="t" id="in"></div></div>`, nil)
-	if got := colorOf(t, styles, "in"); got != "green" {
-		t.Errorf("#in color = %q, want green", got)
-	}
-	if got := colorOf(t, styles, "out"); got == "green" {
-		t.Errorf("#out matched a rule scoped to .a")
+// A style rule in a grouping rule inside @scope keeps the scope and the
+// implicit :where(:scope) anchor at any depth: neither an element outside
+// the scope nor the root itself matches.
+func TestScopeAnchorSurvivesGroupingRules(t *testing.T) {
+	for _, group := range []struct{ open, close string }{
+		{"@media all {", "}"},
+		{"@supports (color: red) {", "}"},
+		{"@layer x {", "}"},
+		{"@media all { @supports (color: red) {", "} }"},
+	} {
+		t.Run(group.open, func(t *testing.T) {
+			styles := cascadeHTML(t, `<style>
+				@scope (.a) { `+group.open+` .t { color: green } `+group.close+` }
+			</style>
+			<div class="t" id="out"></div><div class="a"><div class="t" id="in"></div></div>
+			<div class="a t" id="root"></div>`, nil)
+			if got := colorOf(t, styles, "in"); got != "green" {
+				t.Errorf("#in color = %q, want green", got)
+			}
+			for _, id := range []string{"out", "root"} {
+				if got := colorOf(t, styles, id); got == "green" {
+					t.Errorf("#%s matched a rule scoped to .a", id)
+				}
+			}
+		})
 	}
 }
 
@@ -287,5 +301,59 @@ func TestImplicitScopeRootFollowsTheOwner(t *testing.T) {
 	}
 	if got := colorOf(t, styles, "a1"); got == "green" {
 		t.Errorf("#a1 still matched the scope of the <style> moved away")
+	}
+}
+
+// A rule nested in a style rule in an @scope body keeps the anchor on the
+// style rule, so `&` brings it along (MaybeCreateImplicitDescendantAnchor
+// adds it when the outer rule is parsed, css_selector_parser.cc:914-930 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): `.q &` needs only .q above
+// the in-scope .p, not inside the scope.
+func TestScopeAnchorBeforeNesting(t *testing.T) {
+	styles := cascadeHTML(t, `<style>
+		@scope (.a) { .p { .q & { color: green } } }
+	</style>
+	<div class="q"><div class="a"><div class="p" id="p"></div></div></div>`, nil)
+	if got := colorOf(t, styles, "p"); got != "green" {
+		t.Errorf("#p color = %q, want green (.q may be outside the scope)", got)
+	}
+}
+
+// The scope's <scope-start> and <scope-end> take the sheet's default
+// namespace, as its other selectors do (Blink parses them with the sheet's
+// parser context, StyleScope::Consume).
+func TestScopeSelectorsTakeTheDefaultNamespace(t *testing.T) {
+	styles := cascadeHTML(t, `<style>`+svgDefaultNamespaceRule+`
+		@scope (g) { *|* { color: green } }
+	</style>
+	<div><g><span id="html-g-child"></span></g></div>
+	<svg><g><rect id="svg-g-child"/></g></svg>`, nil)
+	if got := colorOf(t, styles, "svg-g-child"); got != "green" {
+		t.Errorf("#svg-g-child color = %q, want green", got)
+	}
+	if got := colorOf(t, styles, "html-g-child"); got == "green" {
+		t.Errorf("#html-g-child matched: an HTML <g> is not a root of @scope (g) under the SVG default namespace")
+	}
+	// <scope-end> too: an HTML <g> is no limit of `to (g)`.
+	styles = cascadeHTML(t, `<style>`+svgDefaultNamespaceRule+`
+		@scope (*|*.r) to (g) { *|* { color: green } }
+	</style>
+	<div class="r"><g><span id="below-html-g"></span></g></div>`, nil)
+	if got := colorOf(t, styles, "below-html-g"); got != "green" {
+		t.Errorf("#below-html-g color = %q, want green: an HTML <g> is not a limit of to (g) under the SVG default namespace", got)
+	}
+}
+
+// The implicit :scope anchor is not a written compound, so it takes no
+// default namespace (CreateImplicitAnchor builds a bare :scope,
+// css_selector_parser.cc:786-797 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// under an SVG default namespace an HTML root still scopes its rules.
+func TestScopeAnchorTakesNoDefaultNamespace(t *testing.T) {
+	styles := cascadeHTML(t, `<style>`+svgDefaultNamespaceRule+`
+		@scope (*|*.x) { *|* { color: green } }
+	</style>
+	<div class="x"><span id="child"></span></div>`, nil)
+	if got := colorOf(t, styles, "child"); got != "green" {
+		t.Errorf("#child color = %q, want green", got)
 	}
 }
