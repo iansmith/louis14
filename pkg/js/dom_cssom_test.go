@@ -274,3 +274,47 @@ func TestStyleSheetsRuleReadsPendingSubstitution(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestStyleSheetInsertAndDeleteRule is css-cascade/import-removal's script:
+// a <style> created by script has a sheet (HTMLStyleElement.sheet, LinkStyle,
+// core/css/style_element.cc), insertRule / deleteRule edit it
+// (CSSStyleSheet::insertRule / deleteRule, core/css/css_style_sheet.cc:
+// 423-497 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the cascade sees
+// the edited rules. The sheet is document.styleSheets' entry for the element
+// ([SameObject]) (LOU-866).
+func TestStyleSheetInsertAndDeleteRule(t *testing.T) {
+	doc := parseHTML(t, `<!DOCTYPE html><meta charset="utf-8"><title>t</title><div></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		const style = document.createElement("style");
+		document.head.append(style);
+		const {sheet} = style;
+		if (!sheet) throw new Error("style.sheet is " + sheet);
+		if (style.sheet !== sheet) throw new Error("style.sheet is not [SameObject]");
+		if (document.styleSheets.length !== 1 || document.styleSheets[0] !== sheet)
+			throw new Error("document.styleSheets does not hold the new sheet");
+		if (sheet.insertRule("@import url('data:text/css,div { background: red !important }');") !== 0)
+			throw new Error("insertRule did not return 0");
+		const rules = sheet.cssRules;
+		sheet.insertRule("div { background: green }", 1);
+		sheet.deleteRule(0);
+		if (rules.length !== 1 || sheet.cssRules !== rules)
+			throw new Error("cssRules is not the same live list: length " + rules.length);
+		var threw = "";
+		try { sheet.insertRule("p {}", 5); } catch (e) { threw = e.name; }
+		if (threw !== "IndexSizeError") throw new Error("insertRule past the end threw " + threw);
+		try { sheet.insertRule("p {", 0); threw = ""; } catch (e) { threw = e.name; }
+		if (threw !== "SyntaxError") throw new Error("insertRule of a bad rule threw " + threw);
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	doc.UpdateActiveStyleSheets()
+	sheets := css.ParseDocumentStylesheets(doc)
+	if len(sheets) != 1 || len(sheets[0].Rules) != 1 {
+		t.Fatalf("got %d sheets, want 1 with the one inserted rule", len(sheets))
+	}
+	if got := sheets[0].Rules[0].Declarations["background-color"]; got != "green" {
+		t.Errorf("background-color = %q, want green", got)
+	}
+}

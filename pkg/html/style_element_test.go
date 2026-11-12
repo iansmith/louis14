@@ -129,3 +129,27 @@ func TestParseFragment_StyleIsRawText(t *testing.T) {
 		t.Errorf("SerializeOuter = %q, want %q", got, src)
 	}
 }
+
+// TestEmptyStyleElementHasASheet checks every CSS <style> element owns a
+// sheet, an empty or whitespace-only one too, as StyleElement::Process
+// creates one for any text (core/css/style_element.cc:163-190 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so style.sheet and
+// document.styleSheets see it; each source names its owner element
+// (LOU-866).
+func TestEmptyStyleElementHasASheet(t *testing.T) {
+	doc, err := Parse(`<head><style></style><style> </style><style>p{}</style>
+		<link rel="stylesheet" href="data:text/css,p{}"></head>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.UpdateActiveStyleSheets()
+	want := []string{"style", "style", "style", "link"}
+	if len(doc.Stylesheets) != len(want) {
+		t.Fatalf("got %d sheets, want %d (empty <style>s own sheets too)", len(doc.Stylesheets), len(want))
+	}
+	for i, s := range doc.Stylesheets {
+		if s.Owner == nil || s.Owner.TagName != want[i] {
+			t.Errorf("sheet %d owner = %v, want its <%s>", i, s.Owner, want[i])
+		}
+	}
+}

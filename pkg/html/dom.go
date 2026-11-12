@@ -213,6 +213,9 @@ const (
 type StylesheetSource struct {
 	Text string
 	Href string // empty for <style> blocks; the link's href for external sheets
+	// Owner is the <style> or <link> element the sheet belongs to (Blink's
+	// StyleSheet::ownerNode); nil for a source no element owns.
+	Owner *Node
 }
 
 // FrameSource identifies the document a frame owner loads: its completed
