@@ -424,35 +424,20 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// browser behavior where the col's block-size (= table inline) also
 			// determines the row height for orthogonal cells.
 			isOrthogonalCell := wdm.IsVertical() != cellWDM.IsVertical()
+			// The measured cell is its intrinsic size, border-box
+			// (block_layout.go's table-cell branch); the row also takes the
+			// cell's fixed block size (cell_css_block_size), ignoring its
+			// min/max block sizes (ComputeMinimumRowBlockSize, table/
+			// table_layout_utils.cc:265-292 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			cellBlockForRow := cellLogical.BlockSize() // table's block direction = physical height
-			// Border-box intrinsic-content extent in the table block axis:
-			// content-box IntrinsicBlockSize lifted to border-box by the cell's
-			// block border+padding. IntrinsicBlockSize is a content-box value
-			// (block_layout.go's blockCursor, "position within content box"),
-			// whereas the cell fragment's block-size is BORDER-box; lifting puts
-			// them on the same basis. Mirrors Blink's
-			// TableLayoutUtils::ComputeMinimumRowBlockSize comparand
-			// `border_box_block_size = intrinsic_block_size + border_padding`
-			// (SHA 4883d11fef).
-			intrinsicContentBorderBox := cellContentBorderBoxBlockSize(cellResult, cell.style, cellWDM)
+			if size, ok := cellCSSBlockSize(cell.style, wdm, cellResult.Fragment); ok {
+				cellBlockForRow = max(cellBlockForRow, size)
+			}
 			if isOrthogonalCell && colHasExplicit[colIdx] {
 				// Use the cell's physical WIDTH (= column width) as the row height.
 				// This produces square cells when col width is explicitly specified.
 				cellBlockForRow = cellResult.Fragment.Size.WidthF64()
-			} else if !isOrthogonalCell {
-				// CSS Tables 3 §height-distribution: a cell's contribution to
-				// its row's intrinsic block-size is max(cell's explicit
-				// height-clamped fragment, cell's intrinsic content
-				// block-size). When the cell has `overflow:hidden` + a small
-				// `height`, the fragment is clamped at the explicit height
-				// but the content's natural extent is still what the row
-				// should grow to (the cell will be re-laid-out at the row's
-				// final height in Phase 3). Compared on a border-box basis so
-				// the row does not fall short by the cell's own block
-				// border+padding (4px in the test's `border:2px` cells).
-				if intrinsicContentBorderBox > cellBlockForRow {
-					cellBlockForRow = intrinsicContentBorderBox
-				}
 			}
 			// Rowspan cells contribute to MULTIPLE rows' intrinsic
 			// block-sizes via DistributeRowspanCellToRows after Phase 1
@@ -1584,6 +1569,34 @@ func cellHasSpecifiedBlockSize(style *css.Style, wdm WritingDirectionMode) bool 
 	}
 	_, ok := style.GetLength(logicalBlockSizeProperty(wdm))
 	return ok
+}
+
+// cellCSSBlockSize returns a cell's fixed block size as a border-box size,
+// the row's minimum for it; its min/max block sizes are ignored. Mirrors
+// cell_css_block_size in ComputeMinimumRowBlockSize (table/
+// table_layout_utils.cc:265-292 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// with the cell's border and padding as the measured fragment resolved
+// them (collapsed borders included). louis14 has no quirks mode, so the
+// table-cell-height box-sizing quirk does not apply.
+func cellCSSBlockSize(style *css.Style, wdm WritingDirectionMode, frag *PhysicalFragment) (float64, bool) {
+	if style == nil || frag == nil {
+		return 0, false
+	}
+	size, ok := style.GetLength(logicalBlockSizeProperty(wdm))
+	if !ok {
+		return 0, false
+	}
+	borderPadding := 0.0
+	if frag.BoxData != nil {
+		borderPadding = ToLogicalEdges(frag.BoxData.Border, wdm).BlockSum() +
+			ToLogicalEdges(frag.BoxData.Padding, wdm).BlockSum()
+	}
+	// Snap the length to a LayoutUnit, as ResolveBlockSize does.
+	size = layoutunit.FromFloat64Round(size).Float64()
+	if style.GetBoxSizing() == "border-box" {
+		return max(borderPadding, size), true
+	}
+	return borderPadding + size, true
 }
 
 // relativeCellOffset returns a table cell's relative offset in the table's
