@@ -1,6 +1,10 @@
 package layout
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 // A table cell is laid out a second time at its final block size, the sum
 // of its rows (ComputeCellBlockSize, table/table_layout_utils.cc:1333-1361 @
@@ -39,6 +43,20 @@ func TestTableCellFinalLayout(t *testing.T) {
 		// css-tables/table-cell-overflow-explicit-height-002).
 		{"max-height cell in a taller row", `<table style="border-spacing:0"><tr>` +
 			`<td id="c" style="padding:0;height:20px;max-height:20px"><div style="height:100px"></div></td></tr></table>`, 100},
+		// A percentage cell height does not constrain the cell (only a
+		// fixed one does, CellBlockConstraint::is_constrained,
+		// table/table_layout_utils.cc:248-253), so in an auto-height table
+		// its 50% child stays auto.
+		{"percentage-height cell", `<table style="border-spacing:0"><tr>` +
+			`<td style="padding:0;height:50%"><div id="c" style="height:50%"></div></td>` +
+			`<td style="padding:0"><div style="height:100px"></div></td></tr></table>`, 0},
+		// The replaced percentage base of a fixed-height cell is its block
+		// size clamped by its max-block-size: 20px, not 40px
+		// (ComputeBlockSizeForFragmentInternal in
+		// CalculateReplacedChildPercentageSize, length_utils.cc:1851-1858).
+		{"replaced child of a max-height cell", `<table style="border-spacing:0"><tr>` +
+			`<td style="padding:0;height:40px;max-height:20px"><canvas id="c" width=1 height=1 style="display:block;height:100%"></canvas></td>` +
+			`</tr></table>`, 20},
 		// Guard: the cell grew but the table's height is auto, so the
 		// initial block size stays indefinite and the 100% child is auto.
 		{"grown cell, auto table height", `<table style="border-spacing:0"><tr>` +
@@ -72,4 +90,19 @@ func TestTableCellFinalLayout(t *testing.T) {
 			t.Errorf("#c y = %v, want 40 (centered in the 100px row)", b.Y)
 		}
 	})
+}
+
+// Laying a cell out again at its final size must not repeat work that
+// cannot change: depth-14 nested tables lay out in milliseconds (about 4ms
+// on master), as Blink's layout cache keeps them (BlockNode::Layout's
+// CachedLayoutResult), not in seconds (2s when every level relays its
+// cells). The 500ms bound leaves room for a loaded machine.
+func TestTableCellFinalLayoutNestedTablesStayFast(t *testing.T) {
+	const depth = 14
+	src := `<!DOCTYPE html><body>` + strings.Repeat(`<table><tr><td>a</td><td>`, depth) + "x" + strings.Repeat(`</td></tr></table>`, depth)
+	start := time.Now()
+	layoutRootTestHTML(t, src)
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("depth-%d nested tables took %v, want under 500ms", depth, elapsed)
+	}
 }
