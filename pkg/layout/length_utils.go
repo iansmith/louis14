@@ -116,6 +116,22 @@ func (mm MinMaxSizes) ClampSizeToMinAndMax(size float64) float64 {
 	return max(mm.MinContent, min(size, mm.MaxContent))
 }
 
+// Encompass raises both sizes to at least value. Mirrors Blink's
+// MinMaxSizes::Encompass (min_max_sizes.h:32-35 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (mm *MinMaxSizes) Encompass(value float64) {
+	mm.MinContent = max(mm.MinContent, value)
+	mm.MaxContent = max(mm.MaxContent, value)
+}
+
+// Constrain lowers both sizes to at most value. Mirrors Blink's
+// MinMaxSizes::Constrain (min_max_sizes.h:38-41 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (mm *MinMaxSizes) Constrain(value float64) {
+	mm.MinContent = min(mm.MinContent, value)
+	mm.MaxContent = min(mm.MaxContent, value)
+}
+
 // isIndefiniteInlineSize reports whether an available inline-size is
 // Blink's kIndefiniteSize: negative, or the saturated LayoutUnit a
 // louis14 max-content measurement width (1e9) is stored as.
@@ -199,12 +215,8 @@ func (r replacedLengthResolver) resolveInline(prop string, lengthType replacedLe
 	case replacedLengthStretch:
 		return r.stretchInline()
 	case replacedLengthSpecified:
-		if propertyHasPercent(r.style, prop) && r.space.PercentageResolutionSize.InlineSize.Float64() < 0 {
-			if lengthType != replacedLengthTypeMin {
-				return Indefinite
-			}
-			return r.bp.InlineSum()
-		}
+		// The Resolve*InlineSize helpers apply ResolveInlineLengthInternal's
+		// indefinite-percentage rule (length_utils.cc:66-77).
 		var content layoutunit.LayoutUnit
 		ok := true
 		switch lengthType {
@@ -255,9 +267,6 @@ func (r replacedLengthResolver) resolveBlock(prop string, lengthType replacedLen
 		ok := true
 		switch lengthType {
 		case replacedLengthTypeMin:
-			if propertyHasPercent(r.style, prop) && r.space.IsBlockSizeIndefinite() {
-				return r.bp.BlockSum()
-			}
 			content = ResolveMinBlockSize(r.style, r.wdm, r.space, r.geom)
 		case replacedLengthTypeMain:
 			if content, ok = ResolveBlockSize(r.style, r.wdm, r.space, r.geom); !ok {
@@ -563,12 +572,13 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, space Constr
 	return s.computeReplacedSizeInternal(mode)
 }
 
-// lazyOnce memoizes f: ComputeReplacedSizeInternal's size functions may be
-// read by the min, max and main lengths alike.
-func lazyOnce(f func() float64) func() float64 {
-	var v float64
+// lazyOnce memoizes f: ComputeReplacedSizeInternal's size functions, and
+// the content sizes of applyMinMaxInlineSizes, may be read by the min, max
+// and main lengths alike.
+func lazyOnce[T any](f func() T) func() T {
+	var v T
 	done := false
-	return func() float64 {
+	return func() T {
 		if !done {
 			v, done = f(), true
 		}
@@ -708,8 +718,9 @@ func (s replacedSizer) computeReplacedSizeInternal(mode ReplacedSizeMode) Logica
 // min-inline-size. An intrinsic pass has an indefinite available and
 // percentage-resolution inline-size, and sizes an auto inline-size
 // fit-content (a block container never stretches a replaced child); the
-// space is made so here because louis14's intrinsic spaces do not carry
-// either. Mirrors Blink's ComputeMinAndMaxContentContributionForReplaced
+// space is made so here because not every louis14 intrinsic space carries
+// them (buildParallelChildMinMaxSpace carries the indefinite percentage
+// size only). Mirrors Blink's ComputeMinAndMaxContentContributionForReplaced
 // (length_utils.cc:314-355 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func ComputeMinAndMaxContentContributionForReplaced(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) MinMaxSizes {
 	space.AvailableSize.InlineSize = layoutunit.IndefiniteSize
