@@ -250,7 +250,14 @@ func (lb *LineBreaker) measuringStyle(item *InlineItem) *css.Style {
 //
 // Mirrors CSS Writing Modes §7.5 / Blink's IsHorizontalTypographicMode().
 func (lb *LineBreaker) isVerticalMeasurement(style *css.Style) bool {
-	if !lb.space.WritingDirection.IsVertical() || lb.space.WritingDirection.IsSideways() {
+	return isVerticalMeasurement(style, lb.space.WritingDirection)
+}
+
+// isVerticalMeasurement reports whether text in style, in writing direction
+// wdm, is measured with vertical advances: a vertical, non-sideways writing
+// mode with text-orientation: upright.
+func isVerticalMeasurement(style *css.Style, wdm WritingDirectionMode) bool {
+	if !wdm.IsVertical() || wdm.IsSideways() {
 		return false
 	}
 	// VRL/VLR: use the vertical advance only for text-orientation: upright.

@@ -323,12 +323,6 @@ type PaintLayer struct {
 	// CSS text-transform (uppercase, lowercase, capitalize):
 	TextTransform css.TextTransform
 
-	// CSS text-overflow (CSS UI 4 §6.2): clip, ellipsis, or a custom
-	// <string>. When TextOverflow == css.TextOverflowString the
-	// replacement string is in TextOverflowString.
-	TextOverflow       css.TextOverflowType
-	TextOverflowString string
-
 	// List markers are real laid-out ::marker boxes in the fragment tree
 	// (marker-foundation Phases 3-4) — they paint as ordinary box fragments
 	// through the normal box/inline paint paths. The PaintLayer no longer
@@ -1049,7 +1043,10 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	}
 
 	// Compositing.
-	if !styleIsVisible(s) {
+	// A child the line truncator hid keeps its box but paints nothing
+	// (LineTruncator::HideChild, inline/line_truncator.cc:450-475 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if !styleIsVisible(s) || box.IsHiddenForPaint {
 		layer.Visible = false
 	}
 	// A hidden frame owner paints none of its frame's document, whose own
@@ -1279,6 +1276,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	} else {
 		layer.TextDecorationColor = currentColor
 	}
+	// The ellipsis has no text decorations
+	// (TextDecorationPainter::UpdateDecorationInfo,
+	// paint/text_decoration_painter.cc:48-53 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if box.IsEllipsis {
+		layer.AppliedTextDecorations = nil
+		layer.TextDecoration = css.TextDecorationNone
+	}
 	layer.TextDecorationThickness = s.GetTextDecorationThickness()
 	layer.TextDecorationStyle = s.GetTextDecorationStyle()
 	layer.TextDecorationSkipInk = s.GetTextDecorationSkipInk()
@@ -1324,17 +1329,16 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 
 	// Text emphasis marks.
 	isHorizontal := !box.IsVerticalText && !box.IsSidewaysRL && !box.IsSidewaysLR
-	if mark := s.GetTextEmphasisMark(isHorizontal); mark != "" {
+	// The ellipsis has no emphasis marks (ShouldPaintEmphasisMark,
+	// paint/text_fragment_painter.cc:110-112 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if mark := s.GetTextEmphasisMark(isHorizontal); mark != "" && !box.IsEllipsis {
 		layer.TextEmphasisMark = mark
 		layer.TextEmphasisColor = s.GetTextEmphasisColor()
 		layer.TextEmphasisOver = s.GetTextEmphasisLineLogicalOver(isHorizontal, box.IsSidewaysLR)
 	}
 
 	layer.TextTransform = s.GetTextTransform()
-	layer.TextOverflow = s.GetTextOverflow()
-	if layer.TextOverflow == css.TextOverflowString {
-		layer.TextOverflowString = s.GetTextOverflowString()
-	}
 
 	// List markers are real laid-out ::marker boxes (marker-foundation Phases
 	// 3-4) — no paint-layer marker setup is needed; the marker box fragment

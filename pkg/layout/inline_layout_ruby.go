@@ -74,7 +74,7 @@ func surfaceSubLineOOFCandidates(
 }
 
 // emitRubyColumnFragments paints a single ruby column's base + annotation
-// sub-line glyphs into lineBuilder, positioned at the given inline /
+// sub-line glyphs into lineBox, positioned at the given inline /
 // block offsets within the outer line.
 //
 //   - baseBlockBaseline is the outer line's main baseline (= the line's
@@ -112,7 +112,7 @@ func emitRubyColumnFragments(
 	fonts text.FontConfig,
 	centralBaseline bool,
 	sidewaysVLR bool,
-	lineBuilder *BoxFragmentBuilder,
+	lineBox *LogicalLineItems,
 ) {
 	// Base sub-line: apply ruby-align distribution when the base is the
 	// narrower side of the column (annotation is wider).
@@ -129,7 +129,7 @@ func emitRubyColumnFragments(
 		emitSubLineTextFragments(
 			column.BaseLine, columnInlineOffset+baseOffset, baseBlockBaseline,
 			baseBlockBaseline-maxAscent, lineHeight,
-			textContent, baseExpansion, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,
+			textContent, baseExpansion, wdm, fonts, centralBaseline, sidewaysVLR, lineBox, true,
 		)
 	}
 
@@ -175,7 +175,7 @@ func emitRubyColumnFragments(
 		emitSubLineTextFragments(
 			anno, annoInlineOffset, annoBaseline,
 			0, 0,
-			textContent, 0, wdm, fonts, centralBaseline, sidewaysVLR, lineBuilder,
+			textContent, 0, wdm, fonts, centralBaseline, sidewaysVLR, lineBox, false,
 		)
 	}
 }
@@ -268,7 +268,22 @@ type subLineEmitter struct {
 	fonts            text.FontConfig
 	centralBaseline  bool
 	sidewaysVLR      bool
-	lineBuilder      *BoxFragmentBuilder
+	lineBox          *LogicalLineItems
+	// isBaseLine marks a ruby base sub-line, whose text is part of the
+	// line's in-flow content: Blink adds the base's items to the line box
+	// and the annotations' to their own lines (LogicalLineBuilder::
+	// PlaceRubyColumn, inline/logical_line_builder.cc:598-616 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	isBaseLine bool
+}
+
+// add adds a fragment to the line box. Base text carries its item so the
+// line truncator sees it; annotation text does not (inline boxes pass nil).
+func (e subLineEmitter) add(frag *PhysicalFragment, offset LogicalOffset, item *InlineItem, inlineSize float64) {
+	if !e.isBaseLine {
+		item = nil
+	}
+	e.lineBox.AddChild(LogicalLineItem{Fragment: frag, InlineItem: item, Offset: offset, InlineSize: inlineSize})
 }
 
 // emitSubLineTextFragments walks a sub-LineInfo's Results and emits a
@@ -297,7 +312,8 @@ func emitSubLineTextFragments(
 	fonts text.FontConfig,
 	centralBaseline bool,
 	sidewaysVLR bool,
-	lineBuilder *BoxFragmentBuilder,
+	lineBox *LogicalLineItems,
+	isBaseLine bool,
 ) {
 	e := subLineEmitter{
 		textContent:      textContent,
@@ -309,7 +325,8 @@ func emitSubLineTextFragments(
 		fonts:            fonts,
 		centralBaseline:  centralBaseline,
 		sidewaysVLR:      sidewaysVLR,
-		lineBuilder:      lineBuilder,
+		lineBox:          lineBox,
+		isBaseLine:       isBaseLine,
 	}
 	inlinePos := inlineOrigin
 	var boxStack []openSubLineBox
@@ -379,7 +396,7 @@ func (e subLineEmitter) emitTextItem(r InlineItemResult, inlinePos float64) floa
 		return e.emitJustifiedText(r, content, inlinePos, blockPos, fontSize, parentNode)
 	}
 
-	e.lineBuilder.AddChild(&PhysicalFragment{
+	e.add(&PhysicalFragment{
 		Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 			InlineSize: r.InlineSize,
 			BlockSize:  fontSize,
@@ -390,7 +407,7 @@ func (e subLineEmitter) emitTextItem(r InlineItemResult, inlinePos float64) floa
 		Node:             parentNode,
 		Style:            r.Item.Style,
 		WritingDirection: e.wdm,
-	}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos})
+	}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos}, r.Item, r.InlineSize)
 	// TODO Phase 5: position:relative offset propagation for sub-line text
 	// fragments (rare in ruby content).
 	return inlinePos + r.InlineSize
@@ -407,9 +424,10 @@ func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, in
 	spaceWidth := measureTextContent(" ", fontSize, fontPath, features, letterSpacing, 0, false)
 	for i, piece := range strings.Split(content, " ") {
 		if i > 0 {
-			e.lineBuilder.AddChild(&PhysicalFragment{
+			expandedSpace := spaceWidth + e.justifyExpansion + wordSpacing
+			e.add(&PhysicalFragment{
 				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
-					InlineSize: spaceWidth + e.justifyExpansion + wordSpacing,
+					InlineSize: expandedSpace,
 					BlockSize:  fontSize,
 				}, e.wdm.WM)),
 				Type:             FragmentText,
@@ -418,14 +436,14 @@ func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, in
 				Node:             parentNode,
 				Style:            r.Item.Style,
 				WritingDirection: e.wdm,
-			}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos})
-			inlinePos += spaceWidth + e.justifyExpansion + wordSpacing
+			}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos}, r.Item, expandedSpace)
+			inlinePos += expandedSpace
 		}
 		if len(piece) == 0 {
 			continue
 		}
 		pieceWidth := measureTextContent(piece, fontSize, fontPath, features, letterSpacing, 0, false)
-		e.lineBuilder.AddChild(&PhysicalFragment{
+		e.add(&PhysicalFragment{
 			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 				InlineSize: pieceWidth,
 				BlockSize:  fontSize,
@@ -436,7 +454,7 @@ func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, in
 			Node:             parentNode,
 			Style:            r.Item.Style,
 			WritingDirection: e.wdm,
-		}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos})
+		}, LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos}, r.Item, pieceWidth)
 		inlinePos += pieceWidth
 	}
 	return inlinePos
@@ -468,7 +486,7 @@ func (e subLineEmitter) emitInlineBox(boxStack []openSubLineBox, inlinePos float
 	if e.boxBandHeight > 0 && boxFontSize < e.boxBandHeight {
 		boxTop, boxBlockSize = e.boxBandTop, e.boxBandHeight
 	}
-	e.lineBuilder.AddChild(&PhysicalFragment{
+	e.add(&PhysicalFragment{
 		Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 			InlineSize: inlinePos - ob.startInline,
 			BlockSize:  boxBlockSize,
@@ -477,6 +495,6 @@ func (e subLineEmitter) emitInlineBox(boxStack []openSubLineBox, inlinePos float
 		Node:             ob.node,
 		Style:            ob.style,
 		WritingDirection: e.wdm,
-	}, LogicalOffset{InlineOffset: ob.startInline, BlockOffset: boxTop})
+	}, LogicalOffset{InlineOffset: ob.startInline, BlockOffset: boxTop}, nil, inlinePos-ob.startInline)
 	return boxStack
 }

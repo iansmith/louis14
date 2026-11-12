@@ -22,7 +22,7 @@ const (
 	kCjkWater  rune = 0x6C34
 )
 
-// glyphForCharacter returns the glyph the font at fontPath maps c to, or 0
+// GlyphForCharacter returns the glyph the font at fontPath maps c to, or 0
 // when it has none. Mirrors SimpleFontData::GlyphForCharacter
 // (platform/fonts/simple_font_data.cc:252 @
 // 5992657f556bcd9d207a4aca187488462f027cab), which reads HarfBuzz's
@@ -32,7 +32,7 @@ const (
 // SetTextLayout installed a layout with its own provider. A font that fails
 // to open has no glyph, as PlatformGlyphInit zeroes zero_glyph_ for a
 // typeface with no glyphs (:230-234).
-func glyphForCharacter(fontPath string, fontSize float64, c rune) Glyph {
+func GlyphForCharacter(fontPath string, fontSize float64, c rune) Glyph {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
 		return 0
@@ -51,7 +51,7 @@ func glyphForCharacter(fontPath string, fontSize float64, c rune) Glyph {
 // platform/fonts/simple_font_data.cc @
 // 5992657f556bcd9d207a4aca187488462f027cab.
 func glyphAdvance(fontPath string, fontSize float64, c rune) (Glyph, float64) {
-	g := glyphForCharacter(fontPath, fontSize, c)
+	g := GlyphForCharacter(fontPath, fontSize, c)
 	if g == 0 {
 		return 0, 0
 	}
