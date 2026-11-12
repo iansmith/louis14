@@ -89,3 +89,35 @@ func TestTableLayoutWidthWithPercentColumn(t *testing.T) {
 		t.Errorf("table width = %v, percent cell width = %v; want 100 and 90", table.Width, pct.Width)
 	}
 }
+
+// When the parent fixes the table's inline size (a stretched grid item, a
+// flex item that grew), that size is the assignable table inline size, not
+// capped at the grid max-content: ComputeAssignableTableInlineSize returns
+// early when space.IsFixedInlineSize() (table/table_layout_algorithm.cc:
+// 231-234 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Above the max guess the
+// columns (max-content 20 and 60) share the 400px in proportion to their
+// max-content (DistributeInlineSizeToComputedInlineSizeAuto): 100 and 300.
+func TestTableFixedInlineSizeIsAssignable(t *testing.T) {
+	td := func(id, w string) string {
+		return `<td id="` + id + `" style="padding:0"><span style="display:inline-block;width:` + w + `;height:5px"></span></td>`
+	}
+	table := func(style string) string {
+		return `<table id="t" style="border-spacing:0;` + style + `"><tr>` + td("c0", "20px") + td("c1", "60px") + `</tr></table>`
+	}
+	cases := []struct{ name, html string }{
+		{"stretched grid item", `<div style="display:grid;width:400px">` + table("") + `</div>`},
+		{"flex item that grew", `<div style="display:flex;width:400px">` + table("flex-grow:1") + `</div>`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := layoutRootTestHTML(t, `<!DOCTYPE html><body style="margin:0">`+c.html)
+			tb, c0, c1 := findBoxByID(root, "t"), findBoxByID(root, "c0"), findBoxByID(root, "c1")
+			if tb == nil || c0 == nil || c1 == nil {
+				t.Fatal("missing #t/#c0/#c1")
+			}
+			if tb.Width != 400 || c0.Width != 100 || c1.Width != 300 {
+				t.Errorf("table/c0/c1 widths = %v/%v/%v, want 400/100/300", tb.Width, c0.Width, c1.Width)
+			}
+		})
+	}
+}
