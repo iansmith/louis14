@@ -80,3 +80,22 @@ func TestFlexColumnItemChildPercentHeight(t *testing.T) {
 		})
 	}
 }
+
+// A stretched item's min/max cross lengths resolve against the container's
+// childPercentageSize, not the container's own percentage size: here the
+// inner row flex container is a column item whose block size the outer
+// column imposes (100px, while the outer content box is 444px tall), and its
+// canvas's min-height:100% must be 100px (css-flexbox
+// flex-minimum-width-flex-items-015; BuildSpaceForLayout,
+// flex/flex_layout_algorithm.cc:720, :802 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestFlexStretchedItemMinCrossPercent(t *testing.T) {
+	src := `<!DOCTYPE html><body style="margin:0"><div style="display:flex;flex-direction:column;width:100px;height:444px"><div style="flex-basis:100px;display:flex;min-height:0"><canvas id="t" width="200" height="200" style="min-height:100%"></canvas></div></div>`
+	b := findBoxByID(layoutRootTestHTML(t, src), "t")
+	if b == nil {
+		t.Fatal("no #t box")
+	}
+	if b.Width != 100 || b.Height != 100 {
+		t.Errorf("canvas = %vx%v, want 100x100", b.Width, b.Height)
+	}
+}

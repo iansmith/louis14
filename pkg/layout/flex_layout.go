@@ -4587,24 +4587,34 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			if stretchContent < 0 {
 				stretchContent = 0
 			}
-			// Clamp to item's own min/max cross size (content-box).
+			// Clamp to item's own min/max cross size (content-box). The
+			// item's lengths resolve against childPercentageSize, not the
+			// container's own percentage size (BuildSpaceForLayout,
+			// flex/flex_layout_algorithm.cc:720, :802 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not collectItems'
+			// itemSizingSpace: its IsInsideFlexibleBox would skip calc()
+			// min/max lengths (LOU-820).
+			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, item.wdm, true).
+				SetPercentageResolutionSize(fla.childPercentageSize).
+				SetPercentageResolutionInlineSize(contentInlineSize).
+				Build()
 			if crossIsItemInline {
-				minBlock := ResolveMinBlockSize(item.style, item.wdm, fla.space, item.geom).Float64()
+				minBlock := ResolveMinBlockSize(item.style, item.wdm, itemSpace, item.geom).Float64()
 				if stretchContent < minBlock {
 					stretchContent = minBlock
 				}
-				if maxBlockLU, hasMax := ResolveMaxBlockSize(item.style, item.wdm, fla.space, item.geom); hasMax {
+				if maxBlockLU, hasMax := ResolveMaxBlockSize(item.style, item.wdm, itemSpace, item.geom); hasMax {
 					maxBlock := maxBlockLU.Float64()
 					if stretchContent > maxBlock {
 						stretchContent = maxBlock
 					}
 				}
 			} else {
-				minInlineItem := ResolveMinInlineSize(item.style, item.wdm, fla.space, item.geom).Float64()
+				minInlineItem := ResolveMinInlineSize(item.style, item.wdm, itemSpace, item.geom).Float64()
 				if stretchContent < minInlineItem {
 					stretchContent = minInlineItem
 				}
-				if maxInlineItemLU, hasMax := ResolveMaxInlineSize(item.style, item.wdm, fla.space, item.geom); hasMax {
+				if maxInlineItemLU, hasMax := ResolveMaxInlineSize(item.style, item.wdm, itemSpace, item.geom); hasMax {
 					maxInlineItem := maxInlineItemLU.Float64()
 					if stretchContent > maxInlineItem {
 						stretchContent = maxInlineItem
