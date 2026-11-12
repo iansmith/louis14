@@ -73,3 +73,23 @@ func TestAutoScrollbar_ShrinkToFitParentGrows(t *testing.T) {
 		t.Errorf("#a width %v, #s width %v; want both %v (100 content + the scrollbar)", a.Width, s.Width, 100+sb)
 	}
 }
+
+// TestAutoScrollbar_NoneWhenContentsAreNotVisible pins that a horizontal
+// auto scrollbar is not added while the scrollport has no height
+// (ComputeScrollbarExistence, core/paint/paint_layer_scrollable_area.cc:
+// 1834-1847 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A 0-tall auto box
+// whose out-of-flow content overflows it vertically gets a vertical
+// scrollbar (its scrollport has width), which narrows it so the content
+// overflows horizontally too; it still gets no horizontal scrollbar and
+// stays 0 tall. The css-overflow case scrollbar-empty-002.
+func TestAutoScrollbar_NoneWhenContentsAreNotVisible(t *testing.T) {
+	root := layoutRootTestHTML(t, `<!DOCTYPE html><style>body { margin: 0 }</style>
+<div style="width: 300px"><div id="s" style="overflow: auto"><div style="height: 0; position: relative"><div style="position: absolute; width: 300px; height: 300px"></div></div></div></div>`)
+	s := findBoxByID(root, "s")
+	if s == nil {
+		t.Fatal("missing #s")
+	}
+	if want := (css.BoxEdge{Right: classicScrollbarWidth(s.Style)}); s.Scrollbar != want || s.Height != 0 {
+		t.Errorf("#s scrollbar %+v, height %v; want %+v and 0", s.Scrollbar, s.Height, want)
+	}
+}
