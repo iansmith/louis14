@@ -604,6 +604,18 @@ type PhysicalFragment struct {
 	// 0 = LTR, 1 = RTL. Used by the renderer to draw RTL text in visual order.
 	BidiLevel int
 
+	// IsHiddenForPaint marks a text or atomic inline fragment the line
+	// truncator hid: it keeps its geometry but paints nothing. Mirrors
+	// Blink's FragmentItem::IsHiddenForPaint / LayoutObject::IsTruncated
+	// (inline/line_truncator.cc:450-475 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsHiddenForPaint bool
+
+	// IsEllipsis marks the text fragment of a text-overflow ellipsis.
+	// Mirrors Blink's FragmentItem::IsEllipsis (StyleVariant
+	// kStandardEllipsis / kFirstLineEllipsis).
+	IsEllipsis bool
+
 	// ClipContentToBorderBox forces the renderer to clip this fragment's
 	// children to its border-box, independent of the CSS `overflow`
 	// property. Set by the table layout algorithm on rowspan cells that

@@ -2180,11 +2180,11 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				// IsBlockSizeIndefinite() checks PercentageResolutionSize.BlockSize < 0,
 				// so a definite 0 would make a main-axis percentage like `height: 100%`
 				// resolve to 0 (ok=true) and short-circuit the §9.2 transferred-size
-				// fallback below, collapsing the item to 0 in the main axis. Per CSS
-				// Flexbox §9.2 / Blink's resolve_main_length() ("we weren't able to
-				// resolve the length … fallback to the max-content size";
-				// flex_layout_algorithm.cc @ Chromium main
-				// 3da458a33174a6422f35b4e603f4090f028670ae), an unresolvable percentage
+				// fallback in contentFlexBasis, collapsing the item to 0 in the main
+				// axis. Per CSS Flexbox §9.2 / Blink's resolve_main_length() ("we
+				// weren't able to resolve the length … fallback to the max-content
+				// size"; flex/flex_layout_algorithm.cc:975-978 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), an unresolvable percentage
 				// main-size must fall through to the content/transferred size — the
 				// item's definite cross-size carried through its ratio. Gating on the
 				// same effective-aspect-ratio predicate the §9.2 fallback keys on keeps
@@ -2207,104 +2207,12 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 					return explicit.Float64()
 				}
 			}
-			// §9.2 aspect-ratio fallback: when the item has an aspect ratio
-			// (CSS or intrinsic) and a definite cross-size, derive the flex basis
-			// (main-size) from the cross-size × ratio.
-			//
-			// For replaced elements, only use EXPLICIT cross-size (CSS property),
-			// not stretch-predicted cross-size. Replaced elements' natural content
-			// dimensions should be used when no explicit cross-size forces a
-			// different proportion. Stretch prediction gives wrong results when the
-			// stretch cross-size differs from the intrinsic cross-size.
-			ar := fla.itemEffectiveAspectRatio(child, style, childWDM)
-			isReplaced := child.DOMNode != nil && IsReplacedElement(child.DOMNode)
-			if ar.IsSet {
-				var itemCrossContent float64
-				var hasItemCross bool
-				// Per CSS Flexbox §9.8 + CSS Sizing 3 §5.1: when the container's
-				// cross-size is definite, the item's percentage cross-size
-				// resolves against the container's content cross-size. Without
-				// this basis, `height: 50%` would resolve to 0, suppressing the
-				// aspect-ratio transfer that derives the main-size.
-				crossItemSpace := fla.crossConstraintSpace(parentWDM, childWDM,
-					contentInlineSize, containerCrossSize, mainIsItemInline, hasDefiniteCross)
-				if mainIsItemInline {
-					// Cross = block axis. Check for explicit CSS block-size.
-					if explicitCross, ok := ResolveBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
-						itemCrossContent = explicitCross.Float64()
-						hasItemCross = true
-					}
-				} else {
-					// Cross = inline axis. Check for explicit CSS inline-size.
-					if explicitCross, ok := ResolveInlineSize(style, childWDM, crossItemSpace, childGeom); ok {
-						itemCrossContent = explicitCross.Float64()
-						hasItemCross = true
-					}
-				}
-				// If no explicit cross-size, check if the item stretches to container.
-				// Skip stretch prediction for replaced elements — their intrinsic
-				// content dimensions should be used when no explicit cross-size
-				// forces a different proportion via aspect ratio.
-				if !hasItemCross && hasDefiniteCross && !isReplaced {
-					alignItems := "stretch"
-					if v, ok := fla.style.Get("align-items"); ok {
-						alignItems = strings.TrimSpace(v)
-					}
-					selfAlign := fla.getAlignSelf(style, alignItems)
-					_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
-					hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
-					if selfAlign == "stretch" && !crossAS && !crossAE && !hasExplCross {
-						if mainIsItemInline {
-							itemCrossContent = containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
-						} else {
-							itemCrossContent = containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
-						}
-						if itemCrossContent < 0 {
-							itemCrossContent = 0
-						}
-						hasItemCross = true
-					}
-				}
-				// Clamp cross-size by min/max constraints before transferring.
-				if hasItemCross {
-					if mainIsItemInline {
-						minCross := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom).Float64()
-						if itemCrossContent < minCross {
-							itemCrossContent = minCross
-						}
-						if maxCrossLU, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
-							maxCross := maxCrossLU.Float64()
-							if itemCrossContent > maxCross {
-								itemCrossContent = maxCross
-							}
-						}
-					} else {
-						minCross := ResolveMinInlineSize(style, childWDM, crossItemSpace, childGeom).Float64()
-						if itemCrossContent < minCross {
-							itemCrossContent = minCross
-						}
-						if maxCrossLU, ok := ResolveMaxInlineSize(style, childWDM, crossItemSpace, childGeom); ok {
-							maxCross := maxCrossLU.Float64()
-							if itemCrossContent > maxCross {
-								itemCrossContent = maxCross
-							}
-						}
-					}
-					if mainIsItemInline && ar.Height > 0 {
-						return itemCrossContent * ar.Width / ar.Height
-					} else if !mainIsItemInline && ar.Width > 0 {
-						return itemCrossContent * ar.Height / ar.Width
-					}
-				}
-			}
-			return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
-				contentInlineSize, isRow, containerCrossSize, hasDefiniteCross)
 		}
-		// flex-basis: content → use content-based max-content sizing.
-		// Per CSS Flexbox §9.2, flex-basis:content sizes the item based on its
-		// content, not its CSS main-size property or cross-size aspect-ratio.
-		return fla.itemContentMaxMainSize(child, style, childWDM, childGeom, parentWDM,
-			contentInlineSize, isRow)
+		// flex-basis: content, or auto with an auto main size: the item's
+		// max-content size (contentFlexBasis). content ignores the item's
+		// own main size.
+		return fla.contentFlexBasis(child, style, childWDM, childGeom, parentWDM,
+			contentInlineSize, isRow, containerCrossSize, hasDefiniteCross, basisVal == "content")
 	}
 
 	// CSS Flexbox §7.3.3: flex-basis does not accept negative lengths.
@@ -2404,7 +2312,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}
 		}
 		return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
-			contentInlineSize, isRow, containerCrossSize, hasDefiniteCross)
+			contentInlineSize, isRow, containerCrossSize, hasDefiniteCross, false)
 	}
 
 	// Numeric flex-basis (non-negative lengths/percentages only).
@@ -2476,10 +2384,11 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			}
 			// Per CSS Flexbox §7.2: a percentage main-size on a flex item
 			// whose container's main size is indefinite is treated as
-			// 'content'. Fall through to content-based sizing (which applies
-			// aspect-ratio cross→main transfer for replaced elements).
-			return fla.itemContentMaxMainSize(child, style, childWDM, childGeom, parentWDM,
-				contentInlineSize, isRow)
+			// 'content' (contentFlexBasis; Blink falls back to the content
+			// size, flex/flex_layout_algorithm.cc:975-978 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			return fla.contentFlexBasis(child, style, childWDM, childGeom, parentWDM,
+				contentInlineSize, isRow, containerCrossSize, hasDefiniteCross, true)
 		}
 		// Handle math functions with percentages for column flex.
 		if rawBasis, ok := style.Get("flex-basis"); ok && css.IsMathFunctionWithPercent(rawBasis) && hasDefiniteMain {
@@ -2499,14 +2408,21 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 
 	// Fallback: use max-content.
 	return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
-		contentInlineSize, isRow, containerCrossSize, hasDefiniteCross)
+		contentInlineSize, isRow, containerCrossSize, hasDefiniteCross, false)
 }
 
-// itemContentMaxMainSize returns the max-content size in the main axis,
-// ignoring any explicit CSS main-size. Used for flex-basis: content.
-// Mirrors Blink's ComputeMinAndMaxContentContributionForSelf() which uses
-// content-based sizing regardless of flex direction.
-func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
+// contentFlexBasis is a flex item's content-based flex base size: its
+// max-content size in the main axis, for flex-basis: content, for
+// flex-basis: auto with an auto main size, and for a percentage flex-basis
+// that cannot resolve. Blink resolves all three through
+// MinMaxSizesFunc(kContent) over the item's layout space
+// (resolve_main_length, flex/flex_layout_algorithm.cc:960-1008 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 transfers a definite
+// cross size through the item's aspect ratio here (§9.2) before falling
+// back to itemMaxContentMainSize. ignoreMainSize is set for flex-basis:
+// content and an unresolvable percentage basis: their kContent size never
+// reads the item's own main size.
+func (fla *FlexLayoutAlgorithm) contentFlexBasis(
 	child *LayoutInputNode,
 	style *css.Style,
 	childWDM WritingDirectionMode,
@@ -2514,166 +2430,111 @@ func (fla *FlexLayoutAlgorithm) itemContentMaxMainSize(
 	parentWDM WritingDirectionMode,
 	contentInlineSize float64,
 	isRow bool,
+	containerCrossSize float64,
+	hasDefiniteCross bool,
+	ignoreMainSize bool,
 ) float64 {
-	// For replaced elements in the inline axis, return intrinsic inline-size
-	// directly. For the block axis, use ComputeReplacedSize with the CSS
-	// block-size suppressed (flex-basis:content ignores the main-size) —
-	// this correctly derives block-size from cross-size × AR when the item
-	// has an explicit CSS cross-size.
 	mainIsItemInline := computeMainIsItemInline(parentWDM, childWDM, isRow)
-	if child.DOMNode != nil && IsReplacedElement(child.DOMNode) {
-		info := GetNaturalSizingInfo(fla.ctx, child)
-		// Logical aspect ratio: inline/block.
-		logicalRatio := info.logicalRatio(childWDM)
-		if mainIsItemInline {
-			// Inline axis: check for explicit CSS cross-size (block-size).
-			// If the item has an explicit cross-size and aspect ratio,
-			// the content inline-size is derived from cross × ratio
-			// (CSS 2.1 §10.3.2: auto width with definite height and ratio).
-			// flex-basis:content suppresses the main-size (width) but the
-			// cross-size (height) still applies.
-			crossSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				Build()
-			if crossSize, hasCross := ResolveBlockSize(style, childWDM, crossSpace, childGeom); hasCross && logicalRatio > 0 {
-				return crossSize.Float64() * logicalRatio
-			}
-			// No explicit cross-size or no AR: use intrinsic inline-size.
-			if childWDM.IsVertical() {
-				return info.Size.Height
-			}
-			return info.Size.Width
-		}
-		// Block axis: resolve CSS cross-size (inline-size) and derive
-		// block-size via aspect ratio, suppressing any CSS block-size.
-		// This mirrors ComputeReplacedSize §10.6.2 with height:auto.
-		availInline := contentInlineSize
-		if !parentWDM.IsOrthogonalTo(childWDM) {
-			margins := ResolveMargins(style, childWDM, contentInlineSize)
-			availInline -= margins.InlineStart + margins.InlineEnd
-			if availInline < 0 {
-				availInline = 0
-			}
-		}
-		crossSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-			SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
-			SetPercentageResolutionInlineSize(contentInlineSize).
-			Build()
-		// Check for explicit CSS cross-size (inline-size).
-		crossSizeLU, hasCross := ResolveInlineSize(style, childWDM, crossSpace, childGeom)
-		if !hasCross {
-			// No explicit CSS inline-size; use intrinsic block dimension.
-			if childWDM.IsVertical() {
-				return info.Size.Width
-			}
-			return info.Size.Height
-		}
-		// CSS cross-size is set. Derive block-size via intrinsic AR.
-		if logicalRatio > 0 {
-			return crossSizeLU.Float64() / logicalRatio
-		}
-		// No AR — use intrinsic block dimension.
-		if childWDM.IsVertical() {
-			return info.Size.Width
-		}
-		return info.Size.Height
-	}
-	if mainIsItemInline {
-		// Main axis = item's inline axis. Use computeContentMinMaxSizes which
-		// ignores the item's explicit CSS inline-size.
-		parentBlockSize := Indefinite
-		if parentWDM.IsOrthogonalTo(childWDM) {
-			parentBlockSize = fla.space.AvailableSize.BlockSize.Float64()
-		}
-		space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
-			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
-			SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: parentBlockSize}).
-			SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-			SetPercentageResolutionInlineSize(contentInlineSize).
-			Build()
-		mm := computeContentMinMaxSizes(fla.ctx, child, space)
-		return mm.MaxContent
-	}
-	// Main axis = item's block axis. Lay out with indefinite block-size and
-	// IsContentSuggestionLayout to suppress its explicit CSS block-size.
+	// §9.2 aspect-ratio fallback: when the item has an aspect ratio
+	// (CSS or intrinsic) and a definite cross-size, derive the flex basis
+	// (main-size) from the cross-size × ratio.
 	//
-	// CSS Sizing 3 §5.1: The max-content block size is the block size when
-	// the box is laid out at its max-content inline size. For column flex
-	// items without explicit cross-size, this means using the item's
-	// shrink-to-fit (fit-content) width, NOT the container's cross-axis size.
-	// This ensures percentage padding on descendants resolves against the
-	// item's actual width, not the container width.
-	availInline := contentInlineSize
-	if !parentWDM.IsOrthogonalTo(childWDM) {
-		margins := ResolveMargins(style, childWDM, contentInlineSize)
-		availInline -= margins.InlineStart + margins.InlineEnd
-		if availInline < 0 {
-			availInline = 0
-		}
-	}
-	// If the item has no explicit inline-size (cross-size in column flex)
-	// and won't stretch, compute its max-content inline-size and use that
-	// for the layout. This gives the correct shrink-to-fit width for
-	// percentage resolution.
-	alignItems := "stretch"
-	if v, ok := fla.style.Get("align-items"); ok {
-		alignItems = strings.TrimSpace(v)
-	}
-	selfAlign := fla.getAlignSelf(style, alignItems)
-	_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
-	willStretch := selfAlign == "stretch" && !crossAS && !crossAE
-	if !willStretch {
-		if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
-			NewConstraintSpaceBuilder(parentWDM, childWDM, false).
-				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-				SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				Build(), childGeom); !hasExplicitInline {
-			mmSpace := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
-				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
-				SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				Build()
-			mm := computeContentMinMaxSizes(fla.ctx, child, mmSpace)
-			// computeContentMinMaxSizes returns content-box sizes.
-			// AvailableSize.InlineSize is border-box, so add border+padding.
-			fitContentInline := mm.MaxContent + childGeom.InlineBorderPadding()
-			if fitContentInline > availInline {
-				fitContentInline = availInline
+	// For replaced elements, only use EXPLICIT cross-size (CSS property),
+	// not stretch-predicted cross-size. Replaced elements' natural content
+	// dimensions should be used when no explicit cross-size forces a
+	// different proportion. Stretch prediction gives wrong results when the
+	// stretch cross-size differs from the intrinsic cross-size.
+	ar := fla.itemEffectiveAspectRatio(child, style, childWDM)
+	isReplaced := child.DOMNode != nil && IsReplacedElement(child.DOMNode)
+	if ar.IsSet {
+		var itemCrossContent float64
+		var hasItemCross bool
+		// Per CSS Flexbox §9.8 + CSS Sizing 3 §5.1: when the container's
+		// cross-size is definite, the item's percentage cross-size
+		// resolves against the container's content cross-size. Without
+		// this basis, `height: 50%` would resolve to 0, suppressing the
+		// aspect-ratio transfer that derives the main-size.
+		crossItemSpace := fla.crossConstraintSpace(parentWDM, childWDM,
+			contentInlineSize, containerCrossSize, mainIsItemInline, hasDefiniteCross)
+		if mainIsItemInline {
+			// Cross = block axis. Check for explicit CSS block-size.
+			if explicitCross, ok := ResolveBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+				itemCrossContent = explicitCross.Float64()
+				hasItemCross = true
 			}
-			availInline = fitContentInline
+		} else {
+			// Cross = inline axis. Check for explicit CSS inline-size.
+			if explicitCross, ok := ResolveInlineSize(style, childWDM, crossItemSpace, childGeom); ok {
+				itemCrossContent = explicitCross.Float64()
+				hasItemCross = true
+			}
+		}
+		// If no explicit cross-size, check if the item stretches to container.
+		// Skip stretch prediction for replaced elements — their intrinsic
+		// content dimensions should be used when no explicit cross-size
+		// forces a different proportion via aspect ratio.
+		if !hasItemCross && hasDefiniteCross && !isReplaced {
+			alignItems := "stretch"
+			if v, ok := fla.style.Get("align-items"); ok {
+				alignItems = strings.TrimSpace(v)
+			}
+			selfAlign := fla.getAlignSelf(style, alignItems)
+			_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
+			hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
+			if selfAlign == "stretch" && !crossAS && !crossAE && !hasExplCross {
+				if mainIsItemInline {
+					itemCrossContent = containerCrossSize - childGeom.BlockBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
+				} else {
+					itemCrossContent = containerCrossSize - childGeom.InlineBorderPadding() - resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
+				}
+				if itemCrossContent < 0 {
+					itemCrossContent = 0
+				}
+				hasItemCross = true
+			}
+		}
+		// Clamp cross-size by min/max constraints before transferring.
+		if hasItemCross {
+			if mainIsItemInline {
+				minCross := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom).Float64()
+				if itemCrossContent < minCross {
+					itemCrossContent = minCross
+				}
+				if maxCrossLU, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
+					maxCross := maxCrossLU.Float64()
+					if itemCrossContent > maxCross {
+						itemCrossContent = maxCross
+					}
+				}
+			} else {
+				minCross := ResolveMinInlineSize(style, childWDM, crossItemSpace, childGeom).Float64()
+				if itemCrossContent < minCross {
+					itemCrossContent = minCross
+				}
+				if maxCrossLU, ok := ResolveMaxInlineSize(style, childWDM, crossItemSpace, childGeom); ok {
+					maxCross := maxCrossLU.Float64()
+					if itemCrossContent > maxCross {
+						itemCrossContent = maxCross
+					}
+				}
+			}
+			if mainIsItemInline && ar.Height > 0 {
+				return itemCrossContent * ar.Width / ar.Height
+			} else if !mainIsItemInline && ar.Width > 0 {
+				return itemCrossContent * ar.Height / ar.Width
+			}
 		}
 	}
-	parentBlockSize := Indefinite
-	if parentWDM.IsOrthogonalTo(childWDM) {
-		parentBlockSize = fla.space.AvailableSize.BlockSize.Float64()
-	}
-	space := NewConstraintSpaceBuilder(parentWDM, childWDM, true).
-		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, fla.ctx)).
-		SetAvailableSize(LogicalSize{InlineSize: availInline, BlockSize: parentBlockSize}).
-		SetPercentageResolutionSize(LogicalSize{InlineSize: availInline}).
-		SetPercentageResolutionInlineSize(contentInlineSize).
-		SetIsContentSuggestionLayout(true).
-		Build()
-	result := layoutElement(fla.ctx, child, space)
-	lf := NewLogicalFragment(childWDM, result.Fragment)
-	return lf.BlockSize() - childGeom.BlockBorderPadding()
+	return fla.itemMaxContentMainSize(child, style, childWDM, childGeom, parentWDM,
+		contentInlineSize, isRow, containerCrossSize, hasDefiniteCross, ignoreMainSize)
 }
 
 // itemMaxContentMainSize returns the max-content size in the main axis.
 // For replaced elements, returns intrinsic dimensions directly to avoid
 // CSS min/max clamping — the flex algorithm applies min/max separately
-// when computing the hypothetical main size (§9.2 step 3).
+// when computing the hypothetical main size (§9.2 step 3). ignoreMainSize
+// measures the content without the item's own main size (see
+// contentFlexBasis).
 func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	child *LayoutInputNode,
 	style *css.Style,
@@ -2684,6 +2545,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	isRow bool,
 	containerCrossSize float64,
 	hasDefiniteCross bool,
+	ignoreMainSize bool,
 ) float64 {
 	// Replaced elements: compute max-content main size with CROSS-axis
 	// min/max constraints (which affect sizing via aspect ratio) but
@@ -2884,10 +2746,15 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	if stretchedCrossForBasis != Indefinite {
 		csb.SetIsFixedBlockSize(true)
 	}
+	if ignoreMainSize && !mainIsItemInline {
+		csb.SetIsContentSuggestionLayout(true)
+	}
 	space := csb.Build()
 	if mainIsItemInline {
-		mm := ComputeMinMaxSizes(fla.ctx, child, space)
-		return mm.MaxContent
+		if ignoreMainSize {
+			return computeContentMinMaxSizes(fla.ctx, child, space).MaxContent
+		}
+		return ComputeMinMaxSizes(fla.ctx, child, space).MaxContent
 	}
 	// Main = item's block axis: lay out to get intrinsic block-size.
 	result := layoutElement(fla.ctx, child, space)
@@ -4207,35 +4074,27 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// §4.5 Content size suggestion: min-content size in the main axis.
 	contentSuggestion := -1.0
 	if mainIsItemInline {
-		// Main axis = item's inline axis: inline min-content size at zero available width.
-		// PercentageResolutionSize is set so percentage widths on flex items
-		// resolve against the flex container's content-box inline-size.
-		// Per Blink: if the item has a definite cross-size (block-size), pass it
-		// as the percentage resolution block-size so that percentage-height
-		// descendants can resolve (e.g., img { height: 100% } inside an item
-		// with explicit height).
-		pctBlockSize := Indefinite
-		{
-			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
-				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				Build()
-			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-				pctBlockSize = explicit.Float64()
-			} else if hasDefiniteCross {
-				// Item will be stretched to the container cross-size.
-				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
-				pctBlockSize = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
-				if pctBlockSize < 0 {
-					pctBlockSize = 0
-				}
-			}
-		}
-		pctResSize := LogicalSize{InlineSize: contentInlineSize}
-		if pctBlockSize != Indefinite {
-			pctResSize.BlockSize = pctBlockSize
+		// Main axis = item's inline axis: inline min-content size at zero
+		// available width, measured in the item's layout space
+		// (MinMaxSizesFunc over BuildSpaceForLayout, flex/
+		// flex_layout_algorithm.cc:869-881 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its percentage size is
+		// the container's content box, child_percentage_size_ (:720, :802):
+		// an item with its own block-size resolves it against that, and
+		// percentage-height descendants (img { height: 100% }) resolve
+		// against the result (nodeChildBlockSizes).
+		pctResSize := LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}
+		if v := logicalBlockSizeValue(style, childWDM); (v == "" || v == "auto") && hasDefiniteCross {
+			// Stand-in for Blink stretching an auto block-size item
+			// (DoesItemStretch / WillChildCrossSizeBeContainerCrossSize,
+			// :645-670, and kStretchExplicit, :767-774): its stretched
+			// content block-size is passed as the percentage size its
+			// descendants resolve against. Assumes every such item
+			// stretches (align-self and multi-line not checked): LOU-833.
+			crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
+			pctResSize.BlockSize = max(0, containerCrossSize-childGeom.BlockBorderPadding()-crossMargins)
+		} else if hasDefiniteCross {
+			pctResSize.BlockSize = containerCrossSize
 		}
 		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
