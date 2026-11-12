@@ -72,3 +72,23 @@ func TestTextFragment_SidewaysVerticalLRMatchesRL(t *testing.T) {
 		t.Errorf("text fragment width = %v, want ascent + descent = %v", rl.Width, want)
 	}
 }
+
+// TestTextFragment_CentralBaselineLineAgreesWithFragment: Blink's central
+// baseline splits FontMetrics::Height() as Height() - Height() / 2 over the
+// baseline and Height() / 2 under it, for the line box's metrics as well as
+// the text fragment (InlineBoxState::ComputeTextMetrics takes both from
+// GetFontHeight(kCentralBaseline), inline_box_state.cc:131-136;
+// FontMetrics::IntAscentInternal, font_metrics.cc:193-194 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Ahem at 25px is 20 + 5 = 25
+// tall, an odd height: with line-height 1 the line box and the fragment are
+// both exactly 25px and coincide, rather than the line splitting the font
+// size 12.5 / 12.5 while the fragment splits 13 / 12.
+func TestTextFragment_CentralBaselineLineAgreesWithFragment(t *testing.T) {
+	for _, wm := range []string{"vertical-rl", "vertical-lr"} {
+		b := onlyTextBox(t, fmt.Sprintf(`<!DOCTYPE html><style>body { margin: 0 }</style>
+<div style="writing-mode: %s; font: 25px/1 Ahem">X</div>`, wm))
+		if b.X != 0 || b.Width != 25 {
+			t.Errorf("%s: text fragment x=%v w=%v, want the 25px line box at x=0", wm, b.X, b.Width)
+		}
+	}
+}
