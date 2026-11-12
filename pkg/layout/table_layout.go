@@ -228,7 +228,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	if tla.style.GetTableLayout() == css.TableLayoutFixed && hasExplicitTableWidth {
 		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols, colWidthSpecs)
 	} else {
-		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, geom, colWidthSpecs)
+		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, geom, captions, colWidthSpecs)
 	}
 
 	// Track which columns have explicit col/colgroup widths (used for orthogonal cell row height).
@@ -1127,21 +1127,33 @@ func (tla *TableLayoutAlgorithm) ComputeMinMaxSizes() MinMaxSizes {
 		minMax.MaxContent = max(0, minMax.MaxContent-tableBorder.InlineStart-tableBorder.InlineEnd)
 	}
 
-	// The captions' min-content contributions, border-box with margins,
-	// against the table's content box.
+	// The captions' min-content contributions, against the table's content
+	// box.
 	tableBP := ComputeFragmentGeometry(tla.style, wdm).InlineBorderPadding()
+	minMax.Encompass(tla.computeCaptionConstraint(captions).MinContent - tableBP)
+	return minMax
+}
+
+// computeCaptionConstraint returns the captions' min/max-content
+// contributions, border-box with their inline margins, the largest of
+// each. Mirrors Blink's ComputeCaptionConstraint (table/
+// table_layout_algorithm.cc:38-58 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (tla *TableLayoutAlgorithm) computeCaptionConstraint(captions []tableCaption) MinMaxSizes {
+	wdm := tla.space.WritingDirection
+	var constraint MinMaxSizes
 	for _, caption := range captions {
 		captionWDM := NewWritingDirectionMode(caption.style)
 		space := NewConstraintSpaceBuilder(wdm, captionWDM, true).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(captionWDM, tla.ctx)).
 			SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: Indefinite}).
 			Build()
-		captionMin := ComputeMinMaxSizes(tla.ctx, caption.node, space).MinContent +
-			ComputeFragmentGeometry(caption.style, captionWDM).InlineBorderPadding() +
-			ResolveMargins(caption.style, wdm, 0).InlineSum() - tableBP
-		minMax.Encompass(captionMin)
+		sizes := ComputeMinMaxSizes(tla.ctx, caption.node, space)
+		extra := ComputeFragmentGeometry(caption.style, captionWDM).InlineBorderPadding() +
+			ResolveMargins(caption.style, wdm, 0).InlineSum()
+		constraint.MinContent = max(constraint.MinContent, sizes.MinContent+extra)
+		constraint.MaxContent = max(constraint.MaxContent, sizes.MaxContent+extra)
 	}
-	return minMax
+	return constraint
 }
 
 // collectRowsAndCaptions extracts table rows, captions, and col/colgroup width specs
@@ -1954,7 +1966,7 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 // assignable table inline size, distributed to the column constraints.
 func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	rows []tableRow, numCols int, availableInline float64, borderCollapse bool, hasExplicitWidth bool,
-	geom FragmentGeometry, colWidthSpecs []tableColWidth,
+	geom FragmentGeometry, captions []tableCaption, colWidthSpecs []tableColWidth,
 ) []float64 {
 	inlineSpacing := 0.0
 	if !borderCollapse {
@@ -1973,8 +1985,9 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	// (availableInline), or for an auto width fit-content over the
 	// layout-pass grid min/max, where percentage columns count; clamped to
 	// the table's min/max inline sizes, which never go below the grid min
-	// (ComputeMinMaxInlineSizes, :758-799). The columns share the assignable
-	// size by the width distribution algorithm
+	// (ComputeMinMaxInlineSizes, :758-799), then floored at the captions'
+	// min-content (table_layout_algorithm.cc:248-250). The columns share the
+	// assignable size by the width distribution algorithm
 	// (SynchronizeAssignableTableInlineSizeAndColumns, table/
 	// table_layout_utils.cc:1849-1864).
 	if tla.space.IsFixedInlineSize {
@@ -1997,7 +2010,11 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 		return MinMaxSizes{MinContent: grid.MinContent + spacing, MaxContent: grid.MaxContent + spacing}
 	}
 	sizes := computeMinMaxInlineSizes(tla.style, wdm, tla.space, geom, minProp, maxProp, content, fitContentModeNormal, true)
-	assignable := sizes.ClampSizeToMinAndMax(extent+spacing) - spacing
+	used := sizes.ClampSizeToMinAndMax(extent + spacing)
+	// Never below the captions' min-content contributions (border-box),
+	// taken against the table's content box (:248-250).
+	used = max(used, tla.computeCaptionConstraint(captions).MinContent-geom.InlineBorderPadding())
+	assignable := used - spacing
 	return DistributeInlineSizeToComputedInlineSizeAuto(assignable, columns.Data, true)
 }
 
