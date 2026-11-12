@@ -91,15 +91,37 @@ func parseScopeBoundarySelectors(list string, relativeToScope bool) ([]Selector,
 		if relativeToScope {
 			sel = scopedSelectorText(sel)
 		}
-		// A `::` names a pseudo-element even when parseSelector does not
-		// extract it (::placeholder, ::part(), ...).
 		parsed := parseSelector(sel)
-		if parsed.PseudoElement != "" || strings.Contains(sel, "::") {
+		if parsed.PseudoElement != "" || namesPseudoElement(sel) {
 			return nil, false
 		}
 		selectors = append(selectors, parsed)
 	}
 	return selectors, len(selectors) > 0
+}
+
+// namesPseudoElement reports a `::` in sel outside a string token and an
+// escape: a pseudo-element, which ParseScopeBoundary disallows
+// (DisallowPseudoElementsScope, css_selector_parser.cc:190), even when
+// parseSelector does not extract it (::placeholder, ::part(), ...). A `::`
+// inside an attribute-value string is string-token text
+// (CSSTokenizer::ConsumeStringTokenUntil, css_tokenizer.cc:393; both @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func namesPseudoElement(sel string) bool {
+	for i := 0; i < len(sel); i++ {
+		switch c := sel[i]; c {
+		case '"', '\'':
+			n, _ := skipStringToken(sel[i+1:], c)
+			i += n
+		case '\\':
+			i++
+		case ':':
+			if i+1 < len(sel) && sel[i+1] == ':' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // anchoredToScope gives each selector without :scope the implicit :scope
