@@ -604,6 +604,13 @@ type PhysicalFragment struct {
 	// 0 = LTR, 1 = RTL. Used by the renderer to draw RTL text in visual order.
 	BidiLevel int
 
+	// TextNode is the DOM text node a text fragment's content comes from;
+	// nil for generated text (an ellipsis, list markers, ::before content
+	// without a DOM text node). no Blink analog: Blink's FragmentItem
+	// reaches its LayoutText and OffsetMapping instead; louis14 uses it to
+	// place the caret (pkg/render frame_caret.go).
+	TextNode *html.Node
+
 	// IsHiddenForPaint marks a text or atomic inline fragment the line
 	// truncator hid: it keeps its geometry but paints nothing. Mirrors
 	// Blink's FragmentItem::IsHiddenForPaint / LayoutObject::IsTruncated

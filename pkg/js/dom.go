@@ -964,6 +964,10 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			if e.ctx.doc != nil {
 				e.ctx.doc.SetFocusedElement(e.node)
+				// Element::Focus then places the selection
+				// (Element::UpdateSelectionOnFocus, core/dom/element.cc:
+				// 8559-8600 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				e.ctx.doc.UpdateSelectionOnFocus(e.node)
 			}
 			return goja.Undefined()
 		})

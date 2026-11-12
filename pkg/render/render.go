@@ -148,7 +148,11 @@ type Renderer struct {
 	// field. Set via SetSelectionContext; nil when the caller doesn't
 	// supply a selection, in which case selection painting is skipped
 	// entirely (same fail-open shape as r.imageFetcher == nil).
-	selectionRange       *html.Range
+	selectionRange *html.Range
+	// focusedElement and caret: the document's focused element, and the
+	// caret this paint draws at a collapsed selection (frame_caret.go).
+	focusedElement       *html.Node
+	caret                *frameCaret
 	selectionStylesheets []*css.Stylesheet
 	selectionViewportW   float64
 	selectionViewportH   float64
@@ -684,6 +688,7 @@ func (r *Renderer) paintBoxes(boxes []*layout.Box) {
 	// Build the node→box index used by parentPerspectiveContext to resolve
 	// the perspective-establishing DOM parent for out-of-flow (abspos) children.
 	r.buildNodeBoxIndex(boxes)
+	r.updateFrameCaret()
 	r.transformTree = newTransformTreeBuilder(r.parentPerspective, r.domParentBox)
 	r.context3D = nil
 	r.unculledBelow = make(map[*PaintLayer]bool)
@@ -2386,13 +2391,19 @@ func (r *Renderer) paintLayerContentWithoutOwnClips(layer *PaintLayer) {
 	// Step 4: Floats (each runs its own full phase loop).
 	r.paintDescendantsPhase(layer, PhaseFloat)
 
-	// Step 5a: Self foreground — text + image content.
+	// Step 5a: Self foreground — text + image content. A block caret paints
+	// first, under the text it covers (paintFrameCaret).
 	if !r.isBackfaceCulled(layer) {
+		r.paintFrameCaret(layer, true)
 		r.paintSelfForeground(layer)
 	}
 
-	// Step 5b: Descendant foreground (text/image + non-positioned SCs).
+	// Step 5b: Descendant foreground (text/image + non-positioned SCs), then
+	// a bar or underscore caret over it.
 	r.paintDescendantsPhase(layer, PhaseForeground)
+	if !r.isBackfaceCulled(layer) {
+		r.paintFrameCaret(layer, false)
+	}
 
 	// Step 5c: Descendant outlines (CSS 2.1 Appendix E step 10). Painted
 	// after all in-flow foreground content so an outline overlapping its
@@ -2652,7 +2663,17 @@ func (r *Renderer) paintDescendantPhase(child *PaintLayer, phase PaintPhase) {
 		r.pushClipNode(child, clipNodeOverflowClip)
 	}
 
+	// The caret paints inside the block's overflow clip: a block caret
+	// before its contents, a bar or underscore caret after them
+	// (paintFrameCaret).
+	caretSlot := !culled && phase == PhaseForeground
+	if caretSlot {
+		r.paintFrameCaret(child, true)
+	}
 	r.paintDescendantsPhase(child, phase)
+	if caretSlot {
+		r.paintFrameCaret(child, false)
+	}
 
 	// A collapsed table's borders, after its descendants' backgrounds
 	// (see paintLayerContent).

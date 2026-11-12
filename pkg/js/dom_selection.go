@@ -283,6 +283,44 @@ func (sa *selectionAccessor) Get(key string) goja.Value {
 			}
 			return vm.NewDynamicObject(&rangeAccessor{ctx: sa.ctx, r: sa.ctx.doc.Selection})
 		})
+	case "collapse":
+		// Selection#collapse(node, offset) — Selection API §5.5; mirrors
+		// Blink DOMSelection::collapse (core/editing/dom_selection.cc @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a null node removes
+		// all ranges; otherwise the selection becomes the caret
+		// (node, offset).
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) == 0 || goja.IsNull(call.Arguments[0]) {
+				sa.ctx.doc.Selection = nil
+				return goja.Undefined()
+			}
+			node := sa.ctx.unwrapNode(call.Arguments[0])
+			if node == nil {
+				panic(vm.NewTypeError("Failed to execute 'collapse' on 'Selection': parameter 1 is not of type 'Node'."))
+			}
+			offset := 0
+			if len(call.Arguments) > 1 {
+				offset = int(call.Arguments[1].ToInteger())
+			}
+			// The node's length: UTF-16 code units of a text node, else
+			// its child count. Past it the spec throws IndexSizeError;
+			// this file's convention for invalid input is a no-op.
+			length := len(node.Children)
+			if node.Type == html.TextNode {
+				length = 0
+				for _, r := range node.Text {
+					length += utf16.RuneLen(r)
+				}
+			}
+			if offset < 0 || offset > length {
+				return goja.Undefined()
+			}
+			sa.ctx.doc.Selection = &html.Range{
+				StartContainer: node, StartOffset: offset,
+				EndContainer: node, EndOffset: offset,
+			}
+			return goja.Undefined()
+		})
 	case "selectAllChildren":
 		// Selection#selectAllChildren(node) — Selection API §5.5; mirrors
 		// Blink DOMSelection::selectAllChildren
@@ -315,7 +353,7 @@ func (sa *selectionAccessor) Set(key string, val goja.Value) bool { return false
 func (sa *selectionAccessor) Has(key string) bool {
 	switch key {
 	case "rangeCount", "addRange", "removeAllRanges", "getRangeAt",
-		"selectAllChildren":
+		"collapse", "selectAllChildren":
 		return true
 	}
 	return false
@@ -324,7 +362,7 @@ func (sa *selectionAccessor) Has(key string) bool {
 func (sa *selectionAccessor) Delete(key string) bool { return false }
 
 func (sa *selectionAccessor) Keys() []string {
-	return []string{"rangeCount", "addRange", "removeAllRanges", "getRangeAt", "selectAllChildren"}
+	return []string{"rangeCount", "addRange", "removeAllRanges", "getRangeAt", "collapse", "selectAllChildren"}
 }
 
 // registerSelectionAPI wires document.createRange, the Range constructor

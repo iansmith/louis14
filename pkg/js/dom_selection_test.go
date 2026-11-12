@@ -156,3 +156,32 @@ func TestActiveElementTracksFocus(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestFocusPlacesCaretInRootEditable: HTMLElement.focus() on a root editable
+// element collapses the selection at its first position (Element::Focus →
+// Element::UpdateSelectionOnFocus, core/dom/element.cc:8559-8600 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and Selection.collapse(node,
+// offset) then moves the caret (DOMSelection::collapse, core/editing/
+// dom_selection.cc).
+func TestFocusPlacesCaretInRootEditable(t *testing.T) {
+	doc := parseHTML(t, `<div id="t" contenteditable>X<b>y</b></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		var t = document.getElementById("t");
+		t.focus();
+		getSelection().getRangeAt(0); // throws unless focus() placed a range
+		getSelection().collapse(t, 1);
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	target := getElementById(doc.Root, "t")
+	sel := engine.CurrentSelection()
+	if sel == nil {
+		t.Fatal("no selection after focus() and collapse()")
+	}
+	if sel.StartContainer != target || sel.StartOffset != 1 || sel.EndContainer != target || sel.EndOffset != 1 {
+		t.Errorf("selection = (%v,%d)-(%v,%d), want collapsed at (#t, 1)",
+			sel.StartContainer, sel.StartOffset, sel.EndContainer, sel.EndOffset)
+	}
+}

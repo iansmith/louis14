@@ -506,6 +506,8 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		PaintGroup:                    frag.PaintGroup,
 		IsHiddenForPaint:              frag.IsHiddenForPaint || (parent != nil && parent.IsHiddenForPaint),
 		IsEllipsis:                    frag.IsEllipsis,
+		TextNode:                      frag.TextNode,
+		BidiLevel:                     frag.BidiLevel,
 	}
 
 	// Text fragments carry their rendered text content.
@@ -515,7 +517,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		// The fragment text is in logical (Unicode) order; reverse rune order
 		// so the renderer draws characters left-to-right in visual order.
 		if frag.BidiLevel%2 == 1 {
-			text = reverseAndMirrorRunes(text)
+			text = ReverseAndMirrorRunes(text)
 		}
 		box.Text = text
 		box.IsVerticalText = frag.WritingDirection.IsVertical()
@@ -757,11 +759,12 @@ func applyStickyOffsetsWithScrollport(box *Box, scrollport stickyScrollport) {
 	}
 }
 
-// reverseAndMirrorRunes returns s with its Unicode code points reversed and
+// ReverseAndMirrorRunes returns s with its Unicode code points reversed and
 // bidi-mirrored per UAX#9 rule L4. Characters with the Bidi_Mirrored property
 // are substituted with their mirror glyph during reversal. This converts RTL
-// text from logical (Unicode) order to visual order for left-to-right rendering.
-func reverseAndMirrorRunes(s string) string {
+// text from logical (Unicode) order to visual order for left-to-right
+// rendering; applied again, it converts visual order back to logical.
+func ReverseAndMirrorRunes(s string) string {
 	runes := []rune(s)
 	for i, j := 0, len(runes)-1; i <= j; i, j = i+1, j-1 {
 		ri, rj := runes[i], runes[j]
