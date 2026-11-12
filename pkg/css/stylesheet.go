@@ -4873,6 +4873,46 @@ func (d *DeclarationResult) Set(property, value string, important bool) {
 	d.Order = append(d.Order, property)
 }
 
+// SetDeclaration parses `property: value` as a declaration of this block
+// (comments stripped, then parseDeclarations) and sets what it stores —
+// a logical longhand under its storage key, a shorthand as its longhands —
+// as the block's last declarations, not important, replacing what property
+// set before (MutableCSSPropertyValueSet::ParseAndSetProperty @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It reports false, changing
+// nothing, when the declaration is invalid.
+func (d *DeclarationResult) SetDeclaration(property, value string) bool {
+	parsed := parseDeclarations(property + ": " + StripComments(value))
+	if len(parsed.Order) == 0 {
+		return false
+	}
+	d.RemoveDeclaration(property)
+	for _, p := range parsed.Order {
+		d.Set(p, parsed.Declarations[p], false)
+	}
+	return true
+}
+
+// RemoveDeclaration drops what a declaration of property sets: property
+// itself (a var() shorthand stored whole), and every key `property:
+// initial` stores (its longhands and logical storage keys).
+func (d *DeclarationResult) RemoveDeclaration(property string) {
+	keys := parseDeclarations(property + ": initial").Declarations
+	d.RemoveFunc(func(p string) bool {
+		_, set := keys[p]
+		return set || p == property
+	})
+}
+
+// Value returns property's declared value: under its own name, or a logical
+// longhand's under its storage key.
+func (d *DeclarationResult) Value(property string) (string, bool) {
+	if v, ok := d.Declarations[property]; ok {
+		return v, true
+	}
+	v, ok := d.Declarations["_"+property]
+	return v, ok && logicalLonghandStorageKeys["_"+property] != ""
+}
+
 // RemoveFunc drops the declarations of the properties drop selects, in one
 // pass over Order.
 func (d *DeclarationResult) RemoveFunc(drop func(property string) bool) {

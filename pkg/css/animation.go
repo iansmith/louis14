@@ -737,7 +737,7 @@ func applyCSSAnimations(style *Style, anims []ResolvedAnimation, importantProps 
 	}
 	// Capture the underlying (un-animated) style so synthesized neutral
 	// keyframes can read base values. style is mutated below, so clone first.
-	base := style.Clone()
+	base := underlyingAnimationStyle(style)
 	for i, a := range anims {
 		var localTime float64
 		if localTimes != nil {
@@ -777,6 +777,30 @@ func applyCSSAnimations(style *Style, anims []ResolvedAnimation, importantProps 
 			}
 		}
 	}
+}
+
+// underlyingAnimationStyle is the underlying style a neutral keyframe reads
+// (ResolveKeyframeStyle's base): a clone of style with its logical
+// longhands mapped onto their physical ones, and each mapped value also
+// under the logical longhand's storage key, so a keyframe of either name
+// finds its underlying value through the direction-aware mapping, as Blink
+// resolves it in the cascade (CSSProperty::ResolveDirectionAwareProperty @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func underlyingAnimationStyle(style *Style) *Style {
+	base := style.Clone()
+	base.cascadePositions = style.cascadePositions
+	resolveDirectionAwareProperties(base)
+	wm, _ := base.Get("writing-mode")
+	dir, _ := base.Get("direction")
+	if wm == "" {
+		wm = "horizontal-tb"
+	}
+	for key, logical := range logicalLonghandStorageKeys {
+		if v, ok := base.Properties[physicalLonghandFor(logical, wm, dir == "rtl")]; ok {
+			base.Properties[key] = v
+		}
+	}
+	return base
 }
 
 // calculateAnimationUpdate reconciles node's running CSS animations with
