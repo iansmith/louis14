@@ -4207,35 +4207,27 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	// §4.5 Content size suggestion: min-content size in the main axis.
 	contentSuggestion := -1.0
 	if mainIsItemInline {
-		// Main axis = item's inline axis: inline min-content size at zero available width.
-		// PercentageResolutionSize is set so percentage widths on flex items
-		// resolve against the flex container's content-box inline-size.
-		// Per Blink: if the item has a definite cross-size (block-size), pass it
-		// as the percentage resolution block-size so that percentage-height
-		// descendants can resolve (e.g., img { height: 100% } inside an item
-		// with explicit height).
-		pctBlockSize := Indefinite
-		{
-			itemSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, false).
-				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				Build()
-			if explicit, ok := ResolveBlockSize(style, childWDM, itemSpace, childGeom); ok {
-				pctBlockSize = explicit.Float64()
-			} else if hasDefiniteCross {
-				// Item will be stretched to the container cross-size.
-				crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
-				pctBlockSize = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
-				if pctBlockSize < 0 {
-					pctBlockSize = 0
-				}
-			}
-		}
-		pctResSize := LogicalSize{InlineSize: contentInlineSize}
-		if pctBlockSize != Indefinite {
-			pctResSize.BlockSize = pctBlockSize
+		// Main axis = item's inline axis: inline min-content size at zero
+		// available width, measured in the item's layout space
+		// (MinMaxSizesFunc over BuildSpaceForLayout, flex/
+		// flex_layout_algorithm.cc:869-881 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its percentage size is
+		// the container's content box, child_percentage_size_ (:720, :802):
+		// an item with its own block-size resolves it against that, and
+		// percentage-height descendants (img { height: 100% }) resolve
+		// against the result (nodeChildBlockSizes).
+		pctResSize := LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}
+		if v := logicalBlockSizeValue(style, childWDM); (v == "" || v == "auto") && hasDefiniteCross {
+			// Stand-in for Blink stretching an auto block-size item
+			// (DoesItemStretch / WillChildCrossSizeBeContainerCrossSize,
+			// :645-670, and kStretchExplicit, :767-774): its stretched
+			// content block-size is passed as the percentage size its
+			// descendants resolve against. Assumes every such item
+			// stretches (align-self and multi-line not checked): LOU-833.
+			crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
+			pctResSize.BlockSize = max(0, containerCrossSize-childGeom.BlockBorderPadding()-crossMargins)
+		} else if hasDefiniteCross {
+			pctResSize.BlockSize = containerCrossSize
 		}
 		minContentSpace := NewConstraintSpaceBuilder(fla.space.WritingDirection, childWDM, true).
 			SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
