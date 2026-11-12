@@ -1900,6 +1900,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		finalBlockSize = max(0, bla.space.AvailableSize.BlockSize.Float64()-geom.BlockBorderPadding())
 		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
+	} else if bla.space.TableSectionData != nil {
+		// A table cell measured without a fixed block size ends at its
+		// intrinsic block size: its height, min-height and max-height do
+		// not size it. The row reads the cell's fixed height itself
+		// (ComputeMinimumRowBlockSize), then lays the cell out at the
+		// row's size (ComputeBlockSizeForFragment, length_utils.cc:918-919
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b; the table-cell
+		// signal is a non-nil TableSectionData, see FinalizeTableCellLayout
+		// below).
+		finalBlockSize = intrinsicBlockSize
+		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
 	} else {
 		finalBlockSize = intrinsicBlockSize
 		if hasExplicitBlock {
