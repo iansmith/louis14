@@ -2923,7 +2923,7 @@ func tracksCascadePosition(property string) bool {
 // onto: the margin, padding, inset and border sides, and the sizes.
 var directionAwareTargets = func() map[string]bool {
 	m := make(map[string]bool)
-	for _, side := range []string{"top", "right", "bottom", "left"} {
+	for _, side := range physicalSides {
 		m["margin-"+side], m["padding-"+side], m[side] = true, true, true
 		for _, suffix := range []string{"-width", "-style", "-color"} {
 			m["border-"+side+suffix] = true
@@ -3587,7 +3587,7 @@ func evaluateContainerQuery(node *html.Node, cq *ContainerQuery, styles map[*htm
 // setFormBorder sets individual border properties for form element UA styles.
 // style.Set() doesn't expand shorthands, so we must set each property individually.
 func setFormBorder(style *Style, width, borderStyle, color string) {
-	for _, side := range []string{"top", "right", "bottom", "left"} {
+	for _, side := range physicalSides {
 		if _, ok := style.Get("border-" + side + "-width"); !ok {
 			style.Set("border-"+side+"-width", width)
 		}
@@ -3792,16 +3792,14 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 
 	// cellpadding on ancestor <table> → padding on td/th
 	if node.TagName == "td" || node.TagName == "th" {
-		// Walk up to find containing table
-		for p := node.Parent; p != nil; p = p.Parent {
-			if p.TagName == "table" {
-				if cp, ok := p.GetAttribute("cellpadding"); ok {
-					style.Set("padding", pxValue(cp))
-				}
-				break
+		if table := parentTable(node); table != nil {
+			if cp, ok := table.GetAttribute("cellpadding"); ok {
+				style.Set("padding", pxValue(cp))
 			}
 		}
 	}
+
+	applyTableRulesStyle(node, style)
 
 	// colspan attribute — stored for table layout (not a CSS property,
 	// but we note it here so table layout can read it from the style)
@@ -4066,6 +4064,132 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 		}
 		if _, exists := style.Get(attr); !exists {
 			style.Set(attr, cssLen)
+		}
+	}
+}
+
+// parentTable is HTMLTablePartElement::FindParentTable
+// (core/html/html_table_part_element.cc:102-107 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): n's nearest <table> ancestor,
+// or nil.
+func parentTable(n *html.Node) *html.Node {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.TagName == "table" {
+			return p
+		}
+	}
+	return nil
+}
+
+// tableRules is HTMLTableElement's rules_attr_ (html_table_element.cc:
+// 444-455): table's rules attribute, lower-cased, when it is one of none,
+// groups, rows, cols or all.
+func tableRules(table *html.Node) (string, bool) {
+	v, ok := table.GetAttribute("rules")
+	if !ok {
+		return "", false
+	}
+	switch v = asciiToLower(strings.TrimSpace(v)); v {
+	case "none", "groups", "rows", "cols", "all":
+		return v, true
+	}
+	return "", false
+}
+
+// physicalSides are the four physical box sides, in border-shorthand
+// order; rowRuleSides and columnRuleSides are the sides a row and a column
+// rule are drawn on.
+var (
+	physicalSides   = []string{"top", "right", "bottom", "left"}
+	rowRuleSides    = []string{"top", "bottom"}
+	columnRuleSides = []string{"left", "right"}
+)
+
+// hasTableFrame is HTMLTableElement's frame_attr_: a frame attribute that
+// GetBordersFromFrameAttributeValue accepts (html_table_element.cc:
+// 282-311).
+func hasTableFrame(table *html.Node) bool {
+	v, ok := table.GetAttribute("frame")
+	if !ok {
+		return false
+	}
+	switch asciiToLower(strings.TrimSpace(v)) {
+	case "above", "below", "hsides", "vsides", "lhs", "rhs", "box", "border", "void":
+		return true
+	}
+	return false
+}
+
+// applyTableRulesStyle applies the presentational hints of a <table
+// rules> (core/html/html_table_element.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+//   - the table collapses its borders (:373-379) and, with no border or
+//     frame attribute, hides its own border so it wins border-conflict
+//     resolution (AdditionalPresentationAttributeStyle, :488-501);
+//   - rules=groups gives each thead / tbody / tfoot thin solid top and
+//     bottom borders and each colgroup thin solid left and right ones
+//     (AdditionalGroupStyle, :612-643, through the section and colgroup
+//     AdditionalPresentationAttributeStyle);
+//   - rows, cols and all give each cell borders that take their colour
+//     from the row (CreateSharedCellStyle, :536-595, by GetCellBorders,
+//     :515-534).
+func applyTableRulesStyle(node *html.Node, style *Style) {
+	switch node.TagName {
+	case "table", "thead", "tbody", "tfoot", "colgroup", "td", "th":
+	default:
+		return
+	}
+	// A border-width keyword is stored as its px value, as declared ones
+	// are (borderWidthKeyword).
+	thin, _ := borderWidthKeyword("thin")
+	setSides := func(sides []string, width, borderStyle string) {
+		for _, side := range sides {
+			style.Set("border-"+side+"-width", width)
+			style.Set("border-"+side+"-style", borderStyle)
+		}
+	}
+	if node.TagName == "table" {
+		if _, ok := tableRules(node); ok {
+			style.Set("border-collapse", "collapse")
+			_, bordered := node.GetAttribute("border")
+			if !bordered && !hasTableFrame(node) {
+				for _, side := range physicalSides {
+					style.Set("border-"+side+"-style", "hidden")
+				}
+			}
+		}
+		return
+	}
+	table := parentTable(node)
+	if table == nil {
+		return
+	}
+	rules, ok := tableRules(table)
+	if !ok {
+		return
+	}
+	switch node.TagName {
+	case "thead", "tbody", "tfoot":
+		if rules == "groups" {
+			setSides(rowRuleSides, thin, "solid")
+		}
+	case "colgroup":
+		if rules == "groups" {
+			setSides(columnRuleSides, thin, "solid")
+		}
+	case "td", "th":
+		switch rules {
+		case "rows":
+			setSides(rowRuleSides, thin, "solid")
+		case "cols":
+			setSides(columnRuleSides, thin, "solid")
+		case "all":
+			setSides(physicalSides, "1px", "solid")
+		default:
+			return
+		}
+		for _, side := range physicalSides {
+			style.Set("border-"+side+"-color", "inherit")
 		}
 	}
 }
