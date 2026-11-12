@@ -452,7 +452,7 @@ func (p *OutOfFlowLayoutPart) CalculateOffset(candidate OutOfFlowCandidate) (Off
 		PhysicalAutoMarginsToLogical(rawMargin, wdm)
 
 	// Child's border+padding in the CB's directions.
-	childGeom := ComputeFragmentGeometry(childStyle, childWDM)
+	childGeom := NodeFragmentGeometry(child, childStyle, childWDM)
 	parallel := wdm.IsVertical() == childWDM.IsVertical()
 	var childBPInline, childBPBlock float64
 	if parallel {

@@ -1730,7 +1730,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 			childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, csBuilder.Build())
 			// ComputeMinMaxSizes returns content-box; convert to border-box
 			// for the atomic inline's contribution to the line.
-			childBP := ComputeFragmentGeometry(item.Style, childWDM).InlineBorderPadding()
+			childBP := NodeFragmentGeometry(item.LayoutNode, item.Style, childWDM).InlineBorderPadding()
 			inlineSize = childMM.MaxContent + childBP
 			if lb.mode == LineBreakerMinContent {
 				inlineSize = childMM.MinContent + childBP

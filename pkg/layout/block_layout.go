@@ -1127,7 +1127,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// parent's float axis). Skip the pre-layout check for orthogonal
 			// children; the post-layout check handles them correctly.
 			if isChildNewFC && !isOrthogonal && (floatStartOff > 0 || floatEndOff > 0) {
-				childGeomForBFC := ComputeFragmentGeometry(childStyle, childWDM)
+				childGeomForBFC := NodeFragmentGeometry(child, childStyle, childWDM)
 				tmpSpace := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 					SetAvailableSize(LogicalSize{
@@ -2408,12 +2408,113 @@ func (bla *BlockLayoutAlgorithm) tryLayoutNestedDocument(contentInlineSize float
 // StoreResultInLayoutBox (:837-875, :916-937 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A box without style or with
 // display:none generates no fragment and stores nothing.
+//
+// After layout the box's overflow:auto scrollbars are brought up to date
+// (updateScrollbarsAfterLayout). When they changed, or when a descendant's
+// changed and so changed this box's inline size (a shrink-to-fit box
+// around a box that gained a scrollbar), the box is laid out again with
+// the scrollbars that appeared frozen, until they stop changing. Mirrors
+// the relayout in BlockNode::Layout (block_node.cc:552-644) with
+// AddScrollbarFreeze (length_utils.cc:1969-1982, same SHA); it is skipped
+// where Blink skips it: with layout side effects disabled and when
+// resuming after a fragmentainer break. Divergence: louis14 has no measure
+// cache slot, so a measure pass does not freeze both scrollbars at once.
 func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *LayoutResult {
-	result := determineAlgorithmAndRun(ctx, node, space)
-	if style := node.Style(); style != nil && style.GetDisplay() != css.DisplayNone {
-		StoreResultInLayoutBox(ctx, node, result, space.BreakToken)
+	style := node.Style()
+	if style == nil || style.GetDisplay() == css.DisplayNone {
+		return determineAlgorithmAndRun(ctx, node, space)
 	}
+	node.intrinsicLogicalWidthsDirty = false
+	result := layoutAndStore(ctx, node, space)
+	if ctx.LayoutSideEffectsDisabled() || sequenceNumberAfter(space.BreakToken) > 0 {
+		return result
+	}
+	// A table cell is laid out here at its final inline size but before the
+	// table stretches its block size to the row; Blink decides its auto
+	// scrollbars on the final layout (UpdateAfterLayout runs after each
+	// layout). louis14 has no final-size cell layout yet (LOU-839), so a
+	// cell is judged at the block size the table gives it at least: its
+	// content's, border and padding included (table_layout.go's row
+	// minimum). A row stretched further by another cell is LOU-918.
+	wdm := space.WritingDirection
+	isTableCell := space.TableSectionData != nil
+	hadHorizontal, hadVertical := node.hasHorizontalScrollbar, node.hasVerticalScrollbar
+	if !updateScrollbarsAfterLayout(node, result, minFinalBlockSize(isTableCell, result, style, wdm), wdm) &&
+		(!node.intrinsicLogicalWidthsDirty || !inlineSizeChangedAfterLayout(ctx, node, style, space, result)) {
+		return result
+	}
+	before := scrollbarLogicalEdges(classicScrollbarWidth(style),
+		hadHorizontal || reservesClassicScrollbar(style.GetOverflowX()),
+		hadVertical || reservesClassicScrollbar(style.GetOverflowY()), wdm)
+	defer func() { node.frozenHorizontalScrollbar, node.frozenVerticalScrollbar = false, false }()
+	for {
+		after := computeScrollbarsForNode(node, style, wdm)
+		addScrollbarFreeze(before, after, wdm, node)
+		before = after
+		result = layoutAndStore(ctx, node, space)
+		if !updateScrollbarsAfterLayout(node, result, minFinalBlockSize(isTableCell, result, style, wdm), wdm) {
+			return result
+		}
+	}
+}
+
+// minFinalBlockSize is a lower bound on the final border-box block size of
+// a box laid out as result, when its block size grows after this layout: a
+// table cell, which the table makes at least as tall as its content
+// (cellContentBorderBoxBlockSize). 0 for any other box.
+func minFinalBlockSize(isTableCell bool, result *LayoutResult, style *css.Style, wdm WritingDirectionMode) float64 {
+	if !isTableCell {
+		return 0
+	}
+	return cellContentBorderBoxBlockSize(result, style, wdm)
+}
+
+// cellContentBorderBoxBlockSize is a table cell's content block size lifted
+// to its border box: result's content-box IntrinsicBlockSize plus the
+// cell's block border and padding. Mirrors Blink's
+// TableLayoutUtils::ComputeMinimumRowBlockSize comparand
+// `border_box_block_size = intrinsic_block_size + border_padding`
+// (SHA 4883d11fef).
+func cellContentBorderBoxBlockSize(result *LayoutResult, style *css.Style, wdm WritingDirectionMode) float64 {
+	if result == nil {
+		return 0
+	}
+	size := result.IntrinsicBlockSize
+	if style != nil {
+		size += ComputeFragmentGeometry(style, wdm).BlockBorderPadding()
+	}
+	return size
+}
+
+// layoutAndStore runs node's layout algorithm and stores the result on it.
+func layoutAndStore(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *LayoutResult {
+	result := determineAlgorithmAndRun(ctx, node, space)
+	StoreResultInLayoutBox(ctx, node, result, space.BreakToken)
 	return result
+}
+
+// inlineSizeChangedAfterLayout reports whether node's inline size, worked
+// out again now, differs from the one result was laid out at — the
+// inline_size_before comparison of BlockNode::Layout (block_node.cc:
+// 588-601 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func inlineSizeChangedAfterLayout(ctx *LayoutContext, node *LayoutInputNode, style *css.Style, space ConstraintSpace, result *LayoutResult) bool {
+	if result == nil || result.Fragment == nil {
+		return false
+	}
+	wdm := space.WritingDirection
+	geom := CalculateInitialFragmentGeometry(ctx, node, style, wdm, space)
+	return geom.BorderBoxSize.InlineSize != NewLogicalFragment(wdm, result.Fragment).InlineSize()
+}
+
+// addScrollbarFreeze freezes node's scrollbars that appeared between before
+// and after. Mirrors AddScrollbarFreeze (core/layout/length_utils.cc:
+// 1969-1982 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func addScrollbarFreeze(before, after LogicalEdges, wdm WritingDirectionMode, node *LayoutInputNode) {
+	b, a := ToPhysicalEdges(before, wdm), ToPhysicalEdges(after, wdm)
+	node.frozenHorizontalScrollbar = node.frozenHorizontalScrollbar ||
+		(b.Top == 0 && a.Top != 0) || (b.Bottom == 0 && a.Bottom != 0)
+	node.frozenVerticalScrollbar = node.frozenVerticalScrollbar ||
+		(b.Left == 0 && a.Left != 0) || (b.Right == 0 && a.Right != 0)
 }
 
 // determineAlgorithmAndRun dispatches to the layout algorithm for the

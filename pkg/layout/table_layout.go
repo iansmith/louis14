@@ -480,10 +480,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// TableLayoutUtils::ComputeMinimumRowBlockSize comparand
 			// `border_box_block_size = intrinsic_block_size + border_padding`
 			// (SHA 4883d11fef).
-			intrinsicContentBorderBox := cellResult.IntrinsicBlockSize
-			if cell.style != nil {
-				intrinsicContentBorderBox += ComputeFragmentGeometry(cell.style, cellWDM).BlockBorderPadding()
-			}
+			intrinsicContentBorderBox := cellContentBorderBoxBlockSize(cellResult, cell.style, cellWDM)
 			if isOrthogonalCell && colHasExplicit[colIdx] {
 				// Use the cell's physical WIDTH (= column width) as the row height.
 				// This produces square cells when col width is explicitly specified.

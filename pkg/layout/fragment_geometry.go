@@ -128,15 +128,49 @@ func ComputeScrollbarLogicalEdges(style *css.Style, wdm WritingDirectionMode) Lo
 	if style == nil {
 		return LogicalEdges{}
 	}
-	width := classicScrollbarWidth(style)
+	return scrollbarLogicalEdges(classicScrollbarWidth(style),
+		reservesClassicScrollbar(style.GetOverflowX()), reservesClassicScrollbar(style.GetOverflowY()), wdm)
+}
+
+// NodeFragmentGeometry is ComputeFragmentGeometry for node's box, with
+// node's scrollbars (computeScrollbarsForNode) instead of the style-only
+// overflow:scroll reservation — Blink's ComputeBorders / ComputePadding /
+// ComputeScrollbars of a node (length_utils.cc:1487-1549 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Use it wherever the node is
+// known.
+func NodeFragmentGeometry(node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode, percentageBase ...float64) FragmentGeometry {
+	geom := ComputeFragmentGeometry(style, wdm, percentageBase...)
+	geom.Scrollbar = computeScrollbarsForNode(node, style, wdm)
+	return geom
+}
+
+// computeScrollbarsForNode is node's scrollbars: the overflow:scroll ones,
+// plus the overflow:auto ones node's last layout found it needs
+// (ComputeScrollbarsForNonAnonymous → LayoutBox::ComputeScrollbarsInternal,
+// core/layout/length_utils.cc:1543-1549, core/layout/layout_box.cc:
+// 1577-1630 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b, which read the
+// box's PaintLayerScrollableArea).
+func computeScrollbarsForNode(node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode) LogicalEdges {
+	if style == nil {
+		return LogicalEdges{}
+	}
+	return scrollbarLogicalEdges(classicScrollbarWidth(style),
+		node.hasHorizontalScrollbar || reservesClassicScrollbar(style.GetOverflowX()),
+		node.hasVerticalScrollbar || reservesClassicScrollbar(style.GetOverflowY()), wdm)
+}
+
+// scrollbarLogicalEdges places a horizontal scrollbar on the physical
+// bottom and a vertical one on the right, or the left when
+// placeVerticalScrollbarOnLeft, each width wide.
+func scrollbarLogicalEdges(width float64, horizontal, vertical bool, wdm WritingDirectionMode) LogicalEdges {
 	if width == 0 {
 		return LogicalEdges{}
 	}
 	var phys PhysicalEdges
-	if reservesClassicScrollbar(style.GetOverflowX()) {
+	if horizontal {
 		phys.Bottom = width
 	}
-	if reservesClassicScrollbar(style.GetOverflowY()) {
+	if vertical {
 		if placeVerticalScrollbarOnLeft(wdm) {
 			phys.Left = width
 		} else {
@@ -707,7 +741,7 @@ func CalculateInitialFragmentGeometry(
 		return geom
 	}
 
-	geom := ComputeFragmentGeometry(style, wdm, pctBase)
+	geom := NodeFragmentGeometry(node, style, wdm, pctBase)
 
 	// Lazy cache for content-based MinMaxSizes — used by min/max-inline-size
 	// intrinsic keyword resolution (which must bypass the explicit-inline-size
