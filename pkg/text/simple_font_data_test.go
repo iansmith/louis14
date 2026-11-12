@@ -169,3 +169,36 @@ func TestFontTest_IdeographicFullWidthUprightCjkVmtx(t *testing.T) {
 		t.Errorf("upright IdeographicInlineSize = %v, want 16", w)
 	}
 }
+
+// TestNormalizedTypoAscentAndDescent pins the em-height metrics ruby
+// annotations and text-emphasis marks use: OS/2 sTypoAscender and
+// -sTypoDescender scaled so they sum to the font size, the ascent rounded
+// to a LayoutUnit (1/64 px) and the descent the rest
+// (SimpleFontData::NormalizedTypoAscentAndDescent /
+// TrySetNormalizedTypoAscentAndDescent, platform/fonts/simple_font_data.cc:
+// 339-418 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). They come from the
+// OS/2 table whatever ascent and descent the font metrics use. Expected
+// values come from an independent read of each font's OS/2 table:
+//
+//   - LiberationSerif-Regular: sTypo 1420/-442. 16px: 16 x 1420/1862 =
+//     12.2019 -> 781/64 = 12.203125, descent 16 - 12.203125 = 3.796875;
+//     8px: 6.1010 -> 390/64 = 6.09375, descent 1.90625.
+//   - Ahem: sTypo 800/-200. 16px: 12.8 -> 819/64 = 12.796875, descent
+//     3.203125.
+func TestNormalizedTypoAscentAndDescent(t *testing.T) {
+	serif := DefaultFontConfig().resolveBuiltinFamily("serif", false, false)
+	for _, tc := range []struct {
+		name      string
+		path      string
+		size      float64
+		asc, desc float64
+	}{
+		{"LiberationSerif 16px", serif, 16, 12.203125, 3.796875},
+		{"LiberationSerif 8px", serif, 8, 6.09375, 1.90625},
+		{"Ahem 16px", "../../fonts/Ahem.ttf", 16, 12.796875, 3.203125},
+	} {
+		if a, d := NormalizedTypoAscentAndDescent(tc.size, tc.path, nil); a != tc.asc || d != tc.desc {
+			t.Errorf("%s: NormalizedTypoAscentAndDescent = %v/%v, want %v/%v", tc.name, a, d, tc.asc, tc.desc)
+		}
+	}
+}

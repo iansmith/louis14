@@ -656,6 +656,13 @@ func FontDescentFromFont(fontSize float64, fontPath string, reg *FontRegistry) f
 	return math.Round(float64(m.Descent) / 64.0)
 }
 
+// NormalizedTypoAscentAndDescent returns the em-height ascent and descent of
+// the font at fontPath and fontSize: the ascent and descent the ruby
+// annotation and text-emphasis layout use.
+func NormalizedTypoAscentAndDescent(fontSize float64, fontPath string, reg *FontRegistry) (ascent, descent float64) {
+	return FontTypoAscentFromFont(fontSize, fontPath, reg), FontTypoDescentFromFont(fontSize, fontPath, reg)
+}
+
 // FontTypoAscentFromFont returns the unrounded font typo ascent in pixels.
 // Mirrors Blink's float-precision ascent (`FontMetrics::FloatAscent()` /
 // `FixedAscent()` at
