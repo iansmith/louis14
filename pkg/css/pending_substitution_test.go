@@ -181,7 +181,7 @@ func TestPendingSubstitutionRound3(t *testing.T) {
 	}
 	for _, tc := range []struct{ name, css, inline, prop, want string }{
 		// An omitted longhand takes its initial value, not the parent's.
-		{"omitted inherited longhand is initial, not inherited", `#p{font-style:italic} #t{--f:12px serif; font:var(--f)}`, ``, "font-style", fresh("font-style")},
+		{"omitted inherited longhand is initial, not inherited", `#p{font-style:italic} #t{--f:12px serif; font:var(--f)}`, ``, "font-style", "normal"},
 		// @container: a custom property's unset inherits; an own inherit
 		// substitutes the parent's value; revert and revert-layer apply.
 		{"@container --x:unset inherits", `#p{--x:7px; container-type:inline-size; width:500px} #t{--x:1px; margin-left:var(--x)} @container (min-width: 100px) { #t{--x:unset} }`, ``, "margin-left", "7px"},

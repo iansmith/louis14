@@ -3070,8 +3070,7 @@ func expandShorthand(style *Style, property, value string) {
 // generates for it (:8800), every longhand but the affected_by_all: false
 // direction (:1393) and unicode-bidi (:6686), all @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Custom properties are not
-// longhands. A var() shorthand stored under its own name follows its
-// longhands: rolled back by revert and revert-layer, dropped otherwise.
+// longhands.
 func expandAllShorthand(style *Style, value string) {
 	keyword, ok := cssWideKeyword(value)
 	if !ok {
@@ -3092,33 +3091,15 @@ func expandAllShorthand(style *Style, value string) {
 			style.Set(prop, keyword)
 		}
 	}
-	// A var() shorthand stored under its own name: its longhands now carry
-	// the keyword. revert and revert-layer roll the shorthand back with them
-	// (to a lower layer's declaration, say); any other keyword drops it.
-	for _, prop := range varDeferredShorthands {
-		if _, ok := style.Properties[prop]; !ok {
-			continue
-		}
-		if keyword == "revert" || keyword == "revert-layer" {
-			style.Set(prop, keyword)
-		} else {
-			delete(style.Properties, prop)
-		}
-	}
 }
 
 // allShorthandCovers reports whether `all` sets prop: every longhand but
 // direction and unicode-bidi, whose initial values come from the document
 // language and bidi context, not CSS (CSS Cascade 4 §6.3). A logical
-// longhand's internal storage key counts as the longhand, and a var()
-// shorthand stored under its own name as its longhands, all of which `all`
-// sets.
+// longhand's internal storage key counts as the longhand.
 func allShorthandCovers(prop string) bool {
 	if lh, ok := logicalLonghandStorageKeys[prop]; ok {
 		prop = lh
-	}
-	if isVarDeferredShorthand[prop] {
-		return true
 	}
 	return cssLonghandProperties[prop] && prop != "direction" && prop != "unicode-bidi"
 }
@@ -3142,8 +3123,9 @@ func allShorthandCovers(prop string) bool {
 //     rather than leaving the property unset (Blink SHA
 //     4883d11fef4a8713e32cd582ecef6dc5457c8c3f, style_cascade.cc).
 //
-// Properties NOT listed here are non-inheritable AND have spec-conformant
-// getter fallbacks, so deletion is the correct resolution.
+// Properties NOT listed here should be non-inheritable with spec-conformant
+// getter fallbacks, so deletion is the correct resolution; ~37 inherited
+// properties still lack an entry (LOU-842).
 var nonDefaultInitialValues = map[string]string{
 	// CSS Display §2: the initial value of `display` is `inline`. louis14's
 	// GetDisplay returns DisplayBlock when the property is absent (a defensive
@@ -3209,6 +3191,23 @@ var nonDefaultInitialValues = map[string]string{
 	"font-variant-caps":       "normal",
 	"text-wrap":               "normal",
 	"word-wrap":               "normal",
+	// The inherited longhands of the font and list-style shorthands, which a
+	// shorthand (a var() one included) sets to their initial value when its
+	// value omits them; without an entry the inheritance pass would copy the
+	// parent's value instead (css_properties.json5 initial values @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	"font-style":              "normal",
+	"font-weight":             "normal",
+	"font-variant-ligatures":  "normal",
+	"font-variant-numeric":    "normal",
+	"font-variant-east-asian": "normal",
+	"font-variant-alternates": "normal",
+	"font-kerning":            "auto",
+	"font-feature-settings":   "normal",
+	"line-height":             "normal",
+	"list-style-image":        "none",
+	"list-style-position":     "outside",
+	"list-style-type":         "disc",
 }
 
 // applyDeclarationWithVisitedFilter expands `property: value` into `style`,

@@ -894,6 +894,10 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		anims, localTimes = calculateAnimationUpdate(node, anims, clock, baseDisplayNone)
 	}
 	applyCSSAnimations(finalStyle, anims, importantProps, localTimes)
+	if len(anims) > 0 {
+		// A var() shorthand in a keyframe leaves pending longhands.
+		resolvePendingSubstitutions(finalStyle, parent)
+	}
 	if clock != nil {
 		recordDisplayedStyle(node, baseDisplayNone, finalStyle.GetDisplay() == DisplayNone)
 	}
@@ -1923,7 +1927,10 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 
 	// CSS Animations §4: apply in-effect @keyframes values to the
 	// pseudo-element's computed style (same cascade position as for elements).
-	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+	if anims := resolveAnimations(finalStyle, collectKeyframesMaps(stylesheets)); len(anims) > 0 {
+		applyCSSAnimations(finalStyle, anims, importantProps, nil)
+		resolvePendingSubstitutions(finalStyle, pendingParent)
+	}
 
 	// An animated declaration may itself be the `inherit` keyword (e.g.
 	// @keyframes kf { from,to { font-size: inherit } }) — resolve again so the
@@ -2979,25 +2986,18 @@ func resolveDirectionAwareProperties(style *Style) (carriedInherit bool) {
 	return carriedInherit
 }
 
-// varDeferredShorthands lists the shorthands whose var() values
+// isVarDeferredShorthand are the shorthands whose var() values
 // expandShorthand cannot expand at parse time, since custom properties
 // resolve in the cascade. Each longhand gets a pending-substitution value
-// instead (pendingSubstitutionValue). isVarDeferredShorthand is the same
-// list as a set.
-var varDeferredShorthands = []string{
-	"margin", "padding", "border", "border-top", "border-right",
-	"border-bottom", "border-left", "border-width", "border-style",
-	"border-color", "font", "flex", "flex-flow", "list-style", "gap", "grid-gap",
-	"grid-area", "grid-row", "grid-column", "background",
+// instead (pendingSubstitutionValue).
+var isVarDeferredShorthand = map[string]bool{
+	"margin": true, "padding": true, "border": true, "border-top": true,
+	"border-right": true, "border-bottom": true, "border-left": true,
+	"border-width": true, "border-style": true, "border-color": true,
+	"font": true, "flex": true, "flex-flow": true, "list-style": true,
+	"gap": true, "grid-gap": true, "grid-area": true, "grid-row": true,
+	"grid-column": true, "background": true,
 }
-
-var isVarDeferredShorthand = func() map[string]bool {
-	m := make(map[string]bool, len(varDeferredShorthands))
-	for _, p := range varDeferredShorthands {
-		m[p] = true
-	}
-	return m
-}()
 
 // pendingSubstitutionPrefix starts a longhand value that is a pending
 // substitution of its shorthand's var() value. U+0000 cannot begin a
@@ -3066,9 +3066,10 @@ func resolvePendingSubstitutions(style, parent *Style) {
 }
 
 // substitutionLookup is the custom-property table var() substitutes from:
-// parent's custom properties overlaid with style's own, an own `inherit` or
-// `unset` taking parent's value and an own `initial` the guaranteed-invalid
-// value (CSS Variables 1 §2.2, §3).
+// parent's custom properties overlaid with style's own, an own `inherit`,
+// `unset`, `revert` or `revert-layer` taking parent's value (custom
+// properties inherit; revert-layer approximated, LOU-808) and an own
+// `initial` the guaranteed-invalid value (CSS Variables 1 §2.2, §3).
 func substitutionLookup(style, parent *Style) *Style {
 	lookup := NewStyle()
 	if parent != nil {
@@ -3083,8 +3084,10 @@ func substitutionLookup(style, parent *Style) *Style {
 			continue
 		}
 		switch kw, _ := cssWideKeyword(v); kw {
-		case "inherit", "unset":
-			continue // keeps parent's value, if any
+		case "inherit", "unset", "revert", "revert-layer":
+			// Keeps parent's value, if any: custom properties inherit, and
+			// with no lower origin to roll back to revert behaves as unset.
+			continue
 		case "initial":
 			lookup.Properties[p] = ""
 		default:
@@ -3103,24 +3106,27 @@ func expandPendingSubstitution(lookup *Style, shorthand, value string) map[strin
 	if failed || containsVarFunction(resolved) {
 		return nil
 	}
-	tmp := NewStyle()
-	expandShorthand(tmp, shorthand, resolved)
-	out := make(map[string]string)
-	for _, lh := range shorthandLonghands[shorthand] {
-		key := storageKey(lh)
-		v, ok := tmp.Properties[key]
-		if !ok {
-			continue
-		}
-		if v, ok = validateDeclaredLonghand(lh, v); !ok {
-			return nil
-		}
-		out[key] = v
-	}
-	if len(out) == 0 {
+	// The substituted value is parsed as a declared one, with the same
+	// checks (parseDeclarations). It is invalid when it is not one value (a
+	// `;` or a priority in it), declares nothing, or the checks drop a
+	// longhand the shorthand's expansion sets (an invalid colour in border):
+	// the whole declaration is invalid. (parseDeclarations drops only that
+	// longhand from a literal declaration: LOU-841.)
+	if _, important, ok := SplitPriority(resolved); !ok || important || len(SplitDeclarations(resolved)) != 1 {
 		return nil
 	}
-	return out
+	parsed := parseDeclarations(shorthand + ": " + resolved)
+	if len(parsed.Order) == 0 {
+		return nil
+	}
+	expanded := NewStyle()
+	expandShorthand(expanded, shorthand, resolved)
+	for k := range expanded.Properties {
+		if _, kept := parsed.Declarations[k]; !kept {
+			return nil
+		}
+	}
+	return parsed.Declarations
 }
 
 // computedLengthProperties are the properties whose <length> components

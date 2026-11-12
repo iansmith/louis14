@@ -4905,8 +4905,8 @@ func (d *DeclarationResult) SetDeclaration(property, value string) bool {
 	}
 	d.removeKeys(property, keys)
 	if v, whole := parsed.Declarations[property]; whole {
-		// Stored whole (a longhand, or a var() shorthand awaiting
-		// substitution): its longhands are pending, not initial.
+		// Stored whole: a longhand, or overflow's whole-value key
+		// (storedWholeShorthandLonghands).
 		d.Set(property, v, false)
 		return true
 	}
