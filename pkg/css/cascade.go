@@ -28,6 +28,9 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		// Inline <svg>, <math> and their descendants, and createElementNS
 		// elements, sit on the line.
 		stampInitialDisplay(style)
+		if node.NamespaceURI() == html.SVGNamespaceURI {
+			applySVGUserAgentStyles(node, style)
+		}
 		return
 	}
 
@@ -2633,6 +2636,28 @@ func resolveColorProperty(node *html.Node, style *Style, styles map[*html.Node]*
 	// They are already in the style.Properties map from Set().
 }
 
+// applySVGUserAgentStyles applies svg.css's overflow rules
+// (core/css/svg.css:48-54 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+//
+//	svg:not(:root), symbol, image, marker, pattern, foreignObject {
+//	  overflow: hidden }
+//	svg:not(:root) { overflow-clip-margin: content-box; }
+//
+// SVG tag names are lower-cased by the parser (foreignobject).
+func applySVGUserAgentStyles(node *html.Node, style *Style) {
+	switch node.TagName {
+	case "svg":
+		if isRootElement(node) {
+			return
+		}
+		style.Set("overflow-clip-margin", "content-box")
+	case "symbol", "image", "marker", "pattern", "foreignobject":
+	default:
+		return
+	}
+	style.Set("overflow", "hidden")
+}
+
 // stampInitialDisplay gives style display's initial value, inline, when it
 // has no display. It is no UA rule: louis14's GetDisplay falls back to block
 // for an unset display, so an element that takes the initial display needs
@@ -2706,10 +2731,16 @@ func fontParentStyle(node *html.Node, styles map[*html.Node]*Style) *Style {
 	if parent == nil {
 		return nil
 	}
-	if parent.TagName == "document" && firstElementChild(parent) == node {
+	if isRootElement(node) {
 		return nil
 	}
 	return styles[parent]
+}
+
+// isRootElement reports whether n is the document's root element, the
+// element :root matches: the first element child of the document.
+func isRootElement(n *html.Node) bool {
+	return n.Parent != nil && n.Parent.TagName == "document" && firstElementChild(n.Parent) == n
 }
 
 // firstElementChild returns n's first element child, or nil.

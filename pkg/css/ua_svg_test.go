@@ -32,3 +32,13 @@ func TestUserAgentSVGOverflow(t *testing.T) {
 		}
 	}
 }
+
+// TestUserAgentSVGOverflowAxis checks an author overflow-x on an svg keeps
+// the UA overflow: hidden on the other axis.
+func TestUserAgentSVGOverflowAxis(t *testing.T) {
+	styles := cascadeHTML(t, `<style>svg { overflow-x: visible }</style><svg id="s"></svg>`, nil)
+	s := styleByID(t, styles, "s")
+	if got := s.GetOverflowY(); got != OverflowHidden {
+		t.Errorf("overflow-y = %v, want hidden", got)
+	}
+}
