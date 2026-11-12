@@ -349,6 +349,18 @@ func (n *LayoutInputNode) Parent() *LayoutInputNode {
 	return n.parent
 }
 
+// IsTable reports whether the node is a table box (display: table or
+// inline-table). Mirrors Blink's LayoutInputNode::IsTable
+// (layout_input_node.h:123 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsTable() bool {
+	return n != nil && n.Style() != nil && isTableDisplay(n.Style().GetDisplay())
+}
+
+// isTableDisplay reports whether d makes a table box: table or inline-table.
+func isTableDisplay(d css.DisplayType) bool {
+	return d == css.DisplayTable || d == css.DisplayInlineTable
+}
+
 // IsAnonymous returns true for generated anonymous boxes.
 func (n *LayoutInputNode) IsAnonymous() bool {
 	return n.isAnonymous

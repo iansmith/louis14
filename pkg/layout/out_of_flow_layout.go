@@ -661,8 +661,7 @@ func (p *OutOfFlowLayoutPart) CalculateOffset(candidate OutOfFlowCandidate) (Off
 // elements. Mirrors Blink's node.IsTable() gate in absolute_utils.cc's
 // ComputeOofBlockDimensions/ComputeOofInlineDimensions.
 func isNonStretchableDisplay(style *css.Style) bool {
-	d := style.GetDisplay()
-	return d == css.DisplayTable || d == css.DisplayInlineTable
+	return isTableDisplay(style.GetDisplay())
 }
 
 // isAutoSizeInDirection checks if the child element has auto size in the

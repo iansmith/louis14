@@ -41,8 +41,7 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 	// max-content sizing (flex basis:auto, shrink-to-fit) see the table as "wants as
 	// much space as available", rather than summing potentially-zero column max-contents.
 	// Skip the fast path so we don't collapse to a 0-resolved percent width.
-	disp := style.GetDisplay()
-	if (disp == css.DisplayTable || disp == css.DisplayInlineTable) &&
+	if node.IsTable() &&
 		style.GetTableLayout() == css.TableLayoutFixed &&
 		hasPercentLogicalWidth(style, wdm) {
 		minResult := measureBlockMinMax(node, ctx, space, false)
@@ -90,7 +89,7 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 		if explicitInlineLU, ok := ResolveInlineSize(style, wdm, space, geom); ok {
 			explicitInline := explicitInlineLU.Float64()
 			result := MinMaxSizes{MinContent: explicitInline, MaxContent: explicitInline}
-			applyMinMaxInlineSizes(style, wdm, space, geom, &result, contentSizes)
+			applyMinMaxInlineSizes(node, wdm, space, geom, &result, contentSizes)
 			return result
 		}
 	}
@@ -199,7 +198,7 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 		result.MaxContent = clamped
 	}
 
-	applyMinMaxInlineSizes(style, wdm, space, geom, &result, func() MinMaxSizes { return content })
+	applyMinMaxInlineSizes(node, wdm, space, geom, &result, func() MinMaxSizes { return content })
 	return result
 }
 
@@ -226,14 +225,15 @@ const (
 // content min/max-content sizes, is called only when a min or max length
 // needs it. Mirrors the tail of ComputeMinAndMaxContentContributionInternal
 // (length_utils.cc:436-453 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func applyMinMaxInlineSizes(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, sizes *MinMaxSizes, contentSizes func() MinMaxSizes) {
+func applyMinMaxInlineSizes(node *LayoutInputNode, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, sizes *MinMaxSizes, contentSizes func() MinMaxSizes) {
+	style := node.Style()
 	minProp, maxProp := "min-width", "max-width"
 	if wdm.IsVertical() {
 		minProp, maxProp = "min-height", "max-height"
 	}
 	content := lazyOnce(contentSizes)
 	resolve := func(mode fitContentMode) MinMaxSizes {
-		return computeMinMaxInlineSizes(style, wdm, space, geom, minProp, maxProp, content, mode)
+		return computeMinMaxInlineSizes(style, wdm, space, geom, minProp, maxProp, content, mode, node.IsTable())
 	}
 	if isFitContentKeyword(style, minProp) || isFitContentKeyword(style, maxProp) {
 		minSizes := resolve(fitContentModeMinContribution)
@@ -251,10 +251,11 @@ func applyMinMaxInlineSizes(style *css.Style, wdm WritingDirectionMode, space Co
 // minProp and maxProp (content-box; an unset max is +Inf), max floored at
 // min. Mirrors ComputeMinMaxInlineSizes (length_utils.cc:758-799 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) with the available inline-size
-// indefinite, as in an intrinsic contribution. Not ported here: the
-// aspect-ratio transfer (louis14 applies it in computeMinMaxSizesImpl) and
-// a table's encompassing of its intrinsic min (:791-794), LOU-827.
-func computeMinMaxInlineSizes(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, minProp, maxProp string, content func() MinMaxSizes, mode fitContentMode) MinMaxSizes {
+// indefinite, as in an intrinsic contribution. A table never shrinks below
+// its min-intrinsic size, its content min-content (:793-796). Not ported
+// here: the aspect-ratio transfer (louis14 applies it in
+// computeMinMaxSizesImpl), LOU-827.
+func computeMinMaxInlineSizes(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace, geom FragmentGeometry, minProp, maxProp string, content func() MinMaxSizes, mode fitContentMode, isTable bool) MinMaxSizes {
 	minSize, ok := resolveIntrinsicInlineLength(style, minProp, content, mode, true)
 	if !ok {
 		minSize = ResolveMinInlineSize(style, wdm, space, geom).Float64()
@@ -265,6 +266,9 @@ func computeMinMaxInlineSizes(style *css.Style, wdm WritingDirectionMode, space 
 		if v, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
 			maxSize = v.Float64()
 		}
+	}
+	if isTable {
+		minSize = max(minSize, content().MinContent)
 	}
 	return MinMaxSizes{MinContent: minSize, MaxContent: max(maxSize, minSize)}
 }
@@ -728,7 +732,7 @@ func computeContentMinMaxSizes(ctx *LayoutContext, node *LayoutInputNode, space 
 	// Apply the min/max inline-size constraints (but NOT the explicit
 	// inline-size).
 	content := result
-	applyMinMaxInlineSizes(style, wdm, space, geom, &result, func() MinMaxSizes { return content })
+	applyMinMaxInlineSizes(node, wdm, space, geom, &result, func() MinMaxSizes { return content })
 	return result
 }
 
