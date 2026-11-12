@@ -55,10 +55,17 @@ func TestScrollbarColorResolvesCurrentColor(t *testing.T) {
 		{"currentColor blue", green, blue},
 		{"blue CURRENTCOLOR", blue, green},
 		{currentColorMix + " " + currentColorMix, green, green},
+		{"currentColor\tblue", green, blue},
 	} {
 		s := ParseInlineStyle("color: green; scrollbar-color: "+tt.value, nil)
 		if got := s.GetScrollbarColor(); got.IsAuto || got.Thumb != tt.thumb || got.Track != tt.track {
 			t.Errorf("scrollbar-color: %s = %+v, want thumb %+v track %+v", tt.value, got, tt.thumb, tt.track)
 		}
+	}
+	// Three colors are not <color>{2}.
+	s := NewStyle()
+	s.Set("scrollbar-color", "red blue green")
+	if got := s.GetScrollbarColor(); !got.IsAuto {
+		t.Errorf("scrollbar-color: red blue green = %+v, want auto", got)
 	}
 }
