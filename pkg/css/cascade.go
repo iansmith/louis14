@@ -2613,46 +2613,48 @@ func resolveColorProperty(node *html.Node, style *Style, styles map[*html.Node]*
 	// They are already in the style.Properties map from Set().
 }
 
-// isKnownHTMLElement reports whether the tag is a standard HTML element.
-// Elements outside this set (custom/unknown elements, including the synthetic
-// hooks WPT reference pages use) take the CSS initial `display: inline`
-// rather than louis14's block fallback. Synthetic "::marker"/"first-letter"
+// isKnownHTMLElement reports whether the tag is an HTML element that does not
+// take the CSS initial `display: inline` by default: html.css sets it a
+// display, or louis14's UA branches above do. An element outside this set —
+// a custom/unknown element (including the synthetic hooks WPT reference
+// pages use), or one html.css leaves at the initial display (bdo :1812, bdi
+// :1808, ins :1523, del/strike :1564, tt :1539, big :1556, nobr :1578; data,
+// font, acronym, picture in no rule; core/html/resources/html.css @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) — takes inline rather than
+// louis14's block fallback (LOU-846). Synthetic "::marker"/"first-letter"
 // style nodes are handled by their own UA branches before this is consulted.
 var knownHTMLElements = map[string]bool{
 	"a": true, "abbr": true, "address": true, "area": true, "article": true,
-	"aside": true, "audio": true, "b": true, "base": true, "bdi": true,
-	"bdo": true, "blockquote": true, "body": true, "br": true, "button": true,
+	"aside": true, "audio": true, "b": true, "base": true, "blockquote": true, "body": true, "br": true, "button": true,
 	"canvas": true, "caption": true, "cite": true, "code": true, "col": true,
-	"colgroup": true, "data": true, "datalist": true, "dd": true, "del": true,
+	"colgroup": true, "datalist": true, "dd": true,
 	"details": true, "dfn": true, "dialog": true, "div": true, "dl": true,
 	"dt": true, "em": true, "embed": true, "fieldset": true, "figcaption": true,
 	"figure": true, "footer": true, "form": true, "h1": true, "h2": true,
 	"h3": true, "h4": true, "h5": true, "h6": true, "head": true,
 	"header": true, "hgroup": true, "hr": true, "html": true, "i": true,
-	"iframe": true, "img": true, "input": true, "ins": true, "kbd": true,
+	"iframe": true, "img": true, "input": true, "kbd": true,
 	"label": true, "legend": true, "li": true, "link": true, "listing": true,
 	"main": true, "map": true, "mark": true, "menu": true, "meta": true,
 	"meter": true, "nav": true, "noscript": true, "object": true, "ol": true,
-	"optgroup": true, "option": true, "output": true, "p": true,
-	"picture": true, "pre": true, "progress": true, "q": true, "rp": true,
+	"optgroup": true, "option": true, "output": true, "p": true, "pre": true, "progress": true, "q": true, "rp": true,
 	"rt": true, "ruby": true, "s": true, "samp": true, "script": true,
 	"section": true, "select": true, "slot": true, "small": true,
 	"source": true, "span": true, "strong": true, "style": true, "sub": true,
 	"summary": true, "sup": true, "table": true, "tbody": true, "td": true,
 	"template": true, "textarea": true, "tfoot": true, "th": true,
-	"thead": true, "time": true, "title": true, "tr": true, "track": true,
-	"tt": true, "u": true, "ul": true, "var": true, "video": true,
+	"thead": true, "time": true, "title": true, "tr": true, "track": true, "u": true, "ul": true, "var": true, "video": true,
 	"wbr": true, "xmp": true,
 	// Legacy ruby containers louis14 still recognizes.
 	"rb": true, "rbc": true, "rtc": true,
 	// Obsolete-but-known HTML elements: these must NOT fall into the
 	// unknown-element inline default — e.g. <center> is block and <dir>
-	// gets list margins from the UA branch above.
-	"center": true, "dir": true, "font": true, "big": true,
-	"strike": true, "nobr": true, "acronym": true, "marquee": true,
+	// gets list margins from the UA branch above. (font, big, strike, nobr
+	// and acronym are left out: html.css sets them no display, so they are
+	// inline; applet and keygen are unknown elements in Blink.)
+	"center": true, "dir": true, "marquee": true,
 	"plaintext": true, "noembed": true, "noframes": true, "basefont": true,
-	"param": true, "frame": true, "frameset": true, "applet": true,
-	"keygen": true, "menuitem": true,
+	"param": true, "frame": true, "frameset": true, "menuitem": true,
 }
 
 func isKnownHTMLElement(tag string) bool {
