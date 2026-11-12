@@ -27,6 +27,18 @@ func TestTableCellFinalLayout(t *testing.T) {
 		// into the cell.)
 		{"grown cell, specified table height", `<table style="height:300px;border-spacing:0"><tr>` +
 			`<td style="padding:0"><div id="c" style="height:100%"></div></td></tr></table>`, 300},
+		// A replaced child of a fixed-height cell resolves against the
+		// cell's own 50px, not the 150px row it grew to: 200% is 100px
+		// (CalculateReplacedChildPercentageSize, length_utils.cc:1830-1867;
+		// css-tables/percent-height-replaced-in-percent-cell-003).
+		{"replaced child of a fixed-height cell", `<table style="border-spacing:0"><tr>` +
+			`<td style="padding:0;height:50px"><canvas id="c" width=1 height=1 style="display:block;height:200%"></canvas></td>` +
+			`<td style="padding:0"><div style="height:150px"></div></td></tr></table>`, 100},
+		// The row's size is fixed for the cell: its max-height does not clamp
+		// it (ComputeBlockSizeForFragment, length_utils.cc:906-916;
+		// css-tables/table-cell-overflow-explicit-height-002).
+		{"max-height cell in a taller row", `<table style="border-spacing:0"><tr>` +
+			`<td id="c" style="padding:0;height:20px;max-height:20px"><div style="height:100px"></div></td></tr></table>`, 100},
 		// Guard: the cell grew but the table's height is auto, so the
 		// initial block size stays indefinite and the 100% child is auto.
 		{"grown cell, auto table height", `<table style="border-spacing:0"><tr>` +
