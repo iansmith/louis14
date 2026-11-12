@@ -22,6 +22,10 @@ func (d *DeclarationResult) serializeShorthand(property string) string {
 		return d.borderValue()
 	case property == "font":
 		return d.fontValue()
+	case property == "grid":
+		return gridValue(values)
+	case property == "grid-template":
+		return gridTemplateValue(values[0], values[1], values[2])
 	case isBorderSideShorthand[property]:
 		return serializeBorderValues(values)
 	case isFourValueShorthand[property]:
@@ -216,4 +220,106 @@ func (d *DeclarationResult) fontValue() string {
 		size += "/" + lh
 	}
 	return strings.Join(append(out, size, d.Declarations["font-family"]), " ")
+}
+
+// isNoneValue is CSSOMUtils::IsNoneValue (cssom_utils.cc:50): none, which a
+// template longhand also is when a shorthand left it implicit.
+func isNoneValue(v string) bool { return isImplicitInitial(v) || strings.EqualFold(v, "none") }
+
+// gridTemplateValue is CSSOMUtils::ComputedValueForGridTemplateShorthand
+// (cssom_utils.cc:139-226), which GetShorthandValueForGridTemplate
+// (style_property_serializer.cc:3063) serializes: none; <rows> / <columns>;
+// or the area strings, each followed by its row's size unless auto, with
+// the line names between them, then / <columns> unless none. "" when the
+// longhands match none of these.
+func gridTemplateValue(rows, columns, areas string) string {
+	rowsNone, columnsNone, areasNone := isNoneValue(rows), isNoneValue(columns), isNoneValue(areas)
+	switch {
+	case rowsNone && columnsNone && areasNone:
+		return "none"
+	case rowsNone && !areasNone:
+		// grid-template-areas needs grid-template-rows.
+		return ""
+	case areasNone:
+		return rows + " / " + columns
+	}
+	rowToks, columnToks := splitComponentValues(rows), splitComponentValues(columns)
+	isRepeat := func(t string) bool { return isFunction(t, "repeat") }
+	if slices.ContainsFunc(rowToks, isRepeat) || slices.ContainsFunc(columnToks, isRepeat) {
+		return ""
+	}
+	areaRows := splitComponentValues(areas)
+	var out []string
+	row := 0
+	for _, t := range rowToks {
+		if isGridLineNames(t) {
+			out = append(out, t)
+			continue
+		}
+		if row == len(areaRows) {
+			return ""
+		}
+		// SerializeGridAreaText (cssom_utils.cc:104): the row's cells
+		// joined by single spaces.
+		cells := parseGridTemplateAreasColumnNames(unquoteCSSString(areaRows[row]))
+		out = append(out, `"`+strings.Join(cells, " ")+`"`)
+		row++
+		if !strings.EqualFold(t, "auto") {
+			out = append(out, t)
+		}
+	}
+	if row != len(areaRows) {
+		return ""
+	}
+	if !columnsNone {
+		out = append(out, "/", columns)
+	}
+	return strings.Join(out, " ")
+}
+
+// gridValue is StylePropertySerializer::GetShorthandValueForGrid
+// (style_property_serializer.cc:2822-2956), values in shorthandLonghands
+// order. An auto longhand stored as initial is one the grid shorthand set
+// implicitly; Blink tells it apart from a specified value by its being an
+// identifier rather than a value list.
+func gridValue(values []string) string {
+	rows, columns, areas, flow, autoRows, autoColumns := values[0], values[1], values[2], values[3], values[4], values[5]
+	flowSpecified, autoRowsSpecified, autoColumnsSpecified := !isImplicitInitial(flow), !isImplicitInitial(autoRows), !isImplicitInitial(autoColumns)
+	nonInitialAutoRows := autoRowsSpecified && !strings.EqualFold(autoRows, "auto")
+	nonInitialAutoColumns := autoColumnsSpecified && !strings.EqualFold(autoColumns, "auto")
+	flowInitial := strings.EqualFold(flow, "row")
+
+	// grid-auto-* with named areas is not valid per the grammar.
+	if (flowSpecified || autoRowsSpecified || autoColumnsSpecified) && !isNoneValue(areas) {
+		return ""
+	}
+	nonInitialRows, nonInitialColumns := !isNoneValue(rows), !isNoneValue(columns)
+	// grid-template-* and grid-auto-* are mutually exclusive per direction.
+	if (nonInitialRows && nonInitialAutoRows) || (nonInitialColumns && nonInitialAutoColumns) ||
+		(nonInitialAutoRows && nonInitialAutoColumns) {
+		return ""
+	}
+	if !flowSpecified || (flowInitial && !nonInitialAutoColumns && !nonInitialAutoRows) {
+		return gridTemplateValue(rows, columns, areas)
+	}
+	if nonInitialRows && nonInitialColumns {
+		return ""
+	}
+	flowWords := strings.Fields(strings.ToLower(flow))
+	autoFlow := "auto-flow"
+	if slices.Contains(flowWords, "dense") {
+		autoFlow += " dense"
+	}
+	if slices.Contains(flowWords, "column") {
+		out := rows + " / " + autoFlow
+		if nonInitialAutoColumns {
+			out += " " + autoColumns
+		}
+		return out
+	}
+	out := autoFlow
+	if nonInitialAutoRows {
+		out += " " + autoRows
+	}
+	return out + " / " + columns
 }

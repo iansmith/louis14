@@ -70,7 +70,9 @@ func TestGridShorthandsSerialize(t *testing.T) {
 		{"grid: 10px / 20px", "grid", "10px / 20px"},
 		{"grid: none", "grid", "none"},
 		{"grid: auto-flow dense 20px / 10px 30px", "grid", "auto-flow dense 20px / 10px 30px"},
-		{"grid: auto-flow / 10px", "grid", "auto-flow / 10px"},
+		// A row auto-flow is the initial one, so this takes the
+		// <'grid-template'> path, with grid-template-rows none.
+		{"grid: auto-flow / 10px", "grid", "none / 10px"},
 		{"grid: 10px / auto-flow", "grid", "10px / auto-flow"},
 		{"grid: 10px 20px / dense auto-flow 5px", "grid", "10px 20px / auto-flow dense 5px"},
 		{`grid: "a b" 10px / 1fr 1fr`, "grid", `"a b" 10px / 1fr 1fr`},
@@ -164,4 +166,27 @@ func TestGridImplicitResetsComputeToInitial(t *testing.T) {
 		return
 	}
 	t.Fatal("grid element not styled")
+}
+
+// TestGridGettersReadWhatTheParserAccepts checks that the layout getters
+// tokenize like the parser: a bracketed list of several line names, and
+// area cells split by ParseGridTemplateAreasColumnNames, where a run of '.'
+// is one null cell (LOU-852).
+func TestGridGettersReadWhatTheParserAccepts(t *testing.T) {
+	s := NewStyle()
+	s.Set("grid-template-columns", "[a b] 10px [c] 20px")
+	_, names := s.GetGridTemplateColumnsWithNames()
+	for name, want := range map[string]int{"a": 1, "b": 1, "c": 2} {
+		if names[name] != want {
+			t.Errorf("line %q = %d, want %d (all: %v)", name, names[name], want, names)
+		}
+	}
+	s.Set("grid-template-areas", `"a..b" "a..b"`)
+	areas := s.GetGridTemplateAreas()
+	want := map[string]GridAreaInfo{"a": {1, 3, 1, 2}, "b": {1, 3, 3, 4}}
+	for name, w := range want {
+		if areas[name] != w {
+			t.Errorf("area %q = %+v, want %+v (all: %v)", name, areas[name], w, areas)
+		}
+	}
 }

@@ -91,8 +91,9 @@ func (s *componentStream) consumeDelim(d string) bool {
 }
 
 // splitComponentValues splits a declaration value into component values:
-// whitespace separates tokens outside parentheses and quotes, and top-level
-// ',' and '/' are emitted as standalone tokens.
+// whitespace separates tokens outside parentheses, brackets and quotes, and
+// top-level ',' and '/' are emitted as standalone tokens. A bracketed block
+// (a grid <line-names>) is one token, as a [-block is in CSS Syntax.
 func splitComponentValues(value string) []string {
 	var toks []string
 	depth := 0
@@ -116,9 +117,9 @@ func splitComponentValues(value string) []string {
 			continue
 		case c == '"' || c == '\'':
 			quote = c
-		case c == '(':
+		case c == '(' || c == '[':
 			depth++
-		case c == ')':
+		case c == ')' || c == ']':
 			if depth > 0 {
 				depth--
 			}
@@ -136,6 +137,18 @@ func splitComponentValues(value string) []string {
 	}
 	flush(len(value))
 	return toks
+}
+
+// isDeferredOrCSSWideValue reports whether value is a CSS-wide keyword, or
+// holds a var() or attr() reference (or a shorthand's pending substitution)
+// resolved at computed-value time, so a parse-time validator accepts it
+// as-is.
+func isDeferredOrCSSWideValue(value string) bool {
+	if _, wide := cssWideKeyword(value); wide {
+		return true
+	}
+	_, _, pending := parsePendingSubstitution(value)
+	return pending || containsVarFunction(value) || containsAttrFunction(value)
 }
 
 // isIdentToken reports whether tok is an <ident-token> (not a function, number
@@ -581,10 +594,7 @@ func expandBackgroundProperty(style *Style, value string) {
 // longhands_custom.cc:5381-5387 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 // CSS-wide keywords and var()/attr() are accepted as-is.
 func isValidImageOrientationValue(value string) bool {
-	if _, wide := cssWideKeyword(value); wide {
-		return true
-	}
-	if containsVarFunction(value) || containsAttrFunction(value) {
+	if isDeferredOrCSSWideValue(value) {
 		return true
 	}
 	s := newComponentStream(value)
@@ -620,10 +630,7 @@ var (
 // the declaration. The layout() functions need CSSLayoutAPI, which louis14
 // does not support. CSS-wide keywords and var()/attr() are accepted as-is.
 func IsValidDisplayValue(value string) bool {
-	if _, wide := cssWideKeyword(value); wide {
-		return true
-	}
-	if containsVarFunction(value) || containsAttrFunction(value) {
+	if isDeferredOrCSSWideValue(value) {
 		return true
 	}
 	s := newComponentStream(value)
@@ -663,10 +670,7 @@ func IsValidDisplayValue(value string) bool {
 // UnitlessQuirk::kForbid and no three-value form, consuming the whole value.
 // CSS-wide keywords and var()/attr() are accepted as-is.
 func isValidObjectPositionValue(value string) bool {
-	if _, wide := cssWideKeyword(value); wide {
-		return true
-	}
-	if containsVarFunction(value) || containsAttrFunction(value) {
+	if isDeferredOrCSSWideValue(value) {
 		return true
 	}
 	s := newComponentStream(value)
@@ -678,10 +682,7 @@ func isValidObjectPositionValue(value string) bool {
 // ParseBackgroundSize (:5290, a comma list of ConsumeBackgroundSize).
 // CSS-wide keywords and var()/attr() are accepted as-is.
 func isValidBackgroundSizeValue(value string) bool {
-	if _, wide := cssWideKeyword(value); wide {
-		return true
-	}
-	if containsVarFunction(value) || containsAttrFunction(value) {
+	if isDeferredOrCSSWideValue(value) {
 		return true
 	}
 	s := newComponentStream(value)
@@ -693,4 +694,419 @@ func isValidBackgroundSizeValue(value string) bool {
 			return s.atEnd()
 		}
 	}
+}
+
+// Ports of Blink's grid track-list and grid-template consumers in
+// core/css/properties/css_parsing_utils.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b: ConsumeGridBreadth (:6894),
+// ConsumeFitContent (:6916), IsGridTrackFixedSized (:6960),
+// ConsumeGridTrackSize (:6988), ConsumeGridLineNames (:7041),
+// ConsumeGridTrackRepeatFunction (:7089),
+// ConsumeGridTemplateRowsAndAreasAndColumns (:7198), ConsumeGridTrackList
+// (:7379), ParseGridTemplateAreasColumnNames (:6854),
+// ParseGridTemplateAreasRow (:7475), ConsumeGridTemplatesRowsOrColumns
+// (:7550) and ConsumeGridTemplateShorthand (:7598). As with the background
+// consumers, they validate and return the consumed text; the typed values
+// are built when the longhands are read.
+
+// gridTrackListType is css_parsing_utils::TrackListType.
+type gridTrackListType int
+
+const (
+	gridTemplate gridTrackListType = iota
+	gridTemplateNoRepeat
+	gridTemplateSubgrid
+	gridAuto
+)
+
+// gridBreadthKind classifies a <track-breadth> for IsGridBreadthFixedSized.
+type gridBreadthKind int
+
+const (
+	gridBreadthFixed gridBreadthKind = iota
+	gridBreadthFlex
+	gridBreadthIntrinsic
+)
+
+// functionArgs returns the arguments of tok when it is a call of the
+// (lower-case) function name, split at top-level commas.
+func functionArgs(tok, name string) ([]string, bool) {
+	if !isFunction(tok, name) || !strings.HasSuffix(tok, ")") {
+		return nil, false
+	}
+	args := splitCSSFunctionArgs(tok[len(name)+1 : len(tok)-1])
+	for i := range args {
+		args[i] = strings.TrimSpace(args[i])
+	}
+	return args, true
+}
+
+// consumeGridBreadth is ConsumeGridBreadth: auto, min-content,
+// max-content, a non-negative <flex>, or a non-negative
+// <length-percentage>.
+func consumeGridBreadth(tok string) (gridBreadthKind, bool) {
+	lower := strings.ToLower(tok)
+	switch lower {
+	case "auto", "min-content", "max-content":
+		return gridBreadthIntrinsic, true
+	}
+	if strings.HasSuffix(lower, "fr") {
+		if n, err := strconv.ParseFloat(tok[:len(tok)-2], 64); err == nil {
+			return gridBreadthFlex, n >= 0
+		}
+	}
+	return gridBreadthFixed, isLengthPercentToken(tok, true, false)
+}
+
+// consumeGridTrackSize is ConsumeGridTrackSize: minmax(), fit-content() or
+// a <track-breadth>. fixed is IsGridTrackFixedSized.
+func consumeGridTrackSize(s *componentStream) (fixed, ok bool) {
+	tok := s.peek()
+	if args, isMinmax := functionArgs(tok, "minmax"); isMinmax {
+		if len(args) != 2 {
+			return false, false
+		}
+		minKind, ok := consumeGridBreadth(args[0])
+		if !ok || minKind == gridBreadthFlex {
+			return false, false
+		}
+		maxKind, ok := consumeGridBreadth(args[1])
+		if !ok {
+			return false, false
+		}
+		s.consume()
+		return minKind == gridBreadthFixed || maxKind == gridBreadthFixed, true
+	}
+	if args, isFitContent := functionArgs(tok, "fit-content"); isFitContent {
+		if len(args) != 1 || !isLengthPercentToken(args[0], true, false) {
+			return false, false
+		}
+		s.consume()
+		return false, true
+	}
+	kind, ok := consumeGridBreadth(tok)
+	if !ok {
+		return false, false
+	}
+	s.consume()
+	return kind == gridBreadthFixed, true
+}
+
+// isFunction reports whether tok is a call of the (lower-case) function
+// name.
+func isFunction(tok, name string) bool {
+	return len(tok) > len(name) && strings.EqualFold(tok[:len(name)+1], name+"(")
+}
+
+// isGridLineNames reports whether tok is a bracketed <line-names> token.
+func isGridLineNames(tok string) bool { return strings.HasPrefix(tok, "[") }
+
+// consumeGridLineNames is ConsumeGridLineNames: a bracketed list of
+// <custom-ident>s other than auto and span. An empty list is consumed but
+// reported only for a subgrid's <line-name-list>.
+func consumeGridLineNames(s *componentStream, isSubgrid bool) bool {
+	tok := s.peek()
+	if !isGridLineNames(tok) || !strings.HasSuffix(tok, "]") {
+		return false
+	}
+	names := strings.Fields(tok[1 : len(tok)-1])
+	for _, name := range names {
+		if !isIdentToken(name) || strings.EqualFold(name, "auto") || strings.EqualFold(name, "span") {
+			return false
+		}
+	}
+	if !isSubgrid && len(names) == 0 {
+		return false
+	}
+	s.consume()
+	return true
+}
+
+// consumeGridTrackRepeatFunction is ConsumeGridTrackRepeatFunction.
+// allFixed carries ConsumeGridTrackList's
+// all_tracks_are_intrinsic_repeat_or_fixed_sized.
+func consumeGridTrackRepeatFunction(s *componentStream, isSubgrid bool, allFixed *bool) (isAutoRepeat, ok bool) {
+	args, _ := functionArgs(s.peek(), "repeat")
+	if len(args) != 2 {
+		return false, false
+	}
+	count := strings.ToLower(args[0])
+	if isSubgrid && count == "auto-fit" {
+		return false, false
+	}
+	isAutoRepeat = count == "auto-fill" || count == "auto-fit"
+	if !isAutoRepeat {
+		if n, err := strconv.Atoi(args[0]); err != nil || n < 1 {
+			if !IsMathFunction(args[0]) {
+				return false, false
+			}
+		}
+	}
+	inner := newComponentStream(args[1])
+	lineNameSets, tracks := 0, 0
+	if consumeGridLineNames(inner, isSubgrid) {
+		lineNameSets++
+	}
+	for !inner.atEnd() {
+		if isSubgrid {
+			if lineNameSets == 0 || !consumeGridLineNames(inner, true) {
+				return false, false
+			}
+			lineNameSets++
+			continue
+		}
+		fixed, ok := consumeGridTrackSize(inner)
+		if !ok {
+			return false, false
+		}
+		// The CSSGridLanesLayout branch that also allows intrinsic sizes in
+		// an auto repeat is behind a runtime flag; louis14 has no grid lanes.
+		*allFixed = *allFixed && fixed
+		tracks++
+		consumeGridLineNames(inner, false)
+	}
+	if (isSubgrid && lineNameSets == 0) || (!isSubgrid && tracks == 0) {
+		return false, false
+	}
+	s.consume()
+	return isAutoRepeat, true
+}
+
+// consumeGridTrackList is ConsumeGridTrackList, without the grid-lanes
+// shorthand's look-ahead: the tokens up to the end of the stream or a
+// delimiter.
+func consumeGridTrackList(s *componentStream, listType gridTrackListType) bool {
+	allowLineNames := listType != gridAuto
+	if !allowLineNames && isGridLineNames(s.peek()) {
+		return false
+	}
+	isSubgrid := listType == gridTemplateSubgrid
+	if isSubgrid && s.consumeIdent("subgrid") == "" {
+		return false
+	}
+	consumeGridLineNames(s, isSubgrid)
+	allowRepeat := isSubgrid || listType == gridTemplate
+	atRangeEnd := func() bool { return s.atEnd() || s.peek() == "/" || s.peek() == "," }
+	seenAutoRepeat, allFixed := false, true
+	for {
+		if isFunction(s.peek(), "repeat") {
+			if !allowRepeat {
+				return false
+			}
+			isAutoRepeat, ok := consumeGridTrackRepeatFunction(s, isSubgrid, &allFixed)
+			if !ok || (isAutoRepeat && seenAutoRepeat) {
+				return false
+			}
+			seenAutoRepeat = seenAutoRepeat || isAutoRepeat
+		} else if fixed, ok := consumeGridTrackSize(s); ok {
+			if isSubgrid {
+				return false
+			}
+			allFixed = allFixed && fixed
+		} else if !isSubgrid {
+			return false
+		}
+		if seenAutoRepeat && !allFixed {
+			return false
+		}
+		if !allowLineNames && isGridLineNames(s.peek()) {
+			return false
+		}
+		appended := consumeGridLineNames(s, isSubgrid)
+		if isSubgrid && !appended {
+			if !isFunction(s.peek(), "repeat") {
+				return atRangeEnd()
+			}
+		}
+		if atRangeEnd() {
+			return true
+		}
+	}
+}
+
+// consumeGridTemplatesRowsOrColumns is ConsumeGridTemplatesRowsOrColumns:
+// none, a subgrid <line-name-list>, or a <track-list>.
+func consumeGridTemplatesRowsOrColumns(s *componentStream) bool {
+	switch s.peekIdent() {
+	case "none":
+		s.consume()
+		return true
+	case "subgrid":
+		return consumeGridTrackList(s, gridTemplateSubgrid)
+	}
+	return consumeGridTrackList(s, gridTemplate)
+}
+
+// parseGridTemplateAreasColumnNames is ParseGridTemplateAreasColumnNames:
+// the cell names of one area string, a run of '.' being one null cell. nil
+// when a character is neither a name code point, '.', nor whitespace.
+func parseGridTemplateAreasColumnNames(row string) []string {
+	var names []string
+	start := -1 // start of the name being read, or -1
+	flush := func(end int) {
+		if start >= 0 {
+			if row[start] == '.' {
+				names = append(names, ".") // a run of '.' is one null cell
+			} else {
+				names = append(names, row[start:end])
+			}
+			start = -1
+		}
+	}
+	inDots := func() bool { return start >= 0 && row[start] == '.' }
+	for i := 0; i < len(row); i++ {
+		c := row[i]
+		switch {
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f':
+			flush(i)
+			continue
+		case c == '.':
+			if inDots() {
+				continue
+			}
+			flush(i)
+		case c >= 0x80 || isIdentContinue(c):
+			if inDots() {
+				flush(i)
+			}
+		default:
+			return nil
+		}
+		if start < 0 {
+			start = i
+		}
+	}
+	flush(len(row))
+	return names
+}
+
+// gridAreaSpan is a named area's GridArea: rows [rowStart, rowEnd) and
+// columns [colStart, colEnd).
+type gridAreaSpan struct{ rowStart, rowEnd, colStart, colEnd int }
+
+// parseGridTemplateAreasRow is ParseGridTemplateAreasRow: it adds row (the
+// unquoted text of the rowCount'th string) to areas, and reports whether
+// every row has columnCount cells and every named area stays one filled-in
+// rectangle.
+func parseGridTemplateAreasRow(row string, areas map[string]*gridAreaSpan, rowCount int, columnCount *int) bool {
+	if strings.TrimSpace(row) == "" {
+		return false
+	}
+	names := parseGridTemplateAreasColumnNames(row)
+	if rowCount == 0 {
+		*columnCount = len(names)
+		if *columnCount == 0 {
+			return false
+		}
+	} else if *columnCount != len(names) {
+		return false
+	}
+	for col := 0; col < len(names); col++ {
+		name := names[col]
+		if name == "." {
+			continue
+		}
+		end := col + 1
+		for end < len(names) && names[end] == name {
+			end++
+		}
+		if area, ok := areas[name]; !ok {
+			areas[name] = &gridAreaSpan{rowCount, rowCount + 1, col, end}
+		} else {
+			if rowCount != area.rowEnd || col != area.colStart || end != area.colEnd {
+				return false
+			}
+			area.rowEnd++
+		}
+		col = end - 1
+	}
+	return true
+}
+
+// parseGridTemplateAreas reads <string>+ as grid-template-areas: the named
+// areas, if every string is a row parseGridTemplateAreasRow accepts.
+func parseGridTemplateAreas(rows []string) (map[string]*gridAreaSpan, bool) {
+	areas := map[string]*gridAreaSpan{}
+	columns := 0
+	for i, row := range rows {
+		if !isQuotedStringValue(row) || !parseGridTemplateAreasRow(unquoteCSSString(row), areas, i, &columns) {
+			return nil, false
+		}
+	}
+	return areas, len(rows) > 0
+}
+
+// consumeGridTemplateRowsAndAreasAndColumns is
+// ConsumeGridTemplateRowsAndAreasAndColumns: [ <line-names>? <string>
+// <track-size>? <line-names>? ]+ [ / <track-list> ]?, giving the rows'
+// track list (a row with no size is auto, and a row's leading line names
+// merge into the previous row's trailing ones), the area strings and the
+// columns.
+func consumeGridTemplateRowsAndAreasAndColumns(s *componentStream) (rows, columns, areas string, ok bool) {
+	var rowList, areaList []string
+	gridAreas := map[string]*gridAreaSpan{}
+	columnCount := 0
+	for {
+		if p := s.save(); consumeGridLineNames(s, false) {
+			names := s.since(p)
+			if n := len(rowList); n > 0 && isGridLineNames(rowList[n-1]) {
+				rowList[n-1] = strings.TrimSuffix(rowList[n-1], "]") + " " + strings.TrimPrefix(names, "[")
+			} else {
+				rowList = append(rowList, names)
+			}
+		}
+		row := s.peek()
+		if !isQuotedStringValue(row) || !parseGridTemplateAreasRow(unquoteCSSString(row), gridAreas, len(areaList), &columnCount) {
+			return "", "", "", false
+		}
+		s.consume()
+		areaList = append(areaList, row)
+		size := "auto"
+		p := s.save()
+		if _, ok := consumeGridTrackSize(s); ok {
+			size = s.since(p)
+		}
+		rowList = append(rowList, size)
+		if p := s.save(); consumeGridLineNames(s, false) {
+			rowList = append(rowList, s.since(p))
+		}
+		if s.atEnd() || s.peek() == "/" {
+			break
+		}
+	}
+	columns = "none"
+	if s.consumeSlash() {
+		p := s.save()
+		if !consumeGridTrackList(s, gridTemplateNoRepeat) || !s.atEnd() {
+			return "", "", "", false
+		}
+		columns = s.since(p)
+	}
+	return strings.Join(rowList, " "), columns, strings.Join(areaList, " "), true
+}
+
+// consumeGridTemplateShorthand is ConsumeGridTemplateShorthand: the
+// grid-template-rows, grid-template-columns and grid-template-areas values
+// of a <'grid-template'> at the start of s, tried as <rows> / <columns>,
+// then as area strings, then as none.
+func consumeGridTemplateShorthand(s *componentStream) (rows, columns, areas string, ok bool) {
+	start := s.save()
+	if consumeGridTemplatesRowsOrColumns(s) {
+		rows = s.since(start)
+		if s.consumeSlash() {
+			p := s.save()
+			if consumeGridTemplatesRowsOrColumns(s) {
+				return rows, s.since(p), "none", true
+			}
+		}
+	}
+	s.restore(start)
+	if rows, columns, areas, ok := consumeGridTemplateRowsAndAreasAndColumns(s); ok {
+		return rows, columns, areas, true
+	}
+	s.restore(start)
+	if s.consumeIdent("none") != "" {
+		return "none", "none", "none", true
+	}
+	return "", "", "", false
 }

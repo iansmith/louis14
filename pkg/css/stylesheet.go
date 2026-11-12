@@ -5352,8 +5352,36 @@ func validateDeclaredLonghand(prop, value string) (string, bool) {
 		return value, isValidImageValue(value)
 	case prop == "font-family":
 		return normalizeAndValidateFontFamily(value)
+	case isGridTrackListProperty[prop]:
+		return value, isDeferredOrCSSWideValue(value) || isValidGridTrackListValue(prop, value)
 	}
 	return value, true
+}
+
+// isGridTrackListProperty are the grid longhands whose values
+// validateDeclaredLonghand checks with the grid consumers.
+var isGridTrackListProperty = map[string]bool{
+	"grid-template-rows": true, "grid-template-columns": true, "grid-template-areas": true,
+	"grid-auto-rows": true, "grid-auto-columns": true,
+}
+
+// isValidGridTrackListValue reports whether value parses as prop: Blink's
+// GridTemplateRows/Columns::ParseSingleValue
+// (ConsumeGridTemplatesRowsOrColumns), GridAutoRows/Columns
+// (ConsumeGridTrackList with kGridAuto) and GridTemplateAreas (none or
+// rows ParseGridTemplateAreasRow accepts) in core/css/properties/longhands/
+// longhands_custom.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+func isValidGridTrackListValue(prop, value string) bool {
+	switch prop {
+	case "grid-template-areas":
+		_, ok := parseGridTemplateAreas(splitComponentValues(value))
+		return strings.EqualFold(strings.TrimSpace(value), "none") || ok
+	}
+	s := newComponentStream(value)
+	if prop == "grid-auto-rows" || prop == "grid-auto-columns" {
+		return consumeGridTrackList(s, gridAuto) && s.atEnd()
+	}
+	return consumeGridTemplatesRowsOrColumns(s) && s.atEnd()
 }
 
 // isColorProperty returns true for CSS properties that expect color values
@@ -5376,22 +5404,9 @@ func isValidColorValue(value string) bool {
 	if lower == "currentcolor" {
 		return true
 	}
-	// CSS Cascade 4 §6.1: every CSS property accepts the five CSS-wide
-	// keywords. They reach the longhand value verbatim and are resolved at
-	// cascade time by resolveCSSWideKeywords / resolveInheritValues.
-	if _, wide := cssWideKeyword(value); wide {
-		return true
-	}
-	// var() references are resolved later — always valid at parse time.
-	// Case-insensitive (CSS Syntax §4.3.10) so `VAR(--a)` defers identically.
-	if containsVarFunction(value) {
-		return true
-	}
-	// attr() references (CSS Values 5 §11.5) are resolved at cascade time via
-	// resolveAttrReferences — always valid at parse time. The attr() type
-	// annotation declares what type the attribute value should be resolved as;
-	// the parse-time validator cannot check that without element access.
-	if containsAttrFunction(value) {
+	// CSS-wide keywords (CSS Cascade 4 §6.1), var() and attr() (CSS Values
+	// 5 §11.5) are resolved at cascade time, so they are valid here.
+	if isDeferredOrCSSWideValue(value) {
 		return true
 	}
 	// light-dark() is a valid deferred color function resolved at cascade time
@@ -5694,10 +5709,7 @@ func isValidColumnCountValue(value string) bool {
 func isValidPositiveIntegerValue(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	// CSS-wide keywords accepted on every property; resolved later.
-	if _, wide := cssWideKeyword(trimmed); wide {
-		return true
-	}
-	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+	if isDeferredOrCSSWideValue(trimmed) {
 		return true
 	}
 	// Must be a positive integer literal (no decimal point, no exponent).
@@ -5724,10 +5736,7 @@ func isValidColumnWidthValue(value string) bool {
 	if lower == "auto" {
 		return true
 	}
-	if _, wide := cssWideKeyword(trimmed); wide {
-		return true
-	}
-	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+	if isDeferredOrCSSWideValue(trimmed) {
 		return true
 	}
 	w, ok := ParseLength(trimmed)
@@ -5830,10 +5839,7 @@ func isValidColumnsShorthand(value string) bool {
 // any slot (e.g. `normal`) make the declaration invalid.
 func isValidColumnRuleShorthand(value string) bool {
 	trimmed := strings.TrimSpace(value)
-	if _, wide := cssWideKeyword(trimmed); wide {
-		return true
-	}
-	if containsVarFunction(trimmed) || containsAttrFunction(trimmed) {
+	if isDeferredOrCSSWideValue(trimmed) {
 		return true
 	}
 	parts := strings.Fields(trimmed)
