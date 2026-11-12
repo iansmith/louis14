@@ -375,3 +375,22 @@ func TestScopeAnchorTakesNoDefaultNamespace(t *testing.T) {
 		t.Errorf("#child color = %q, want green", got)
 	}
 }
+
+// A pseudo-element in a scope boundary makes the @scope rule invalid:
+// CSSSelectorParser::ParseScopeBoundary parses the list with pseudo-elements
+// disallowed (DisallowPseudoElementsScope, css_selector_parser.cc:190 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the whole rule is dropped.
+func TestScopeBoundaryRejectsPseudoElements(t *testing.T) {
+	for _, prelude := range []string{"(.r::before)", "(.r, .x::before)", "(.r) to (.l::after)"} {
+		t.Run(prelude, func(t *testing.T) {
+			// Applied, the scoped red would beat the unscoped green on
+			// proximity; green means the rule was dropped and the sheet
+			// parsed on.
+			styles := cascadeHTML(t, `<style>@scope `+prelude+` { .t { color: red } } .t { color: green }</style>
+			<div class="r"><div class="t" id="t"></div></div>`, nil)
+			if got := colorOf(t, styles, "t"); got != "green" {
+				t.Errorf("#t color = %q, want green: @scope %s must be dropped", got, prelude)
+			}
+		})
+	}
+}
