@@ -1,6 +1,7 @@
 package js
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -95,4 +96,50 @@ func TestEventTarget_TestRenderedAtRootElement(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEventTarget_ElementLoadReachesListeners: an element's load / error
+// event goes to its addEventListener listeners as well as its onload /
+// onerror handler, which is one entry in the same listener list, kept in
+// its first-set place when replaced and removed when set to null
+// (EventTarget::SetAttributeEventListener, core/dom/events/
+// event_target.cc:813-827; HTMLFrameOwnerElement::DispatchLoad →
+// DispatchScopedEvent, core/html/html_frame_owner_element.cc:606-608;
+// ImageLoader::DispatchPendingLoadEvent, core/loader/image_loader.cc:
+// 1010-1030 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestEventTarget_ElementLoadReachesListeners(t *testing.T) {
+	t.Run("iframe", func(t *testing.T) {
+		got := runEventLog(t, `
+			var i = document.createElement("iframe");
+			i.src = "data:text/html,hi";
+			i.addEventListener("load", function (e) { log.push("listener:" + (this === i) + ":" + e.eventPhase); });
+			i.onload = function () { log.push("first idl"); };
+			i.addEventListener("load", function () { log.push("listener2"); });
+			i.onload = function () { log.push("idl"); };
+			document.body.appendChild(i);`)
+		if want := "listener:true:2 idl listener2"; got != want {
+			t.Errorf("log = %q, want %q", got, want)
+		}
+	})
+	t.Run("onload = null removes the handler", func(t *testing.T) {
+		got := runEventLog(t, `
+			var i = document.createElement("iframe");
+			i.onload = function () { log.push("idl"); };
+			i.onload = null;
+			i.addEventListener("load", function () { log.push("listener"); });
+			document.body.appendChild(i);`)
+		if want := "listener"; got != want {
+			t.Errorf("log = %q, want %q", got, want)
+		}
+	})
+	t.Run("img", func(t *testing.T) {
+		got := runImageScript(t, New(), fmt.Sprintf(`
+			var img = new Image();
+			img.addEventListener("load", function () { log("listener:" + (this === img)); });
+			img.onload = function () { log("idl"); };
+			img.src = %q;`, pngDataURL(t, 3, 2)))
+		if want := "listener:true;idl;"; got != want {
+			t.Errorf("log = %q, want %q", got, want)
+		}
+	})
 }
