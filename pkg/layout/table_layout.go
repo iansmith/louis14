@@ -172,6 +172,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
+	// The table's block size is specified (not auto), which lets a cell
+	// that grew have a definite initial block size (TableLayoutAlgorithm::
+	// Layout, table/table_layout_algorithm.cc:313 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	isTableBlockSizeSpecified := !isAutoSizeInDirection(tla.style, wdm, false)
+
 	// Record the table's content-box size so row / section / cell fragments
 	// added via builder.AddChild get their position:relative offset resolved
 	// against the correct CB (CSS 2.1 §9.4.3). Mirrors Blink's
@@ -312,8 +318,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	//             sweep.
 	//
 	//   Phase 3 — assemble: build each row fragment at its final block-size,
-	//             stretching cells and applying §17.5.4 vertical-align
-	//             inline (row block-size is known at cell-placement time).
+	//             laying each cell out again at its final block-size, which
+	//             applies its §17.5.4 vertical-align.
 	//
 	// Rows and sections are structural-only (no NGLayoutResult of their own
 	// in Blink); OOF candidates from cell content are collected directly at
@@ -325,16 +331,20 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Per-cell measurement data captured during Phase 1 and consumed by
-	// Phase 3. contentBlockSize is the size used by the §17.5.4 check
-	// (cell's intrinsic block-size for real cells; the row's intrinsic
-	// height for anonymous-cell wrappers — their block margins fill the
-	// row, so VA on the wrapped child is suppressed at the intrinsic size).
+	// Phase 3. contentBlockSize and intrinsicContentBorderBox serve only
+	// the stretch of a block unwrapped from an anonymous cell (its
+	// contentBlockSize is the row's intrinsic height, so its VA is
+	// suppressed at that size); they go with the unwrap (LOU-900).
 	type cellMeasurement struct {
 		result           *LayoutResult
 		inlineOffset     float64
 		cell             tableCell
 		contentBlockSize float64
 		cellBlockOffset  float64 // block offset of the child inside an anon-cell wrapper
+		// layoutInlineSize and cellWDM rebuild the cell's space for its
+		// final layout (Phase 3).
+		layoutInlineSize float64
+		cellWDM          WritingDirectionMode
 		// intrinsicBlockSize is the cell's own minimum block-size — the
 		// value that contributes to row intrinsic for rowSpan == 1 cells,
 		// and that DistributeRowspanCellToRows distributes across spanned
@@ -443,28 +453,11 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// out with an indefinite initial block size (:222-230); its
 			// layout pass makes it definite only when ComputeCellBlockSize
 			// says so (:1333-1361: a fixed cell height, or a row that grew in
-			// a table with a specified block size). louis14 has no layout
-			// pass at the final row size, so the measure-pass value stands.
+			// a table with a specified block size), which Phase 3 does.
 			// All @ d4ecdfed88f962439247c2ad36b8fe47805b1520. A relative
 			// cell's percentage insets resolve against its row instead
 			// (Phase 3, relativeCellOffset).
-			cellSpace := NewConstraintSpaceBuilder(wdm, cellWDM, true).
-				SetOrthogonalFallbackInlineSize(
-					orthogonalFallbackSize(cellWDM, tla.ctx)).
-				SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
-				SetAvailableSize(LogicalSize{
-					InlineSize: layoutWidth,
-					BlockSize:  Indefinite,
-				}).
-				SetIsFixedInlineSize(true).
-				SetPercentageResolutionSize(LogicalSize{
-					InlineSize: layoutWidth,
-					BlockSize:  Indefinite,
-				}).
-				SetPercentageResolutionInlineSize(layoutWidth).
-				SetTableSectionData(tableData).
-				SetTableSectionIndex(0).
-				Build()
+			cellSpace := tla.tableCellConstraintSpace(cellWDM, layoutWidth, Indefinite, true, tableData)
 
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
 			cellLogical := NewLogicalFragment(wdm, cellResult.Fragment)
@@ -558,6 +551,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				cell:                      cell,
 				contentBlockSize:          contentBlockSize,
 				cellBlockOffset:           cellBlockOffset,
+				layoutInlineSize:          layoutWidth,
+				cellWDM:                   cellWDM,
 				intrinsicBlockSize:        cellBlockForRow,
 				intrinsicContentBorderBox: intrinsicContentBorderBox,
 				rowIndex:                  rowIdx,
@@ -868,8 +863,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				// Defer rowspan cells: they are NOT children of any
 				// single row fragment; they attach directly to the
 				// table builder at the originating row's block-offset
-				// after the row loop, with their fragment stretched
-				// to the total spanned block-size.
+				// after the row loop, laid out again at the total
+				// spanned block-size.
 				rowspanPending = append(rowspanPending, pendingRowspan{
 					cl:          cl,
 					blockOffset: blockOffset,
@@ -877,17 +872,31 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				continue
 			}
 
-			cellFrag := cl.result.Fragment
+			// Lay the cell out again at its final block size, which also
+			// applies its vertical-align (TableRowLayoutAlgorithm::Layout →
+			// PlaceCells, table/table_row_layout_algorithm.cc:37-200 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A single block an
+			// anonymous cell was unwrapped to (buildRow) is not a cell: it
+			// keeps the measure-pass fragment, stretched below, until
+			// LOU-900 drops the unwrap.
+			result := cl.result
+			isUnwrapped := cl.cell.isAnonymous && cl.cell.style != nil && cl.cell.style.GetDisplay() != css.DisplayTableCell
+			if !isUnwrapped {
+				cellBlockSize, initialIndefinite := computeCellBlockSize(spRows, rowIdx, 1, blockSpacing,
+					cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
+				result = layoutElement(tla.ctx, cl.cell.node,
+					tla.tableCellConstraintSpace(cl.cellWDM, cl.layoutInlineSize, cellBlockSize, initialIndefinite, tableData))
+			}
+			cellFrag := result.Fragment
 			contentBlockSize := cl.contentBlockSize
 
 			cellFrag.HasCollapsedBorders = borderCollapse
 
-			// §17.5.4: stretch the cell fragment to the final row
-			// block-size and apply vertical-align. For anon-cell wrappers
-			// contentBlockSize equals the row's intrinsic size, so this
-			// only fires when distribution grew the row — matching the
-			// legacy post-append VA sweep semantics.
-			if contentBlockSize < rowHeight {
+			// §17.5.4: stretch the unwrapped block to the final row
+			// block-size and apply vertical-align. Its contentBlockSize
+			// equals the row's intrinsic size, so this only fires when
+			// distribution grew the row.
+			if isUnwrapped && contentBlockSize < rowHeight {
 				cellLogical := NewLogicalFragment(wdm, cellFrag)
 				cellFrag.Size = oldSizeToGeom(ToPhysicalSize(LogicalSize{
 					InlineSize: cellLogical.InlineSize(),
@@ -948,7 +957,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			rowBuilder.AddChildWithRelativeOffset(cellFrag, cellOffset, cellRelativeOffset)
 			// The cell's OOF candidates, in row-content-box coordinates.
 			if cl.cell.style != nil {
-				rowBuilder.PropagateOOFPositionedInfo(&LayoutResult{Fragment: cellFrag, PropagatedOOFCandidates: cl.result.PropagatedOOFCandidates},
+				rowBuilder.PropagateOOFPositionedInfo(&LayoutResult{Fragment: cellFrag, PropagatedOOFCandidates: result.PropagatedOOFCandidates},
 					cl.cell.style, cellOffset, cellRelativeOffset)
 			}
 		}
@@ -1064,14 +1073,10 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	// --- Phase 3b: place rowspan cells across spanned rows ---
 	//
-	// Each deferred rowspan cell stretches to
-	//   Σ rows[R..R+s-1].BlockSize + (s-1) * blockSpacing
-	// (mirrors Blink's TableSectionLayoutAlgorithm row-loop cell offset
-	// calculation in core/layout/table/table_section_layout_algorithm.cc)
-	// and attaches at the originating row's block-offset, just like a
-	// rowSpan == 1 cell would. Because Rowspan B grew spRows so that
-	// the spanned span ≥ cell intrinsic block-size, the stretch grows
-	// the cell, never shrinks it.
+	// Each deferred rowspan cell is laid out again at the block size of
+	// the rows it spans (computeCellBlockSize) and attaches at the
+	// originating row's block-offset, just like a rowSpan == 1 cell
+	// would.
 	for _, p := range rowspanPending {
 		cl := p.cl
 		rowIdx := cl.rowIndex
@@ -1086,64 +1091,24 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// is the sum of the NON-collapsed spanned rows, plus inter-row
 		// spacing between visible pairs. Mirrors Blink's
 		// ComputeCellBlockSize (table_layout_utils.cc): collapsed rows
-		// are skipped; the cell fragment is unconditionally sized to
-		// that reduced extent, and any child content that overflows is
-		// clipped at paint time via ClipContentToBorderBox.
-		spannedBlock := 0.0
-		visibleSpanCount := 0
+		// are skipped; the cell is laid out at that reduced extent, and
+		// any child content that overflows is clipped at paint time via
+		// ClipContentToBorderBox.
 		spansCollapsedRow := false
 		for i := rowIdx; i < end; i++ {
-			if spRows[i].IsCollapsed {
-				spansCollapsedRow = true
-				continue
-			}
-			spannedBlock += spRows[i].BlockSize
-			visibleSpanCount++
-		}
-		if visibleSpanCount > 1 && blockSpacing > 0 {
-			spannedBlock += float64(visibleSpanCount-1) * blockSpacing
+			spansCollapsedRow = spansCollapsedRow || spRows[i].IsCollapsed
 		}
 
-		cellFrag := cl.result.Fragment
+		// The cell is laid out again at the spanned extent; when that is
+		// smaller than its content (a collapsed spanned row), the content
+		// stays at the block-start edge (§5.4.1 "the top left content of
+		// the cell will continue to show") and is clipped to the border box.
+		spannedBlock, initialIndefinite := computeCellBlockSize(spRows, rowIdx, cl.cell.rowSpan, blockSpacing,
+			cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
+		result := layoutElement(tla.ctx, cl.cell.node,
+			tla.tableCellConstraintSpace(cl.cellWDM, cl.layoutInlineSize, spannedBlock, initialIndefinite, tableData))
+		cellFrag := result.Fragment
 		cellFrag.HasCollapsedBorders = borderCollapse
-		cellLogical := NewLogicalFragment(wdm, cellFrag)
-		contentBlockSize := cellLogical.BlockSize()
-
-		// §17.5.4 + §5.4.1: always resize the cell fragment to
-		// spannedBlock. When spannedBlock >= content (normal case),
-		// apply vertical-align to position content within the row
-		// extent. When spannedBlock < content (collapsed-row case),
-		// shrink the fragment so its border-box matches the visible
-		// spanned extent, anchor content at the block-start edge
-		// (§5.4.1 "the top left content of the cell will continue to
-		// show"), and flag the fragment for border-box clipping so
-		// overflowing content is hidden.
-		cellFrag.Size = oldSizeToGeom(ToPhysicalSize(LogicalSize{
-			InlineSize: cellLogical.InlineSize(),
-			BlockSize:  spannedBlock,
-		}, wdm.WM))
-
-		if contentBlockSize < spannedBlock {
-			va := css.VerticalAlignMiddle // default for td/th
-			if cl.cell.style != nil {
-				va = cl.cell.style.GetVerticalAlign()
-			}
-			var blockShift float64
-			switch va {
-			case css.VerticalAlignMiddle:
-				blockShift = (spannedBlock - contentBlockSize) / 2
-			case css.VerticalAlignBottom:
-				blockShift = spannedBlock - contentBlockSize
-			}
-			if blockShift > 0 {
-				shift := geometry.PhysicalOffsetFromF64Round(
-					cellResizeVAShift(wdm, contentBlockSize, spannedBlock, blockShift))
-				for cci := range cellFrag.Children {
-					cellFrag.Children[cci].Offset = cellFrag.Children[cci].Offset.Add(shift)
-				}
-			}
-		}
-		cellFrag.updateScrollableOverflow()
 		if spansCollapsedRow {
 			cellFrag.ClipContentToBorderBox = true
 		}
@@ -1156,7 +1121,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		cellRelativeOffset := relativeCellOffset(cellFrag, cl.cell, rows[rowIdx].style, wdm, totalInlineForRows)
 		builder.AddChildWithRelativeOffset(cellFrag, cellOffset, cellRelativeOffset)
 		if cl.cell.style != nil {
-			builder.PropagateOOFPositionedInfo(&LayoutResult{Fragment: cellFrag, PropagatedOOFCandidates: cl.result.PropagatedOOFCandidates},
+			builder.PropagateOOFPositionedInfo(&LayoutResult{Fragment: cellFrag, PropagatedOOFCandidates: result.PropagatedOOFCandidates},
 				cl.cell.style, cellOffset, cellRelativeOffset)
 		}
 	}
@@ -1624,6 +1589,82 @@ func specifiedBlockSize(style *css.Style, wdm WritingDirectionMode) float64 {
 		return v
 	}
 	return Indefinite
+}
+
+// tableCellConstraintSpace is a table cell's constraint space: its fixed
+// inline size, its block size (Indefinite in the measure pass, fixed in the
+// final layout, with an indefinite initial block size unless
+// computeCellBlockSize says it is definite) and an indefinite percentage
+// block size. Mirrors Blink's SetupTableCellConstraintSpaceBuilder
+// (table/table_layout_utils.cc:1363-1425 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14's
+// IsFixedBlockSizeIndefinite is Blink's IsInitialBlockSizeIndefinite. Not
+// ported: the alignment baseline (LOU-839 T8b) and
+// IsRestrictedBlockSizeTableCell.
+func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirectionMode, inlineSize, blockSize float64, isInitialBlockSizeIndefinite bool, tableData *TableConstraintSpaceData) ConstraintSpace {
+	wdm := tla.space.WritingDirection
+	b := NewConstraintSpaceBuilder(wdm, cellWDM, true).
+		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(cellWDM, tla.ctx)).
+		SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
+		SetAvailableSize(LogicalSize{InlineSize: inlineSize, BlockSize: blockSize}).
+		SetIsFixedInlineSize(true).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: inlineSize, BlockSize: Indefinite}).
+		SetPercentageResolutionInlineSize(inlineSize).
+		SetTableSectionData(tableData).
+		SetTableSectionIndex(0)
+	if blockSize != Indefinite {
+		b.SetIsFixedBlockSize(true)
+		if wdm.IsVertical() == cellWDM.IsVertical() {
+			// The cell's own CSS block size does not size it: the row
+			// does (ComputeBlockSizeForFragment's fixed branch,
+			// length_utils.cc:906-916).
+			b.SetIsBlockSizeOverride(true).
+				SetIsFixedBlockSizeIndefinite(isInitialBlockSizeIndefinite)
+		}
+	}
+	return b.Build()
+}
+
+// computeCellBlockSize returns a table cell's final block size, the sum of
+// the non-collapsed rows it spans plus the spacing between them, and
+// whether its initial block size is indefinite: it is definite only when
+// the cell is constrained (a specified block size) or it grew past its
+// minBlockSize in a table with a specified block size. Mirrors Blink's
+// ComputeCellBlockSize (table/table_layout_utils.cc:1333-1361 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func computeCellBlockSize(rows TableTypesRows, rowIndex, rowSpan int, blockSpacing, minBlockSize float64, isConstrained, isTableBlockSizeSpecified bool) (float64, bool) {
+	cellBlockSize := 0.0
+	if !rows[rowIndex].IsCollapsed {
+		for i := 0; i < rowSpan && rowIndex+i < len(rows); i++ {
+			if rows[rowIndex+i].IsCollapsed {
+				continue
+			}
+			cellBlockSize += rows[rowIndex+i].BlockSize
+			if i != 0 {
+				cellBlockSize += blockSpacing
+			}
+		}
+	}
+	hasGrown := cellBlockSize > minBlockSize
+	isInitialBlockSizeDefinite := isConstrained || (hasGrown && isTableBlockSizeSpecified)
+	return cellBlockSize, !isInitialBlockSizeDefinite
+}
+
+// cellHasSpecifiedBlockSize reports whether a cell's block size is a fixed
+// length or a percentage, which constrains it (CellBlockConstraint::
+// is_constrained, table/table_layout_utils.cc:264-289 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink does not count calc()
+// (its TODO 1105272), so neither does this.
+func cellHasSpecifiedBlockSize(style *css.Style, wdm WritingDirectionMode) bool {
+	if style == nil {
+		return false
+	}
+	prop := logicalBlockSizeProperty(wdm)
+	if _, ok := style.GetLength(prop); ok {
+		return true
+	}
+	_, ok := style.GetPercentage(prop)
+	return ok
 }
 
 // relativeCellOffset returns a table cell's relative offset in the table's

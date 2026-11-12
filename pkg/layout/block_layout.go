@@ -1828,6 +1828,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// so its content never resolves a min/max-content keyword again.
 		finalBlockSize = explicitBlockSize
 		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
+	} else if bla.space.IsFixedBlockSize && bla.space.IsFixedBlockSizeIndefinite {
+		// A fixed block size whose initial block size was indefinite (a
+		// table cell in its final layout) still ends at the fixed size:
+		// ComputeInitialBlockSizeForFragment returned the intrinsic size,
+		// ComputeBlockSizeForFragment returns the available size
+		// (length_utils.cc:906-916, :929-940 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		finalBlockSize = max(0, bla.space.AvailableSize.BlockSize.Float64()-geom.BlockBorderPadding())
+		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
 	} else {
 		finalBlockSize = intrinsicBlockSize
 		if hasExplicitBlock {
@@ -1935,10 +1944,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// table-cell box reaching block layout without one is a layout root or a
 	// box Blink blockifies, and gets no cell alignment.
 	//
-	// When distribution grows the row past the cell's block-size,
-	// table_layout.go's Phase-3 resize shifts the children again by the
-	// row-growth part; the two shifts sum to Blink's single shift against
-	// the final row block-size.
+	// Table layout lays each cell out again at its final block size
+	// (table_layout.go Phase 3), so this one shift is Blink's.
 	//
 	// The content extent includes the cell's own floats: a cell is a new
 	// formatting context, whose Blink intrinsic block-size encloses its
