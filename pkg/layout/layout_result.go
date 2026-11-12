@@ -491,8 +491,19 @@ func (f *PhysicalFragment) ShouldClipOverflowAlongBothAxis() bool {
 // ComputedStyle::OverflowClipMarginHasAnEffect (computed_style.h:2642-2647
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (f *PhysicalFragment) ShouldApplyOverflowClipMargin() bool {
-	style := f.Style
-	if !f.IsCSSBox() || style == nil || isScrollContainerBox(style, f.Node) {
+	return f.IsCSSBox() && shouldApplyOverflowClipMargin(f.Style, f.Node)
+}
+
+// ShouldApplyOverflowClipMargin is PhysicalFragment.ShouldApplyOverflowClipMargin
+// for the box paint reads.
+func (b *Box) ShouldApplyOverflowClipMargin() bool {
+	return shouldApplyOverflowClipMargin(b.Style, b.Node)
+}
+
+// shouldApplyOverflowClipMargin is LayoutObject::ShouldApplyOverflowClipMargin
+// for a box with style and node.
+func shouldApplyOverflowClipMargin(style *css.Style, node *html.Node) bool {
+	if style == nil || isScrollContainerBox(style, node) {
 		return false
 	}
 	margin, ok := style.GetOverflowClipMargin()
@@ -501,12 +512,12 @@ func (f *PhysicalFragment) ShouldApplyOverflowClipMargin() bool {
 	}
 	x, y := style.GetOverflowX(), style.GetOverflowY()
 	var isOverflowClip bool
-	if f.Node != nil && IsReplacedElement(f.Node) {
+	if node != nil && IsReplacedElement(node) {
 		isOverflowClip = x != css.OverflowVisible && y != css.OverflowVisible
 	} else {
 		isOverflowClip = x == css.OverflowClip && y == css.OverflowClip
 	}
-	return (isOverflowClip || style.ShouldApplyPaintContainment()) && respectsCSSOverflow(style, f.Node)
+	return (isOverflowClip || style.ShouldApplyPaintContainment()) && respectsCSSOverflow(style, node)
 }
 
 // OverflowClipMarginOutsets returns the per-side outsets from the border
