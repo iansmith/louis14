@@ -446,11 +446,16 @@ func (fc FontConfig) resolveBuiltinFamily(family string, bold, italic bool) stri
 	switch strings.ToLower(family) {
 	case "helvetica", "helvetica neue", "arial",
 		"liberation sans", "nimbus sans", "sans-serif":
-		return latinModernSansPath(dir, bold, italic)
+		// Chrome's Linux sans-serif is Arial (IDS_SANS_SERIF_FONT_FAMILY,
+		// chrome/app/resources/locale_settings_linux.grd:169-170 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which fontconfig's
+		// 30-metric-aliases.conf binds to Liberation Sans on the wpt.fyi
+		// runners (fonts-liberation, no Arial; wpt tools/docker/Dockerfile).
+		return liberationPath(dir, "Sans", bold, italic)
 	case "latin modern roman", "computer modern":
 		return latinModernRomanPath(dir, bold, italic)
 	case "times", "times new roman", "liberation serif", "serif":
-		return liberationSerifPath(dir, bold, italic)
+		return liberationPath(dir, "Serif", bold, italic)
 	case "courier", "courier new", "liberation mono", "monospace":
 		return atkinsonMonoPath(dir, bold, italic)
 	}
@@ -469,19 +474,6 @@ func (fc FontConfig) resolveBuiltinFamily(family string, bold, italic bool) stri
 	return ""
 }
 
-func latinModernSansPath(dir string, bold, italic bool) string {
-	switch {
-	case bold && italic:
-		return filepath.Join(dir, "lmsans10-boldoblique.otf")
-	case bold:
-		return filepath.Join(dir, "lmsans10-bold.otf")
-	case italic:
-		return filepath.Join(dir, "lmsans10-oblique.otf")
-	default:
-		return filepath.Join(dir, "lmsans10-regular.otf")
-	}
-}
-
 func latinModernRomanPath(dir string, bold, italic bool) string {
 	switch {
 	case bold && italic:
@@ -495,17 +487,18 @@ func latinModernRomanPath(dir string, bold, italic bool) string {
 	}
 }
 
-func liberationSerifPath(dir string, bold, italic bool) string {
+// liberationPath names a Liberation face file; style is "Sans" or "Serif".
+func liberationPath(dir, style string, bold, italic bool) string {
+	variant := "Regular"
 	switch {
 	case bold && italic:
-		return filepath.Join(dir, "LiberationSerif-BoldItalic.ttf")
+		variant = "BoldItalic"
 	case bold:
-		return filepath.Join(dir, "LiberationSerif-Bold.ttf")
+		variant = "Bold"
 	case italic:
-		return filepath.Join(dir, "LiberationSerif-Italic.ttf")
-	default:
-		return filepath.Join(dir, "LiberationSerif-Regular.ttf")
+		variant = "Italic"
 	}
+	return filepath.Join(dir, "Liberation"+style+"-"+variant+".ttf")
 }
 
 func atkinsonMonoPath(dir string, bold, italic bool) string {
