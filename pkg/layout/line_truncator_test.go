@@ -99,6 +99,11 @@ func TestLineTruncator_TruncateLine(t *testing.T) {
 			wantHidden: []string{"ib"},
 		},
 		{
+			name: "a ruby base is a child the ellipsis can follow",
+			body: `pp<ruby>X<rt>Y</rt></ruby>pp`,
+			want: `"pp"@0+200 "X"@200+100 "Y"@225+50 "…"@300+100 ellipsis`,
+		},
+		{
 			name: "the ellipsis is placed after the last child that fits",
 			body: `pp<span style="color:red">pp</span>pp`,
 			want: `"pp"@0+200 "p"@200+100 "…"@300+100 ellipsis`,
