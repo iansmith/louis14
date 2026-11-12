@@ -163,3 +163,16 @@ func TestRuleListIsBlinksRules(t *testing.T) {
 		t.Errorf("p's declarations = %v, want none (its only declaration is the nested span's)", d.Declarations)
 	}
 }
+
+// Recording the rule list must not change the parse: an unterminated
+// declaration ending in a bad string (css-variables/variable-reference-32)
+// stays invalid, so the earlier color wins.
+func TestRuleListKeepsTheParse(t *testing.T) {
+	sheet, err := ParseStylesheet("p {\n  color: green;\n  --a: red;\n  color: var(--a, \"\n", NewParserContext(""))
+	if err != nil || len(sheet.Rules) != 1 {
+		t.Fatalf("parse = %v, %v", sheet, err)
+	}
+	if got := sheet.Rules[0].Declarations["color"]; got != "green" {
+		t.Errorf("color = %q, want green (the bad-string declaration is invalid)", got)
+	}
+}
