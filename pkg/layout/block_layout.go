@@ -1883,10 +1883,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	d := bla.style.GetDisplay()
 	isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
 		d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
-	// The style can opt out (a <button>): ForceInlineBaselineSynthesis,
-	// physical_box_fragment.h:169-173 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
-	if !isFlexGrid && (bla.style.GetOverflowX() != css.OverflowVisible || bla.style.GetOverflowY() != css.OverflowVisible) &&
-		!bla.style.ShouldIgnoreOverflowPropertyForInlineBlockBaseline() {
+	if !isFlexGrid && forceInlineBaselineSynthesis(bla.style, bla.node.DOMNode) {
 		bla.containerBuilder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
 	} else if hasLastChildBaseline {
 		bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
