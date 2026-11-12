@@ -69,6 +69,30 @@ type LayoutInputNode struct {
 	// does.
 	siblingIndex int
 
+	// hasHorizontalScrollbar / hasVerticalScrollbar record that an
+	// overflow:auto axis of this scroll container needs its scrollbar,
+	// as its last layout found; frozenHorizontalScrollbar /
+	// frozenVerticalScrollbar hold that while layoutElement lays the box out
+	// again. Mirrors the scrollbar state of Blink's PaintLayerScrollableArea
+	// (HasHorizontalScrollbar / HasVerticalScrollbar and the
+	// FreezeScrollbarsScope, core/paint/paint_layer_scrollable_area.cc:
+	// 1918-1966, :3012- @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+	// overflow:scroll scrollbars are not recorded here (computeScrollbarsForNode
+	// reads them from style).
+	hasHorizontalScrollbar, hasVerticalScrollbar       bool
+	frozenHorizontalScrollbar, frozenVerticalScrollbar bool
+
+	// intrinsicLogicalWidthsDirty is set on a box's ancestors when its
+	// overflow:auto scrollbars change, so layoutElement checks whether
+	// their inline size changed with it. Mirrors LayoutBox::
+	// IntrinsicLogicalWidthsDirty as SetIntrinsicLogicalWidthsDirty marks
+	// it up the containing chain (layout_object.cc; set from
+	// PaintLayerScrollableArea::UpdateAfterLayout, core/paint/
+	// paint_layer_scrollable_area.cc:1080-1094 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Follows parent links, so
+	// per-layout anonymous wrappers outside the persistent tree end it.
+	intrinsicLogicalWidthsDirty bool
+
 	// isAnonymous is true for generated anonymous boxes (CSS 2.1 §9.2.1.1).
 	isAnonymous bool
 

@@ -196,6 +196,10 @@ func TestGridSizingReviewRound2(t *testing.T) {
 		{"spanning item's margins at min-content",
 			`<div id=g style="display:inline-grid; width:min-content; grid-template-columns:1fr 1fr"><div style="grid-column:1/3; margin-left:20px; height:10px"></div></div>`,
 			"g", func(b *Box) bool { return b.Width == 20 }, "20 wide"},
+		// The auto minimum's floor is the min-size resolved against border +
+		// padding, without the item's auto scrollbars
+		// (CalculateIntrinsicMinimumContribution, grid/grid_layout_utils.cc:
+		// 537-538): just the margins.
 		{"scroll container's margins at min-content",
 			`<div id=g style="display:inline-grid; width:min-content"><div style="overflow:auto; margin:0 15px; height:10px"><div style="width:100px;height:10px"></div></div></div>`,
 			"g", func(b *Box) bool { return b.Width == 30 }, "30 wide"},
