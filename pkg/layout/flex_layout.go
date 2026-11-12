@@ -2433,9 +2433,17 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 // (resolve_main_length, flex/flex_layout_algorithm.cc:960-1008 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 transfers a definite
 // cross size through the item's aspect ratio here (§9.2) before falling
-// back to itemMaxContentMainSize. ignoreMainSize is set for flex-basis:
-// content and an unresolvable percentage basis: their kContent size never
-// reads the item's own main size.
+// back to itemMaxContentMainSize.
+//
+// ignoreMainSize has no Blink analog: it is a stand-in for kContent's
+// semantics. Blink's kContent size is the item's content size
+// (MinMaxSizesFunc / BlockSizeFunc), not its own main size, whereas
+// louis14's measurement honours the item's own main size (ComputeMinMaxSizes
+// on the inline axis, the item's layout on the block axis). flex-basis:
+// content and an unresolvable percentage basis set it, which suppresses that
+// size (computeContentMinMaxSizes, IsContentSuggestionLayout). flex-basis:
+// auto reaches here only with a main size that doesn't resolve (auto, or a
+// percentage against an indefinite base), where the two agree.
 func (fla *FlexLayoutAlgorithm) contentFlexBasis(
 	child *LayoutInputNode,
 	style *css.Style,
@@ -2547,8 +2555,8 @@ func (fla *FlexLayoutAlgorithm) contentFlexBasis(
 // For replaced elements, returns intrinsic dimensions directly to avoid
 // CSS min/max clamping — the flex algorithm applies min/max separately
 // when computing the hypothetical main size (§9.2 step 3). ignoreMainSize
-// measures the content without the item's own main size (see
-// contentFlexBasis).
+// (no Blink analog; see contentFlexBasis) measures the content without the
+// item's own main size.
 func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	child *LayoutInputNode,
 	style *css.Style,
