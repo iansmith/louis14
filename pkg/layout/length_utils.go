@@ -116,6 +116,22 @@ func (mm MinMaxSizes) ClampSizeToMinAndMax(size float64) float64 {
 	return max(mm.MinContent, min(size, mm.MaxContent))
 }
 
+// Encompass raises both sizes to at least value. Mirrors Blink's
+// MinMaxSizes::Encompass (min_max_sizes.h:32-35 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (mm *MinMaxSizes) Encompass(value float64) {
+	mm.MinContent = max(mm.MinContent, value)
+	mm.MaxContent = max(mm.MaxContent, value)
+}
+
+// Constrain lowers both sizes to at most value. Mirrors Blink's
+// MinMaxSizes::Constrain (min_max_sizes.h:38-41 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (mm *MinMaxSizes) Constrain(value float64) {
+	mm.MinContent = min(mm.MinContent, value)
+	mm.MaxContent = min(mm.MaxContent, value)
+}
+
 // isIndefiniteInlineSize reports whether an available inline-size is
 // Blink's kIndefiniteSize: negative, or the saturated LayoutUnit a
 // louis14 max-content measurement width (1e9) is stored as.
@@ -556,12 +572,13 @@ func ComputeReplacedSize(ctx *LayoutContext, node *LayoutInputNode, space Constr
 	return s.computeReplacedSizeInternal(mode)
 }
 
-// lazyOnce memoizes f: ComputeReplacedSizeInternal's size functions may be
-// read by the min, max and main lengths alike.
-func lazyOnce(f func() float64) func() float64 {
-	var v float64
+// lazyOnce memoizes f: ComputeReplacedSizeInternal's size functions, and
+// the content sizes of applyMinMaxInlineSizes, may be read by the min, max
+// and main lengths alike.
+func lazyOnce[T any](f func() T) func() T {
+	var v T
 	done := false
-	return func() float64 {
+	return func() T {
 		if !done {
 			v, done = f(), true
 		}
