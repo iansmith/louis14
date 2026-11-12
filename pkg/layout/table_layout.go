@@ -1591,6 +1591,8 @@ func cellCSSBlockSize(style *css.Style, wdm WritingDirectionMode, frag *Physical
 		borderPadding = ToLogicalEdges(frag.BoxData.Border, wdm).BlockSum() +
 			ToLogicalEdges(frag.BoxData.Padding, wdm).BlockSum()
 	}
+	// Snap the length to a LayoutUnit, as ResolveBlockSize does.
+	size = layoutunit.FromFloat64Round(size).Float64()
 	if style.GetBoxSizing() == "border-box" {
 		return max(borderPadding, size), true
 	}
