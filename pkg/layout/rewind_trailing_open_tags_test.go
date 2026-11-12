@@ -60,3 +60,40 @@ func TestRewindTrailingOpenTagsAfterOpenPunctRetract(t *testing.T) {
 		t.Errorf("span fragments = %+v, want none on line 1 (its open tag moves with the retracted \"(\")", r)
 	}
 }
+
+// Rewinding trailing open tags leaves the line's width alone: the open tags
+// only advanced the line breaker's position, never the line's width.
+func TestRewindTrailingOpenTagsKeepsLineWidth(t *testing.T) {
+	const aaa = `<span id="a">aaa</span> <span style="` + rewindEdges + `">bbb</span>`
+	cases := []struct {
+		align, body string
+		wantX       float64
+	}{
+		// "aaa" (30px) alone on line 1 of a 70px line.
+		{"right", aaa, 40},
+		{"center", aaa, 20},
+		// "a a" (30px) justified to 70px: the second "a" ends the line.
+		{"justify", `a <span id="a">a</span> <span style="` + rewindEdges + `">bbbb</span> c`, 60},
+	}
+	for _, c := range cases {
+		t.Run(c.align, func(t *testing.T) {
+			src := `<!DOCTYPE html><body style="margin:0"><div style="width:70px;font:10px/1 Ahem;text-align:` + c.align + `">` + c.body + `</div>`
+			r := oofPageRects(t, src)["a"]
+			if len(r) != 1 || r[0].x != c.wantX {
+				t.Errorf("#a fragments = %+v, want one at x=%v", r, c.wantX)
+			}
+		})
+	}
+
+	t.Run("min-content: line 1 is the widest line", func(t *testing.T) {
+		src := `<!DOCTYPE html><body style="margin:0"><div id="c" style="width:min-content;font:10px/1 Ahem">aaaaaa ` +
+			`<span style="` + rewindEdges + `">b</span></div>`
+		b := findBoxByID(layoutRootTestHTML(t, src), "c")
+		if b == nil {
+			t.Fatal("no #c box")
+		}
+		if b.Width != 60 {
+			t.Errorf("min-content width = %v, want 60 (\"aaaaaa\"; line 2 is 46)", b.Width)
+		}
+	})
+}
