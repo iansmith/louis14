@@ -102,16 +102,16 @@ func TestAutoScrollbar_NoneWhenContentsAreNotVisible(t *testing.T) {
 	}
 }
 
-// TestAutoScrollbar_TableCellBlockAxisWaitsForFinalSize pins a table
-// cell's auto scrollbars as far as louis14 can decide them. A cell is laid
-// out once, at its final inline size but before the table stretches its
-// block size to the row; Blink decides on the final layout
-// (UpdateAfterLayout / TryRemovingAutoScrollbars, core/paint/
-// paint_layer_scrollable_area.cc:1021-1075, :1851-1890 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So the inline-axis scrollbar
-// is decided as for any box, and the block-axis one waits for a final-size
-// cell layout (LOU-918): none yet.
-func TestAutoScrollbar_TableCellBlockAxisWaitsForFinalSize(t *testing.T) {
+// TestAutoScrollbar_TableCellDecidesAgainstItsFinalBlockSize pins a table
+// cell's auto scrollbars. A cell is laid out once, at its final inline size
+// but before the table stretches its block size to the row; Blink decides
+// on the final layout (UpdateAfterLayout / TryRemovingAutoScrollbars,
+// core/paint/paint_layer_scrollable_area.cc:1021-1075, :1851-1890 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The table makes the cell at
+// least as tall as its content (the row's minimum, table_layout.go), so the
+// block axis is decided against that size, not the measure size. A row
+// stretched further by another cell is LOU-918.
+func TestAutoScrollbar_TableCellDecidesAgainstItsFinalBlockSize(t *testing.T) {
 	sb := classicScrollbarWidth(&css.Style{})
 	for _, tc := range []struct {
 		name, html string
@@ -128,6 +128,11 @@ func TestAutoScrollbar_TableCellBlockAxisWaitsForFinalSize(t *testing.T) {
 		// scrollbar (css-tables/table-cell-overflow-auto-scrolled).
 		{"fixed-width cell overflows inline", `<table style="table-layout: fixed; width: 100px; height: 100px; border-spacing: 0"><tr><td id="s" style="padding: 0; overflow: auto; vertical-align: top"><div style="width: 200px; height: 50px"></div></td></tr></table>`,
 			css.BoxEdge{Bottom: sb}, 100, 100},
+		// A 100x100 cell whose 0x0 wrapper's content overflows it both ways: the
+		// cell stays 100 tall, so both scrollbars
+		// (css-backgrounds/table-cell-background-local-003).
+		{"fixed-size cell overflows both ways", `<table style="border-spacing: 0"><tr><td id="s" style="width: 100px; height: 100px; padding: 0; overflow: auto; vertical-align: top"><div style="width: 0; height: 0"><div style="width: 300px; height: 300px"></div></div></td></tr></table>`,
+			css.BoxEdge{Right: sb, Bottom: sb}, 100, 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := layoutRootTestHTML(t, `<!DOCTYPE html><style>body { margin: 0 }</style>`+tc.html)
