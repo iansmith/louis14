@@ -157,3 +157,42 @@ func TestScopePseudoElement(t *testing.T) {
 		t.Errorf("#other::before took content from a rule scoped to #r > main")
 	}
 }
+
+// A prelude-less @scope is implicit: its root is the parent element of the
+// stylesheet's owner node (ImplicitScopeTrigger,
+// scoped_style_resolver.cc:444-454 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// including an <svg> or <head> parent, and each owner gives its sheet its
+// own root. A `to (...)`-only prelude is implicit too, with limits.
+func TestImplicitScopeRoot(t *testing.T) {
+	const scoped = `<style>@scope { .a { color: green } }</style>`
+	styles := cascadeHTML(t, `<head>`+scoped+`</head><body>
+	<div id="root" class="a"><style>
+		@scope { .a { color: green } :scope { background-color: blue } }
+	</style><div class="a" id="in"></div></div>
+	<div class="a" id="out"></div>
+	<svg id="svg">`+scoped+`<rect class="a" id="rect"/></svg>
+	<section>`+scoped+`<div class="a" id="first"></div></section>
+	<section>`+scoped+`<div class="a" id="second"></div></section>
+	<div><style>@scope to (.lim) { .a { color: green } }</style>
+		<div class="a" id="above-limit"></div>
+		<div class="lim"><div class="a" id="below-limit"></div></div></div>
+	</body>`, nil)
+	for _, tc := range []struct{ id, want string }{
+		{"in", "green"}, {"rect", "green"}, {"first", "green"}, {"second", "green"},
+		{"above-limit", "green"},
+	} {
+		if got := colorOf(t, styles, tc.id); got != tc.want {
+			t.Errorf("#%s color = %q, want %q", tc.id, got, tc.want)
+		}
+	}
+	// Outside every implicit root (a <head> sheet's root is <head>), the
+	// root itself (the anchor is a descendant combinator), and below a limit.
+	for _, id := range []string{"out", "root", "below-limit"} {
+		if got := colorOf(t, styles, id); got == "green" {
+			t.Errorf("#%s matched an implicit scope's .a rule", id)
+		}
+	}
+	if got, _ := styleByID(t, styles, "root").Get("background-color"); got != "blue" {
+		t.Errorf(":scope of the implicit scope: #root background-color = %q, want blue", got)
+	}
+}
