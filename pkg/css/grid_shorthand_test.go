@@ -64,8 +64,9 @@ func TestGridShorthandSetsItsSixLonghands(t *testing.T) {
 // grid-template against Blink's StylePropertySerializer::
 // GetShorthandValueForGrid (core/css/style_property_serializer.cc:2822) and
 // CSSOMUtils::ComputedValueForGridTemplateShorthand
-// (core/css/cssom_utils.cc:139) @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b
-// (LOU-852).
+// (core/css/cssom_utils.cc:139) @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b,
+// and the read-back of the track-list longhands, whose stored value is what
+// the grid consumers produce (LOU-852).
 func TestGridShorthandsSerialize(t *testing.T) {
 	tests := []struct{ decl, property, want string }{
 		{"grid: 10px / 20px", "grid", "10px / 20px"},
@@ -82,6 +83,11 @@ func TestGridShorthandsSerialize(t *testing.T) {
 		{"grid-template: none", "grid-template", "none"},
 		{`grid-template: [p] "a" 10px [q] "b"`, "grid-template", `[p] "a" 10px [q] "b"`},
 		{`grid-template: [] "a" 10px [] "b"`, "grid-template", `"a" 10px "b"`},
+		// An empty <line-names> is no value, so it does not serialize.
+		{"grid-template-columns: 1fr [] 1fr", "grid-template-columns", "1fr 1fr"},
+		{"grid-template-columns: [] repeat(2, [] 1fr []) []", "grid-template-columns", "repeat(2, 1fr)"},
+		{`grid-template: "a" / [] 1fr []`, "grid-template", `"a" / 1fr`},
+		{"grid-template-rows: subgrid [a] []", "grid-template-rows", "subgrid [a] []"},
 		// grid-auto-* set alongside grid-template cannot be expressed by grid.
 		{"grid-template: 10px / 20px; grid-auto-flow: column; grid-auto-rows: 5px; grid-auto-columns: auto", "grid", ""},
 	}
