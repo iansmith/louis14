@@ -266,14 +266,12 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		}
 	}
 
-	// Inline-size floor mirroring the block-size floor below: when a parent
-	// algorithm has already fixed the table's inline-size (e.g. a grid item
-	// with default `justify-self: normal` resolving to stretch), the table's
-	// own column-width sum is only a floor — the table must still fill the
-	// parent's pre-resolved track size so the container's own borders /
-	// background line up with the cell. Mirrors Blink's TableLayoutAlgorithm
-	// honoring the kFixedInlineSize flag when it derives the final
-	// border-box inline size.
+	// When a parent algorithm fixed the table's inline size, an auto-layout
+	// table's columns already fill it (computeColumnWidths). The fixed-layout
+	// column widths do not yet spread excess width over explicit columns
+	// (Blink SynchronizeAssignableTableInlineSizeAndColumnsFixed, table/
+	// table_layout_utils.cc:776 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
+	// the fixed size still floors the border box here.
 	borderBoxInline := contentInlineSize + geom.InlineBorderPadding()
 	if tla.space.IsFixedInlineSize && geom.BorderBoxSize.InlineSize > borderBoxInline {
 		borderBoxInline = geom.BorderBoxSize.InlineSize
@@ -1982,13 +1980,19 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	columns := tla.computeColumnConstraints(rows, numCols, availableInline, inlineSpacing, colWidthSpecs)
 
 	// The assignable table inline size (ComputeAssignableTableInlineSize,
-	// table/table_layout_algorithm.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
-	// the used width, never below the grid min, less the border spacing
-	// (already out of availableInline); an auto width is fit-content over
-	// the layout-pass grid min/max, where percentage columns count. The
-	// columns share it by the width distribution algorithm
+	// table/table_layout_algorithm.cc:223-258 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): when the parent fixed the
+	// table's inline size (a stretched grid item, a flex item), it is that
+	// size less the border spacing, already out of availableInline
+	// (:231-234). Otherwise it is the used width, never below the grid min,
+	// less the border spacing; an auto width is fit-content over the
+	// layout-pass grid min/max, where percentage columns count. The columns
+	// share it by the width distribution algorithm
 	// (SynchronizeAssignableTableInlineSizeAndColumns, table/
 	// table_layout_utils.cc:1849-1864).
+	if tla.space.IsFixedInlineSize {
+		return DistributeInlineSizeToComputedInlineSizeAuto(availableInline, columns.Data, true)
+	}
 	grid := ComputeGridInlineMinMax(tla.node, columns, 0, false, true)
 	assignable := max(availableInline, grid.MinContent)
 	if !hasExplicitWidth {
