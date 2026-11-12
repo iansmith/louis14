@@ -1078,14 +1078,19 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		// grid_layout_algorithm.cc:1460-1500); the additional column pass
 		// measures it again against its rows.
 		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space, Indefinite, Indefinite)
-		edges = NodeFragmentGeometry(node, cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
+		edges = ComputeFragmentGeometry(cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
 		return minContrib, maxContrib, edges
 	}
 	// Parallel: compute intrinsic sizes in the child's writing mode, then add
-	// border/padding and margins in the child's own writing mode.
-	childGeom := NodeFragmentGeometry(node, cs, childWDM)
-	childBP := childGeom.InlineBorderPadding()
+	// border/padding and margins in the child's own writing mode. The
+	// contribution counts the item's scrollbars (its min/max-content
+	// sizes, ComputeScrollbarsForNonAnonymous); edges, the auto minimum's
+	// floor, does not: CalculateIntrinsicMinimumContribution resolves the
+	// min length against ComputeBorders + ComputePadding only
+	// (grid/grid_layout_utils.cc:537-538 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	margins := ResolveMargins(cs, childWDM, 0)
+	childGeom := NodeFragmentGeometry(node, cs, childWDM)
 	childSpace := NewConstraintSpaceBuilder(containerWDM, childWDM, false).
 		SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, ctx)).
@@ -1094,8 +1099,9 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 		Build()
 	mm := ComputeMinMaxSizes(ctx, node, childSpace)
-	edges = childBP + margins.InlineSum()
-	return mm.MinContent + edges, mm.MaxContent + edges, edges
+	edges = childGeom.InlineBorderPadding() - childGeom.InlineScrollbarSum() + margins.InlineSum()
+	contribEdges := edges + childGeom.InlineScrollbarSum()
+	return mm.MinContent + contribEdges, mm.MaxContent + contribEdges, edges
 }
 
 // measureGridMinMax computes a grid container's min/max-content inline

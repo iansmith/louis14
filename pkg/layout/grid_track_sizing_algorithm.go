@@ -861,7 +861,7 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 		var edges float64
 		childWDM := NewWritingDirectionMode(item.style)
 		if wdm.IsOrthogonalTo(childWDM) {
-			geom := NodeFragmentGeometry(item.node, item.style, childWDM)
+			geom := ComputeFragmentGeometry(item.style, childWDM)
 			margins := ResolveMargins(item.style, childWDM, 0)
 			edges = geom.InlineBorderPadding() + margins.InlineSum()
 			space := NewConstraintSpaceBuilder(wdm, childWDM, true).
@@ -873,7 +873,7 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 			it.minContent, it.maxContent = mm.MinContent+edges, mm.MaxContent+edges
 		} else {
 			blockSize, margins := parallelBlock(item)
-			edges = NodeFragmentGeometry(item.node, item.style, wdm).BlockBorderPadding() + margins.BlockStart + margins.BlockEnd
+			edges = ComputeFragmentGeometry(item.style, wdm).BlockBorderPadding() + margins.BlockStart + margins.BlockEnd
 			block := blockSize + margins.BlockStart + margins.BlockEnd
 			it.minContent, it.maxContent = block, block
 		}
