@@ -111,7 +111,6 @@ func emitRubyColumnFragments(
 	wdm WritingDirectionMode,
 	fonts text.FontConfig,
 	centralBaseline bool,
-	sidewaysVLR bool,
 	lineBox *LogicalLineItems,
 ) {
 	// Base sub-line: apply ruby-align distribution when the base is the
@@ -129,7 +128,7 @@ func emitRubyColumnFragments(
 		emitSubLineTextFragments(
 			column.BaseLine, columnInlineOffset+baseOffset, baseBlockBaseline,
 			baseBlockBaseline-maxAscent, lineHeight,
-			textContent, baseExpansion, wdm, fonts, centralBaseline, sidewaysVLR, lineBox, true,
+			textContent, baseExpansion, wdm, fonts, centralBaseline, lineBox, true,
 		)
 	}
 
@@ -170,12 +169,12 @@ func emitRubyColumnFragments(
 		// the place emphasis-mark Y is computed relative to.
 		annoEmAscent, _ := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline)
 		annoBaseline := annotationBlockTop + math.Round(annoEmAscent)
-		// Annotation inline boxes keep the em-box (baseline-anchored) model:
-		// pass a zero band so emitSubLineTextFragments takes the em-box branch.
+		// Annotation inline boxes keep the font-box (baseline-anchored) model:
+		// pass a zero band so emitSubLineTextFragments takes the font-box branch.
 		emitSubLineTextFragments(
 			anno, annoInlineOffset, annoBaseline,
 			0, 0,
-			textContent, 0, wdm, fonts, centralBaseline, sidewaysVLR, lineBox, false,
+			textContent, 0, wdm, fonts, centralBaseline, lineBox, false,
 		)
 	}
 }
@@ -267,7 +266,6 @@ type subLineEmitter struct {
 	wdm              WritingDirectionMode
 	fonts            text.FontConfig
 	centralBaseline  bool
-	sidewaysVLR      bool
 	lineBox          *LogicalLineItems
 	// isBaseLine marks a ruby base sub-line, whose text is part of the
 	// line's in-flow content: Blink adds the base's items to the line box
@@ -294,7 +292,7 @@ func (e subLineEmitter) add(frag *PhysicalFragment, offset LogicalOffset, item *
 //
 // justifyExpansion is the per-space-character inline expansion applied for
 // ruby-align: space-between / space-around. boxBandTop/boxBandHeight describe
-// the line band an inline box fills (zero band → em-box model).
+// the line band an inline box fills (zero band → font-box model).
 //
 // This is a slimmed-down version of the createLineBoxEx text path: no
 // vertical-align stack, no first-letter / first-line styling, no decorating-box
@@ -311,7 +309,6 @@ func emitSubLineTextFragments(
 	wdm WritingDirectionMode,
 	fonts text.FontConfig,
 	centralBaseline bool,
-	sidewaysVLR bool,
 	lineBox *LogicalLineItems,
 	isBaseLine bool,
 ) {
@@ -324,7 +321,6 @@ func emitSubLineTextFragments(
 		wdm:              wdm,
 		fonts:            fonts,
 		centralBaseline:  centralBaseline,
-		sidewaysVLR:      sidewaysVLR,
 		lineBox:          lineBox,
 		isBaseLine:       isBaseLine,
 	}
@@ -374,16 +370,7 @@ func (e subLineEmitter) emitTextItem(r InlineItemResult, inlinePos float64) floa
 		content += "-"
 	}
 
-	fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-	var ascent float64
-	if e.centralBaseline {
-		ascent = fontSize / 2
-	} else {
-		// CSS Fonts 4 §6.1: native ascent for per-item placement (matches the
-		// createLineBoxEx text path); the strut override affects line sizing,
-		// not glyph position within the box.
-		ascent = alignmentAscentFromFont(e.sidewaysVLR, fontSize, resolveFontPath(r.Item.Style, e.fonts), nil)
-	}
+	fontSize, ascent, textHeight := textFragmentMetrics(r.Item.Style, e.fonts, e.wdm, e.centralBaseline)
 	blockPos := e.blockBaseline - ascent
 
 	parentNode := r.Item.Node
@@ -393,13 +380,13 @@ func (e subLineEmitter) emitTextItem(r InlineItemResult, inlinePos float64) floa
 
 	// ruby-align space-between/space-around: split at spaces, expand each.
 	if e.justifyExpansion > 0 && strings.Contains(content, " ") {
-		return e.emitJustifiedText(r, content, inlinePos, blockPos, fontSize, parentNode)
+		return e.emitJustifiedText(r, content, inlinePos, blockPos, fontSize, textHeight, parentNode)
 	}
 
 	e.add(&PhysicalFragment{
 		Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 			InlineSize: r.InlineSize,
-			BlockSize:  fontSize,
+			BlockSize:  textHeight,
 		}, e.wdm.WM)),
 		Type:             FragmentText,
 		TextContent:      content,
@@ -416,7 +403,7 @@ func (e subLineEmitter) emitTextItem(r InlineItemResult, inlinePos float64) floa
 // emitJustifiedText emits one text run split at spaces, expanding each space by
 // justifyExpansion (ruby-align space-between/space-around). Mirrors the
 // justify-expansion path in createLineBoxEx applied to ruby sub-lines.
-func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, inlinePos, blockPos, fontSize float64, parentNode *html.Node) float64 {
+func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, inlinePos, blockPos, fontSize, textHeight float64, parentNode *html.Node) float64 {
 	fontPath := resolveFontPath(r.Item.Style, e.fonts)
 	letterSpacing := r.Item.Style.GetLetterSpacing()
 	wordSpacing := r.Item.Style.GetWordSpacing()
@@ -428,7 +415,7 @@ func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, in
 			e.add(&PhysicalFragment{
 				Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 					InlineSize: expandedSpace,
-					BlockSize:  fontSize,
+					BlockSize:  textHeight,
 				}, e.wdm.WM)),
 				Type:             FragmentText,
 				TextContent:      " ",
@@ -446,7 +433,7 @@ func (e subLineEmitter) emitJustifiedText(r InlineItemResult, content string, in
 		e.add(&PhysicalFragment{
 			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 				InlineSize: pieceWidth,
-				BlockSize:  fontSize,
+				BlockSize:  textHeight,
 			}, e.wdm.WM)),
 			Type:             FragmentText,
 			TextContent:      piece,
@@ -480,10 +467,10 @@ func (e subLineEmitter) emitInlineBox(boxStack []openSubLineBox, inlinePos float
 		return boxStack
 	}
 	// Vertical model from createLineBoxEx (spanContentBlock): fill the line band
-	// when the font is shorter than the line, else an em box on the baseline.
-	boxFontSize, boxAscent := inlineAlignmentAscent(ob.style, e.fonts, e.wdm, e.centralBaseline)
-	boxTop, boxBlockSize := e.blockBaseline-boxAscent, boxFontSize
-	if e.boxBandHeight > 0 && boxFontSize < e.boxBandHeight {
+	// when the font is shorter than the line, else a font box on the baseline.
+	_, boxAscent, boxTextHeight := textFragmentMetrics(ob.style, e.fonts, e.wdm, e.centralBaseline)
+	boxTop, boxBlockSize := e.blockBaseline-boxAscent, boxTextHeight
+	if e.boxBandHeight > 0 && boxTextHeight < e.boxBandHeight {
 		boxTop, boxBlockSize = e.boxBandTop, e.boxBandHeight
 	}
 	e.add(&PhysicalFragment{

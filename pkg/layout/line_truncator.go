@@ -165,7 +165,7 @@ func (t *LineTruncator) PlaceEllipsisNextTo(lineBox *LogicalLineItems, ellipsize
 	if !t.isLtr() {
 		offset = child.Offset.InlineOffset - t.ellipsisWidth
 	}
-	fontSize, ascent := inlineAlignmentAscent(t.lineStyle, t.fonts, p.WritingDirection, p.CentralBaseline)
+	_, ascent, textHeight := textFragmentMetrics(t.lineStyle, t.fonts, p.WritingDirection, p.CentralBaseline)
 	node := child.Fragment.Node
 	if child.LayoutResult != nil && node != nil {
 		// The ellipsis is associated with the atomic inline, but it is text
@@ -176,7 +176,7 @@ func (t *LineTruncator) PlaceEllipsisNextTo(lineBox *LogicalLineItems, ellipsize
 		Fragment: &PhysicalFragment{
 			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 				InlineSize: t.ellipsisWidth,
-				BlockSize:  fontSize,
+				BlockSize:  textHeight,
 			}, p.WritingDirection.WM)),
 			Type:             FragmentText,
 			TextContent:      t.ellipsisText,
