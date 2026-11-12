@@ -214,6 +214,9 @@ func TestStyleSheetsRuleWritesParseAsOneValue(t *testing.T) {
 		{"border reads back", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.border="1px solid lime"; if (r[0].style.border !== "1px solid lime") throw new Error("border read back " + JSON.stringify(r[0].style.border));`, "border-left-color", "lime"},
 		{"border-color reads back collapsed", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.borderColor="lime"; if (r[0].style.borderColor !== "lime") throw new Error("border-color read back " + JSON.stringify(r[0].style.borderColor));`, "border-left-color", "lime"},
 		{"priority in the value is rejected", `<style>#d{width:3px}</style><div id="d">x</div>`, `r[0].style.width="9px !important";`, "width", "3px"},
+		{"font with small-caps applies", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.font="small-caps 12px serif";`, "font-variant-caps", "small-caps"},
+		{"contain-intrinsic-size applies", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.containIntrinsicSize="10px 20px";`, "contain-intrinsic-height", "20px"},
+		{"contain-intrinsic-size none applies", `<style>#d{contain-intrinsic-width:5px}</style><div id="d">x</div>`, `r[0].style.containIntrinsicSize="none";`, "contain-intrinsic-width", "none"},
 		{"partial shorthand reads back empty", `<style>#d{margin-top:1px}</style><div id="d">x</div>`, `if (r[0].style.margin !== "") throw new Error("margin read back " + JSON.stringify(r[0].style.margin));`, "margin-top", "1px"},
 	} {
 		doc := parseHTML(t, tc.html)
