@@ -621,7 +621,11 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 		maxContent += indent
 	}
 
-	return MinMaxSizes{MinContent: minContent, MaxContent: maxContent}
+	// A negative inline-end margin or text-indent can make min > max: the
+	// max-content encompasses the min-content. Mirrors
+	// InlineNode::ComputeMinMaxSizes (inline/inline_node.cc:2353-2354 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	return MinMaxSizes{MinContent: minContent, MaxContent: max(minContent, maxContent)}
 }
 
 // flushFloatRowForClear ends the current float row when a float clears: a
