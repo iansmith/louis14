@@ -4063,8 +4063,7 @@ func borderWidthKeyword(val string) (string, bool) {
 func expandBorderProperty(style *Style, value string) {
 	// Reset all sub-properties to their initial values first
 	// Initial values: width=medium (3px), style=none, color=currentcolor
-	sides := []string{"top", "right", "bottom", "left"}
-	for _, side := range sides {
+	for _, side := range physicalSides {
 		style.Set("border-"+side+"-width", "3px") // medium = 3px
 		style.Set("border-"+side+"-style", "none")
 		style.Set("border-"+side+"-color", "currentcolor")

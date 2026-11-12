@@ -25,6 +25,7 @@ func TestTableRulesAttribute(t *testing.T) {
 		<table id="r" rules="rows"><tr><td id="rd">x</td></tr></table>
 		<table id="c" rules="cols"><tr><td id="cd">x</td></tr></table>
 		<table id="a" rules="all"><tr><td id="ad">x</td></tr></table>
+		<table id="fr" rules="groups" frame="VOID"><tr><td>x</td></tr></table>
 		<table id="n" rules="none"><tr><td id="nd">x</td></tr></table>
 		<table id="bad" rules="bogus"><tbody id="badb"><tr><td>x</td></tr></tbody></table>`, nil)
 	for _, tt := range []struct {
@@ -32,17 +33,18 @@ func TestTableRulesAttribute(t *testing.T) {
 		want map[string]string // "" = unset
 	}{
 		{"g", map[string]string{"border-collapse": "collapse", "border-top-style": "hidden", "border-left-style": "hidden"}},
-		{"gb", map[string]string{"border-top-width": "thin", "border-top-style": "solid", "border-bottom-width": "thin", "border-bottom-style": "solid", "border-left-style": ""}},
-		{"gh", map[string]string{"border-top-style": "solid", "border-bottom-width": "thin"}},
-		{"gf", map[string]string{"border-top-style": "solid", "border-bottom-width": "thin"}},
+		{"gb", map[string]string{"border-top-width": "1px", "border-top-style": "solid", "border-bottom-width": "1px", "border-bottom-style": "solid", "border-left-style": ""}},
+		{"gh", map[string]string{"border-top-style": "solid", "border-bottom-width": "1px"}},
+		{"gf", map[string]string{"border-top-style": "solid", "border-bottom-width": "1px"}},
 		{"ov", map[string]string{"border-top-style": "dashed", "border-top-width": "3px", "border-bottom-style": "solid"}},
-		{"cg", map[string]string{"border-left-width": "thin", "border-left-style": "solid", "border-right-style": "solid", "border-top-style": ""}},
+		{"cg", map[string]string{"border-left-width": "1px", "border-left-style": "solid", "border-right-style": "solid", "border-top-style": ""}},
 		{"col", map[string]string{"border-left-style": ""}},
 		{"gd", map[string]string{"border-top-style": "", "border-left-style": ""}},
 		{"gbord", map[string]string{"border-collapse": "collapse"}},
-		{"rd", map[string]string{"border-top-width": "thin", "border-top-style": "solid", "border-bottom-style": "solid", "border-top-color": "red", "border-left-style": ""}},
-		{"cd", map[string]string{"border-left-width": "thin", "border-left-style": "solid", "border-right-style": "solid", "border-left-color": "red", "border-top-style": ""}},
+		{"rd", map[string]string{"border-top-width": "1px", "border-top-style": "solid", "border-bottom-style": "solid", "border-top-color": "red", "border-left-style": ""}},
+		{"cd", map[string]string{"border-left-width": "1px", "border-left-style": "solid", "border-right-style": "solid", "border-left-color": "red", "border-top-style": ""}},
 		{"ad", map[string]string{"border-top-width": "1px", "border-left-style": "solid", "border-bottom-color": "red"}},
+		{"fr", map[string]string{"border-collapse": "collapse", "border-top-style": ""}},
 		{"n", map[string]string{"border-collapse": "collapse", "border-top-style": "hidden"}},
 		{"nd", map[string]string{"border-top-style": ""}},
 		{"bad", map[string]string{"border-collapse": "separate", "border-top-style": ""}},
