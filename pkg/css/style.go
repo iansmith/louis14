@@ -840,6 +840,8 @@ func (s *Style) cssToLengthConversionData() calcContext {
 		lhSize:         s.LhSize,
 		icWidth:        s.ideographicInlineSize(),
 		remFontSize:    s.remFontSize,
+
+		verticalWritingMode: IsVerticalWritingMode(s),
 	}
 }
 
@@ -1049,103 +1051,17 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 	// css_primitive_value_unit_trie.cc.tmpl, trie_length_switch(..., True))
 	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
 	val = asciiToLower(val)
-	// Dynamic/static/large viewport units — treat all as equivalent to vh/vw
-	// in static renderer (no browser chrome changes). Must be checked before
-	// vmin/vmax/vw/vh to avoid suffix conflicts (e.g. "dvmin" ends with "min").
-	for _, suffix := range []string{"dvmin", "svmin", "lvmin"} {
-		if strings.HasSuffix(val, suffix) {
-			numStr := strings.TrimSuffix(val, suffix)
-			num, err := strconv.ParseFloat(numStr, 64)
+	// Viewport-percentage units (CSSLengthResolver, css_length_resolver.cc:
+	// 11-60 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The small, large
+	// and dynamic viewports are all the static viewport.
+	for _, u := range viewportLengthUnits {
+		if strings.HasSuffix(val, u.name) {
+			num, err := strconv.ParseFloat(strings.TrimSuffix(val, u.name), 64)
 			if err != nil {
 				return 0, false
 			}
-			return num * math.Min(ctx.viewportWidth, ctx.viewportHeight) / 100, true
+			return num * u.size(ctx) / 100, true
 		}
-	}
-	for _, suffix := range []string{"dvmax", "svmax", "lvmax"} {
-		if strings.HasSuffix(val, suffix) {
-			numStr := strings.TrimSuffix(val, suffix)
-			num, err := strconv.ParseFloat(numStr, 64)
-			if err != nil {
-				return 0, false
-			}
-			return num * math.Max(ctx.viewportWidth, ctx.viewportHeight) / 100, true
-		}
-	}
-	for _, suffix := range []string{"dvw", "svw", "lvw"} {
-		if strings.HasSuffix(val, suffix) {
-			numStr := strings.TrimSuffix(val, suffix)
-			num, err := strconv.ParseFloat(numStr, 64)
-			if err != nil {
-				return 0, false
-			}
-			return num * ctx.viewportWidth / 100, true
-		}
-	}
-	for _, suffix := range []string{"dvh", "svh", "lvh"} {
-		if strings.HasSuffix(val, suffix) {
-			numStr := strings.TrimSuffix(val, suffix)
-			num, err := strconv.ParseFloat(numStr, 64)
-			if err != nil {
-				return 0, false
-			}
-			return num * ctx.viewportHeight / 100, true
-		}
-	}
-	// Container query units — approximate as viewport units when no container context.
-	// cqw/cqi (inline axis) ≈ vw; cqh/cqb (block axis) ≈ vh.
-	for _, suffix := range []string{"cqw", "cqi"} {
-		if strings.HasSuffix(val, suffix) {
-			numStr := strings.TrimSuffix(val, suffix)
-			num, err := strconv.ParseFloat(numStr, 64)
-			if err != nil {
-				return 0, false
-			}
-			return num * ctx.viewportWidth / 100, true
-		}
-	}
-	for _, suffix := range []string{"cqh", "cqb"} {
-		if strings.HasSuffix(val, suffix) {
-			numStr := strings.TrimSuffix(val, suffix)
-			num, err := strconv.ParseFloat(numStr, 64)
-			if err != nil {
-				return 0, false
-			}
-			return num * ctx.viewportHeight / 100, true
-		}
-	}
-	// Viewport units (check vmin/vmax before vw/vh to avoid suffix conflicts)
-	if strings.HasSuffix(val, "vmin") {
-		numStr := strings.TrimSuffix(val, "vmin")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
-		}
-		return num * math.Min(ctx.viewportWidth, ctx.viewportHeight) / 100, true
-	}
-	if strings.HasSuffix(val, "vmax") {
-		numStr := strings.TrimSuffix(val, "vmax")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
-		}
-		return num * math.Max(ctx.viewportWidth, ctx.viewportHeight) / 100, true
-	}
-	if strings.HasSuffix(val, "vw") {
-		numStr := strings.TrimSuffix(val, "vw")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
-		}
-		return num * ctx.viewportWidth / 100, true
-	}
-	if strings.HasSuffix(val, "vh") {
-		numStr := strings.TrimSuffix(val, "vh")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
-		}
-		return num * ctx.viewportHeight / 100, true
 	}
 	if strings.HasSuffix(val, "rem") {
 		// rem is the root element's computed font-size; absent (no root in
@@ -1315,6 +1231,50 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 	return num, true
 }
 
+// viewportLengthUnit is a viewport-percentage unit and the viewport size
+// 100 of it make.
+type viewportLengthUnit struct {
+	name string
+	size func(calcContext) float64
+}
+
+// viewportLengthUnits are the viewport-percentage units, a longer suffix
+// before any shorter one it ends with. vi and vb measure the inline and block axes of the element's
+// writing mode (ViewportInlineSizePercent / ViewportBlockSizePercent,
+// css_length_resolver.cc:19-25). The container query units stand in as
+// viewport units: louis14 has no container context.
+var viewportLengthUnits = func() []viewportLengthUnit {
+	width := func(c calcContext) float64 { return c.viewportWidth }
+	height := func(c calcContext) float64 { return c.viewportHeight }
+	vmin := func(c calcContext) float64 { return math.Min(c.viewportWidth, c.viewportHeight) }
+	vmax := func(c calcContext) float64 { return math.Max(c.viewportWidth, c.viewportHeight) }
+	inline := func(c calcContext) float64 {
+		if c.verticalWritingMode {
+			return c.viewportHeight
+		}
+		return c.viewportWidth
+	}
+	block := func(c calcContext) float64 {
+		if c.verticalWritingMode {
+			return c.viewportWidth
+		}
+		return c.viewportHeight
+	}
+	var units []viewportLengthUnit
+	add := func(size func(calcContext) float64, names ...string) {
+		for _, n := range names {
+			units = append(units, viewportLengthUnit{n, size})
+		}
+	}
+	add(vmin, "dvmin", "svmin", "lvmin", "vmin")
+	add(vmax, "dvmax", "svmax", "lvmax", "vmax")
+	add(inline, "dvi", "svi", "lvi", "vi")
+	add(block, "dvb", "svb", "lvb", "vb")
+	add(width, "dvw", "svw", "lvw", "vw", "cqw", "cqi")
+	add(height, "dvh", "svh", "lvh", "vh", "cqh", "cqb")
+	return units
+}()
+
 // absoluteLengthUnits are the absolute length units and their size in px.
 var absoluteLengthUnits = []struct {
 	name string
@@ -1372,7 +1332,11 @@ type calcContext struct {
 	percentBase    float64
 	viewportWidth  float64
 	viewportHeight float64
-	chScale        float64
+	// verticalWritingMode is whether the element's writing mode is vertical,
+	// which swaps the viewport axes vi and vb measure (CSSToLengthConversionData's
+	// writing_mode_).
+	verticalWritingMode bool
+	chScale             float64
 	// xHeight is the element's measured x-height in pixels for the ex unit
 	// (0 = caller has no measurement; ex falls back to 0.5em).
 	xHeight float64
