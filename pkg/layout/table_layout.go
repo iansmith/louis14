@@ -1283,8 +1283,16 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 			}
 
 		case css.DisplayTableCell:
-			// Bare cell without a row — wrap in an anonymous row
-			// (CSS 2.1 §17.2.1).
+			// Fallback: tree-build normalization (normalizeTableSubtrees,
+			// generateMissingTableParents) wraps a table's bare cells
+			// and stray children in anonymous row groups, as Blink's
+			// LayoutTable::AddChild does at insertion time (table/
+			// layout_table.cc:234-266 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14
+			// normalizes in a pass instead, so a path it misses lays
+			// the child out in an anonymous row of its own here rather
+			// than dropping it. Bare cell without a row (CSS 2.1
+			// §17.2.1).
 			anonRowStyle := css.CreateAnonymousStyleWithDisplay(tla.style, string(css.DisplayTableRow))
 			anonRowNode := &LayoutInputNode{
 				style:       anonRowStyle,
