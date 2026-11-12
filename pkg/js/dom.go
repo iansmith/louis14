@@ -37,12 +37,15 @@ type domContext struct {
 	// updateLayout is Engine.updateLayout; may be nil.
 	updateLayout func() map[*html.Node]*layout.Box
 
-	// docEventListeners holds document.addEventListener callbacks keyed by
-	// event type. Louis14 is a static one-shot renderer, so only events the
-	// engine itself dispatches after script execution (currently WPT's
-	// "TestRendered" from /common/reftest-wait.js) ever fire. The raw value
-	// is retained so removeEventListener can match by JS identity.
-	docEventListeners map[string][]documentEventListener
+	// eventListeners holds each node's addEventListener registrations by
+	// event type (Blink's EventTargetData listener map); the document's
+	// are keyed by the Document node, and window shares them. Louis14 is a
+	// static one-shot renderer, so only events the engine dispatches after
+	// script execution (WPT's "TestRendered", the window load) ever fire.
+	eventListeners map[*html.Node]map[string][]*registeredEventListener
+	// listenerTargets lists the nodes of eventListeners in the order of
+	// their first registration.
+	listenerTargets []*html.Node
 
 	// canvasContexts holds each <canvas>'s 2D context
 	// (canvas_rendering_context_2d.go).
@@ -89,13 +92,6 @@ type highlightEntry struct {
 	priority int
 }
 
-// documentEventListener pairs the callable with the original JS value so
-// removeEventListener can compare listener identity per the DOM spec.
-type documentEventListener struct {
-	raw goja.Value
-	fn  goja.Callable
-}
-
 func newDOMContext(vm *goja.Runtime, doc *html.Document) *domContext {
 	return &domContext{
 		vm:    vm,
@@ -114,36 +110,15 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	docObj := vm.NewObject()
 	registerDocumentNodeMethods(ctx, docObj, doc)
 
-	// document.addEventListener / removeEventListener. Only events the
-	// engine dispatches after scripts run (WPT's "TestRendered") ever fire;
-	// other event types are stored but never invoked, which matches the
-	// one-shot rendering model (no user interaction, no async loads).
+	// document.addEventListener / removeEventListener (event_target.go).
+	// Only the events the engine dispatches ever fire: louis14 renders once,
+	// with no user interaction.
 	docObj.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) >= 2 {
-			raw := call.Arguments[1]
-			if fn, ok := goja.AssertFunction(raw); ok {
-				typ := call.Arguments[0].String()
-				if ctx.docEventListeners == nil {
-					ctx.docEventListeners = make(map[string][]documentEventListener)
-				}
-				ctx.docEventListeners[typ] = append(ctx.docEventListeners[typ],
-					documentEventListener{raw: raw, fn: fn})
-			}
-		}
+		ctx.addEventListener(doc.Root, call)
 		return goja.Undefined()
 	})
 	docObj.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
-		if len(call.Arguments) >= 2 && ctx.docEventListeners != nil {
-			typ := call.Arguments[0].String()
-			raw := call.Arguments[1]
-			kept := ctx.docEventListeners[typ][:0]
-			for _, l := range ctx.docEventListeners[typ] {
-				if !l.raw.StrictEquals(raw) {
-					kept = append(kept, l)
-				}
-			}
-			ctx.docEventListeners[typ] = kept
-		}
+		ctx.removeEventListener(doc.Root, call)
 		return goja.Undefined()
 	})
 
@@ -451,6 +426,18 @@ func (e *elementAccessor) Get(key string) goja.Value {
 	case "__node__":
 		// Internal: used by unwrapNode as a fallback identifier
 		return vm.ToValue(true)
+	case "addEventListener":
+		// EventTarget::addEventListener / removeEventListener
+		// (event_target.go).
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			e.ctx.addEventListener(e.node, call)
+			return goja.Undefined()
+		})
+	case "removeEventListener":
+		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			e.ctx.removeEventListener(e.node, call)
+			return goja.Undefined()
+		})
 	case "nodeType":
 		switch e.node.Type {
 		case html.TextNode:
@@ -1204,14 +1191,11 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		return true
 	case "onload", "onerror":
-		// Event handler IDL attributes. The engine dispatches an <img>'s
-		// load / error from its ImageLoader and other elements' load after
-		// the window load event (Engine.Execute).
-		if e.ctx.engine != nil {
-			if fn, ok := goja.AssertFunction(val); ok {
-				e.ctx.engine.setEventHandler(e.node, key[len("on"):], fn)
-			}
-		}
+		// Event handler IDL attributes: entries in the element's listener
+		// list (setAttributeEventListener). The engine dispatches an
+		// <img>'s load / error from its ImageLoader and other elements'
+		// load after the window load event (Engine.Execute).
+		e.ctx.setAttributeEventListener(e.node, key[len("on"):], val)
 		return true
 	}
 	return false
@@ -1237,7 +1221,7 @@ func (e *elementAccessor) Has(key string) bool {
 		"focus", "blur",
 		"scrollLeft", "scrollTop", "scrollTo", "scrollWidth", "scrollHeight",
 		"getBoundingClientRect", "getClientRects",
-		"animate":
+		"animate", "addEventListener", "removeEventListener":
 		return true
 	}
 	return false
@@ -1306,7 +1290,7 @@ func (e *elementAccessor) Keys() []string {
 		"contentDocument", "contentWindow",
 		"focus", "blur",
 		"getBoundingClientRect", "getClientRects",
-		"animate",
+		"animate", "addEventListener", "removeEventListener",
 	}
 }
 

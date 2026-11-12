@@ -107,7 +107,11 @@ func (e *Engine) queuePendingImageEvent(ctx *domContext, node *html.Node, slot *
 		if eventType == "load" {
 			e.imageLoaders[node].imageLoaded = true
 		}
-		e.dispatchImageLoaderEvent(ctx, node, eventType)
+		// The event goes to the image's onload / onerror handler and
+		// listeners, with the image as `this`, and does not bubble
+		// (ImageLoader::DispatchPendingLoadEvent / DispatchPendingErrorEvent,
+		// image_loader.cc:1010-1030).
+		ctx.dispatchEvent(node, eventType, false)
 	})
 }
 
@@ -119,23 +123,6 @@ func cancelPostedTask(slot **postedTask) {
 	}
 }
 
-// dispatchImageLoaderEvent fires eventType at the image, whose handler
-// runs with the image as `this`: ImageLoader::DispatchPendingLoadEvent /
-// DispatchPendingErrorEvent (image_loader.cc:1010-1030).
-func (e *Engine) dispatchImageLoaderEvent(ctx *domContext, node *html.Node, eventType string) {
-	fn := e.eventHandlers[node][eventType]
-	if fn == nil {
-		return
-	}
-	target := ctx.elementProxy(node)
-	event := e.vm.NewObject()
-	_ = event.Set("type", eventType)
-	_ = event.Set("target", target)
-	_ = event.Set("currentTarget", target)
-	// An exception in one handler is reported and does not stop the
-	// event loop.
-	_, _ = fn(target, event)
-}
 
 // startParsedImageLoads starts, in tree order, the request of each parsed
 // connected <img> in the document whose request script has not already
