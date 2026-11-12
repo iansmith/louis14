@@ -184,7 +184,7 @@ func TestRem_SyntheticRoot(t *testing.T) {
 }
 
 // TestFontSize_PseudoAndLateRulesComputed: the font-size conversion also runs
-// for pseudo-elements, @container rules and var()-deferred font shorthands —
+// for pseudo-elements, @container rules and var() font shorthands —
 // every path that reaches the font step (StyleCascade::Apply converts
 // font-size in ApplyHighPriority before UpdateFont,
 // core/css/resolver/style_cascade.cc:309-310 @

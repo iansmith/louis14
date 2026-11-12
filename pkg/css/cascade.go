@@ -650,15 +650,17 @@ func applyUserAgentImportantStyles(node *html.Node, style *Style) []string {
 // records are left untouched; the document cascade (ApplyStylesToDocument)
 // samples them against the document timeline instead.
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
-	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil)
+	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil, nil)
 }
 
-// computeStyle is ComputeStyle with the document's AnimationClock. A non-nil
-// clock makes this a style recalc of node: its running CSS animations are
+// computeStyle is ComputeStyle with the document's AnimationClock and the
+// parent element's computed style (nil for the root or a probe), whose custom
+// properties pending substitutions resolve against. A non-nil clock makes
+// this a style recalc of node: its running CSS animations are
 // updated (calculateAnimationUpdate) and sampled at their timeline local
 // times. A nil clock samples every animation at local time 0 and leaves the
 // records alone, for probes that are not the element's style recalc.
-func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock) *Style {
+func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock, parent *Style) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -840,6 +842,11 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		resolveRevertLayerOnly(finalStyle, revertSnap, preInlineSnap)
 	}
 
+	// Every declaration is cascaded and the custom properties are final:
+	// resolve pending substitutions before the CSS-wide keywords they may
+	// yield (resolvePendingSubstitutions).
+	resolvePendingSubstitutions(finalStyle, parent)
+
 	// CSS Cascade 4 §6.1.2 / §6.1.3 / Cascade 5 §6.1.3: resolve the CSS-wide
 	// keywords that may reach the cascaded value as literal strings —
 	// `initial`, `unset`, `revert`, and `revert-layer`. These appear either
@@ -887,6 +894,10 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 		anims, localTimes = calculateAnimationUpdate(node, anims, clock, baseDisplayNone)
 	}
 	applyCSSAnimations(finalStyle, anims, importantProps, localTimes)
+	if len(anims) > 0 {
+		// A var() shorthand in a keyframe leaves pending longhands.
+		resolvePendingSubstitutions(finalStyle, parent)
+	}
 	if clock != nil {
 		recordDisplayedStyle(node, baseDisplayNone, finalStyle.GetDisplay() == DisplayNone)
 	}
@@ -1880,6 +1891,14 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 		delete(finalStyle.Properties, "color")
 	}
 
+	// Resolve pending substitutions against the inheritance parent's custom
+	// properties, before the CSS-wide keywords they may yield.
+	pendingParent := highlightParent
+	if pendingParent == nil && len(parentStyles) > 0 {
+		pendingParent = parentStyles[0]
+	}
+	resolvePendingSubstitutions(finalStyle, pendingParent)
+
 	// Resolve longhand-level CSS-wide keywords for the pseudo-element style.
 	// Same rationale as ComputeStyle: must happen before resolvePseudoInheritKeyword
 	// (which is `inherit`-specific) so that `unset` first rewrites itself to
@@ -1908,7 +1927,10 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 
 	// CSS Animations §4: apply in-effect @keyframes values to the
 	// pseudo-element's computed style (same cascade position as for elements).
-	ApplyAnimations(finalStyle, collectKeyframesMaps(stylesheets), importantProps)
+	if anims := resolveAnimations(finalStyle, collectKeyframesMaps(stylesheets)); len(anims) > 0 {
+		applyCSSAnimations(finalStyle, anims, importantProps, nil)
+		resolvePendingSubstitutions(finalStyle, pendingParent)
+	}
 
 	// An animated declaration may itself be the `inherit` keyword (e.g.
 	// @keyframes kf { from,to { font-size: inherit } }) — resolve again so the
@@ -2836,11 +2858,10 @@ func (p cascadePosition) after(q cascadePosition) bool {
 
 // setCascadePosition records the cascade position property was set at, for the
 // properties resolveDirectionAwareProperties compares: the logical
-// longhands' storage keys and the physical longhands they map onto, and a
-// var() shorthand, whose longhands take its position when it is expanded
-// (reexpandVarShorthands).
+// longhands' storage keys and the physical longhands they map onto. A var()
+// shorthand's pending longhands are positioned like any longhand.
 func (s *Style) setCascadePosition(property string, rank int8) {
-	if !tracksCascadePosition(property) && !isVarDeferredShorthand[property] {
+	if !tracksCascadePosition(property) {
 		return
 	}
 	if s.cascadePositions == nil {
@@ -2965,57 +2986,147 @@ func resolveDirectionAwareProperties(style *Style) (carriedInherit bool) {
 	return carriedInherit
 }
 
-// varDeferredShorthands lists the shorthands expandShorthand leaves
-// unexpanded when their declared value contains var() — substitution can't
-// happen at parse time because custom properties resolve in the cascade.
-// reexpandVarShorthands expands them in this order (a fixed one, so a
-// `border` and a `border-top` both stored resolve the same way every time);
-// isVarDeferredShorthand is the same list as a set for lookups
-// (expandShorthand, allShorthandCovers, expandAllShorthand).
-var varDeferredShorthands = []string{
-	"margin", "padding", "border", "border-top", "border-right",
-	"border-bottom", "border-left", "border-width", "border-style",
-	"border-color", "font", "flex", "flex-flow", "list-style", "gap", "grid-gap",
-	"grid-area", "grid-row", "grid-column",
+// isVarDeferredShorthand are the shorthands whose var() values
+// expandShorthand cannot expand at parse time, since custom properties
+// resolve in the cascade. Each longhand gets a pending-substitution value
+// instead (pendingSubstitutionValue).
+var isVarDeferredShorthand = map[string]bool{
+	"margin": true, "padding": true, "border": true, "border-top": true,
+	"border-right": true, "border-bottom": true, "border-left": true,
+	"border-width": true, "border-style": true, "border-color": true,
+	"font": true, "flex": true, "flex-flow": true, "list-style": true,
+	"gap": true, "grid-gap": true, "grid-area": true, "grid-row": true,
+	"grid-column": true, "background": true,
 }
 
-var isVarDeferredShorthand = func() map[string]bool {
-	m := make(map[string]bool, len(varDeferredShorthands))
-	for _, p := range varDeferredShorthands {
-		m[p] = true
-	}
-	return m
-}()
+// pendingSubstitutionPrefix starts a longhand value that is a pending
+// substitution of its shorthand's var() value. U+0000 cannot begin a
+// declared value.
+const pendingSubstitutionPrefix = "\x00pending-substitution:"
 
-// reexpandVarShorthands substitutes var() in deferred shorthand values and
-// expands them into their longhands (CSS Variables 1 §3.2). Runs after
-// inheritance so the element's custom-property table is complete. On IACVT
-// (a var() reference that fails to resolve) the whole declaration is
-// invalid: drop the shorthand so the longhands keep their initial values.
-func reexpandVarShorthands(style *Style) {
-	for _, prop := range varDeferredShorthands {
-		raw, ok := style.Properties[prop]
-		if !ok || !containsVarFunction(raw) {
+// pendingSubstitutionValue is a longhand's value when its shorthand's
+// declared value contains var(): the shorthand and that value, substituted
+// and parsed at computed-value time. The longhand takes part in the cascade
+// at the shorthand's own priority and source position, so a later or
+// higher-priority declaration of the longhand overrides it
+// (CSSPendingSubstitutionValue, css_pending_substitution_value.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func pendingSubstitutionValue(shorthand, value string) string {
+	return pendingSubstitutionPrefix + shorthand + "\x00" + value
+}
+
+// parsePendingSubstitution splits a pendingSubstitutionValue into its
+// shorthand and declared value.
+func parsePendingSubstitution(v string) (shorthand, value string, ok bool) {
+	rest, ok := strings.CutPrefix(v, pendingSubstitutionPrefix)
+	if !ok {
+		return "", "", false
+	}
+	return strings.Cut(rest, "\x00")
+}
+
+// resolvePendingSubstitutions replaces each pending-substitution longhand
+// with its value from the shorthand: var() and env() substituted against the
+// element's custom properties (its own over those it inherits from parent),
+// then the shorthand expanded and each longhand validated as a declared value,
+// once per shorthand value (StyleCascade::ResolvePendingSubstitution,
+// style_cascade.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It runs in the
+// cascade before CSS-wide keywords and inheritance, so a keyword the
+// substitution yields (a var() fallback of inherit, initial or unset) is
+// applied like a declared one. When the value is invalid at computed-value
+// time (an unresolved or cyclic var(), or an invalid expansion), every
+// longhand is unset; a longhand a valid expansion omits is initial.
+func resolvePendingSubstitutions(style, parent *Style) {
+	var lookup *Style
+	expanded := map[string]map[string]string{}
+	for prop, v := range style.Properties {
+		shorthand, value, ok := parsePendingSubstitution(v)
+		if !ok {
 			continue
 		}
-		resolved, ok := style.Get(prop) // Get substitutes var()/env()
-		delete(style.Properties, prop)
-		if !ok {
-			continue // IACVT — longhands fall back to their defaults
+		if lookup == nil {
+			lookup = substitutionLookup(style, parent)
 		}
-		// The longhands cascade at the shorthand's position, so a logical
-		// longhand declared before it loses to them
-		// (resolveDirectionAwareProperties).
-		pos, positioned := style.cascadePositions[prop]
-		tmp := NewStyle()
-		expandShorthand(tmp, prop, resolved)
-		for k, v := range tmp.Properties {
-			style.Properties[k] = v
-			if positioned && tracksCascadePosition(k) {
-				style.cascadePositions[k] = pos
+		key := shorthand + "\x00" + value
+		longhands, done := expanded[key]
+		if !done {
+			longhands = expandPendingSubstitution(lookup, shorthand, value)
+			expanded[key] = longhands
+		}
+		lv, set := longhands[prop]
+		switch {
+		case longhands == nil:
+			style.Properties[prop] = "unset"
+		case set:
+			style.Properties[prop] = lv
+		default:
+			style.Properties[prop] = "initial"
+		}
+	}
+}
+
+// substitutionLookup is the custom-property table var() substitutes from:
+// parent's custom properties overlaid with style's own, an own `inherit`,
+// `unset`, `revert` or `revert-layer` taking parent's value (custom
+// properties inherit; revert-layer approximated, LOU-808) and an own
+// `initial` the guaranteed-invalid value (CSS Variables 1 §2.2, §3).
+func substitutionLookup(style, parent *Style) *Style {
+	lookup := NewStyle()
+	if parent != nil {
+		for p, v := range parent.Properties {
+			if strings.HasPrefix(p, "--") {
+				lookup.Properties[p] = v
 			}
 		}
 	}
+	for p, v := range style.Properties {
+		if !strings.HasPrefix(p, "--") {
+			continue
+		}
+		switch kw, _ := cssWideKeyword(v); kw {
+		case "inherit", "unset", "revert", "revert-layer":
+			// Keeps parent's value, if any: custom properties inherit, and
+			// with no lower origin to roll back to revert behaves as unset.
+			continue
+		case "initial":
+			lookup.Properties[p] = ""
+		default:
+			lookup.Properties[p] = v
+		}
+	}
+	return lookup
+}
+
+// expandPendingSubstitution substitutes and expands one shorthand value
+// into its longhands' values, nil when it is invalid at computed-value time:
+// a var() that fails to resolve or stays unresolved (a cycle), a value the
+// shorthand rejects, or a longhand a declared value would reject.
+func expandPendingSubstitution(lookup *Style, shorthand, value string) map[string]string {
+	resolved, failed := lookup.substituteVarAndEnv(value)
+	if failed || containsVarFunction(resolved) {
+		return nil
+	}
+	// The substituted value is parsed as a declared one, with the same
+	// checks (parseDeclarations). It is invalid when it is not one value (a
+	// `;` or a priority in it), declares nothing, or the checks drop a
+	// longhand the shorthand's expansion sets (an invalid colour in border):
+	// the whole declaration is invalid. (parseDeclarations drops only that
+	// longhand from a literal declaration: LOU-841.)
+	if _, important, ok := SplitPriority(resolved); !ok || important || len(SplitDeclarations(resolved)) != 1 {
+		return nil
+	}
+	parsed := parseDeclarations(shorthand + ": " + resolved)
+	if len(parsed.Order) == 0 {
+		return nil
+	}
+	expanded := NewStyle()
+	expandShorthand(expanded, shorthand, resolved)
+	for k := range expanded.Properties {
+		if _, kept := parsed.Declarations[k]; !kept {
+			return nil
+		}
+	}
+	return parsed.Declarations
 }
 
 // computedLengthProperties are the properties whose <length> components
@@ -3136,18 +3247,10 @@ func isPxLiteral(val string) bool {
 // applyStylesToNode recursively applies styles to a node and its children
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector, clock *html.AnimationClock) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock)
+		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock, styles[node.Parent])
 		style.fontSelector = fs
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
-		// CSS Variables 1 §3.2: a shorthand whose declared value contains
-		// var() is substituted at computed-value time and only then expanded
-		// into its longhands. expandShorthand deferred those (stored them
-		// unexpanded under the shorthand name); now that inheritance has
-		// populated this element's custom-property table, substitute and
-		// expand. Mirrors Blink's pending-substitution values
-		// (css_pending_substitution_value.h @
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 		resolveComputedTimeDeclarations(node, style, styles)
 		// Apply container query rules after base style (needs ancestor styles resolved)
 		if applyContainerQueryRules(node, stylesheets, styles, style) {
@@ -3366,23 +3469,23 @@ func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles
 }
 
 // resolveLateDeclarations resolves what declarations applied after the
-// cascade and inheritance (applyContainerQueryRules) leave: var()
-// shorthands, CSS-wide keywords (revert and revert-layer against the
+// cascade and inheritance (applyContainerQueryRules) leave: pending
+// substitutions (against the parent's custom properties, as in the main
+// cascade), CSS-wide keywords (revert and revert-layer against the
 // cascade's UA + presentational-attribute snapshot; @container rules carry
 // no layer), then logical properties onto their physical side.
 func resolveLateDeclarations(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+	resolvePendingSubstitutions(style, styles[node.Parent])
 	resolveCSSWideKeywords(style, style.revertSnapshot, nil)
 	resolveInheritValues(node, style, styles)
 	resolveComputedTimeDeclarations(node, style, styles)
 }
 
 // resolveComputedTimeDeclarations resolves what waits for the element's
-// inherited values: var() shorthands (substituted, then expanded), then
-// logical size and box properties onto their physical side for the computed
-// writing-mode and direction, and any `inherit` a logical declaration
-// carried onto a physical property.
+// inherited values: logical size and box properties onto their physical
+// side for the computed writing-mode and direction, and any `inherit` a
+// logical declaration carried onto a physical property.
 func resolveComputedTimeDeclarations(node *html.Node, style *Style, styles map[*html.Node]*Style) {
-	reexpandVarShorthands(style)
 	if resolveDirectionAwareProperties(style) {
 		resolveInheritKeywords(node, style, styles)
 	}

@@ -12,12 +12,12 @@ import (
 // value by the shorthand (stored as `initial`, implicit in the shorthand) is
 // left out of the serialization.
 func (d *DeclarationResult) serializeShorthand(property string) string {
-	values, keyword, ok := d.commonShorthandChecks(shorthandLonghands[property])
+	values, serialized, ok := d.commonShorthandChecks(property)
 	switch {
 	case !ok:
 		return ""
-	case keyword != "":
-		return keyword
+	case serialized != "":
+		return serialized
 	case property == "border":
 		return d.borderValue()
 	case property == "font":
@@ -34,13 +34,17 @@ func (d *DeclarationResult) serializeShorthand(property string) string {
 
 // commonShorthandChecks is CommonShorthandChecks (:522-588): every longhand
 // declared, with one importance, and no CSS-wide keyword other than an
-// implicit initial unless they are all the same keyword, which it returns.
-// It returns the longhands' values in longhand order.
-func (d *DeclarationResult) commonShorthandChecks(longhands []string) (values []string, keyword string, ok bool) {
+// implicit initial unless they are all the same keyword, and no pending
+// substitution unless they are all pending from one value of property. It
+// returns the longhands' values in longhand order, and serialized, the
+// shorthand's text when the checks decide it: the common keyword, or the
+// pending shorthand value.
+func (d *DeclarationResult) commonShorthandChecks(property string) (values []string, serialized string, ok bool) {
+	longhands := shorthandLonghands[property]
 	values = make([]string, len(longhands))
 	important := 0
 	for i, lh := range longhands {
-		v, ok := d.Declarations[lh]
+		v, ok := d.Declarations[storageKey(lh)]
 		if !ok {
 			return nil, "", false
 		}
@@ -55,8 +59,15 @@ func (d *DeclarationResult) commonShorthandChecks(longhands []string) (values []
 	if kw, ok := allSameCSSWideKeyword(values); ok {
 		return values, kw, true
 	}
+	// Longhands all pending from one value of this shorthand serialize as
+	// that value (:550-570).
+	if shorthand, value, pending := parsePendingSubstitution(values[0]); pending && shorthand == property &&
+		!slices.ContainsFunc(values, func(v string) bool { return v != values[0] }) {
+		return values, value, true
+	}
 	for _, v := range values {
-		if kw, wide := cssWideKeyword(v); (wide && kw != "initial") || containsVarFunction(v) {
+		_, _, pending := parsePendingSubstitution(v)
+		if kw, wide := cssWideKeyword(v); (wide && kw != "initial") || pending || containsVarFunction(v) {
 			return nil, "", false
 		}
 	}
