@@ -1043,6 +1043,12 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 		ctx.percentBase, ctx.percentResolvesToZero = 0, false
 		return EvalMathFunction(val, ctx)
 	}
+	// Unit names match ASCII case-insensitively: CSSPrimitiveValue::
+	// StringToUnitType (css_primitive_value.h:451) looks them up in a trie
+	// generated with lower-case matching (build/scripts/core/css/templates/
+	// css_primitive_value_unit_trie.cc.tmpl, trie_length_switch(..., True))
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+	val = asciiToLower(val)
 	// Dynamic/static/large viewport units — treat all as equivalent to vh/vw
 	// in static renderer (no browser chrome changes). Must be checked before
 	// vmin/vmax/vw/vh to avoid suffix conflicts (e.g. "dvmin" ends with "min").
@@ -1252,45 +1258,16 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 		}
 		return num * ctx.fontSize * 0.7, true
 	}
-	if strings.HasSuffix(val, "mm") {
-		numStr := strings.TrimSuffix(val, "mm")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
+	// Absolute lengths: CSSPrimitiveValue::ConversionToCanonicalUnitsScaleFactor
+	// (css_primitive_value.cc:498-530), at 96px per inch.
+	for _, u := range absoluteLengthUnits {
+		if strings.HasSuffix(val, u.name) {
+			num, err := strconv.ParseFloat(strings.TrimSuffix(val, u.name), 64)
+			if err != nil {
+				return 0, false
+			}
+			return num * u.px, true
 		}
-		return num * 3.7795275591, true // 1mm ≈ 3.78px at 96dpi
-	}
-	if strings.HasSuffix(val, "in") {
-		numStr := strings.TrimSuffix(val, "in")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
-		}
-		return num * 96.0, true // 1in = 96px at 96dpi
-	}
-	if strings.HasSuffix(val, "cm") {
-		numStr := strings.TrimSuffix(val, "cm")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
-		}
-		return num * 37.7952755906, true // 1cm = 96/2.54 px
-	}
-	if strings.HasSuffix(val, "pc") {
-		numStr := strings.TrimSuffix(val, "pc")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
-		}
-		return num * 16.0, true // 1pc = 16px
-	}
-	if strings.HasSuffix(val, "pt") {
-		numStr := strings.TrimSuffix(val, "pt")
-		num, err := strconv.ParseFloat(numStr, 64)
-		if err != nil {
-			return 0, false
-		}
-		return num * (96.0 / 72.0), true // 1pt = 96/72 px
 	}
 	// Resolution units (check longer suffixes first to avoid conflicts)
 	if strings.HasSuffix(val, "dppx") {
@@ -1337,6 +1314,18 @@ func parseLengthFullWithCh(val string, ctx calcContext) (float64, bool) {
 	}
 	return num, true
 }
+
+// absoluteLengthUnits are the absolute length units and their size in px.
+var absoluteLengthUnits = []struct {
+	name string
+	px   float64
+}{
+	{"q", 96.0 / 25.4 / 4}, {"mm", 96.0 / 25.4}, {"cm", 96.0 / 2.54},
+	{"in", 96.0}, {"pt", 96.0 / 72}, {"pc", 16.0},
+}
+
+// isASCIILetter reports whether b is an ASCII letter of either case.
+func isASCIILetter(b byte) bool { return b|0x20 >= 'a' && b|0x20 <= 'z' }
 
 // IsFitContentFunction returns true if val is fit-content(<length-percentage>),
 // i.e., the functional form with an argument. This is distinct from the bare
@@ -1592,7 +1581,7 @@ func tokenizeCalc(expr string) []string {
 		}
 		// Consume unit suffix (px, em, rem, %, etc.)
 		unitStart := i
-		for i < len(expr) && ((expr[i] >= 'a' && expr[i] <= 'z') || expr[i] == '%') {
+		for i < len(expr) && (isASCIILetter(expr[i]) || expr[i] == '%') {
 			i++
 		}
 		if i > start {

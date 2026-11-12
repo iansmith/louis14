@@ -397,6 +397,23 @@ func hasNonVisibleOverflow(style *css.Style, node *html.Node) bool {
 		style.ShouldApplyPaintContainment()
 }
 
+// forceInlineBaselineSynthesis reports whether an inline-block takes its
+// baseline from its block-end margin edge: it is a scroll container whose
+// block-axis overflow is neither visible nor clip, and its style does not
+// opt out (a <button>). Mirrors PhysicalBoxFragment::
+// ForceInlineBaselineSynthesis (core/layout/physical_box_fragment.h:169-173
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); its
+// UseLastBaselineForInlineBaseline condition is the callers' display check.
+func forceInlineBaselineSynthesis(style *css.Style, node *html.Node) bool {
+	if !isScrollContainerBox(style, node) || style.ShouldIgnoreOverflowPropertyForInlineBlockBaseline() {
+		return false
+	}
+	if css.IsVerticalWritingMode(style) {
+		return style.IsOverflowValueScrollableX()
+	}
+	return style.IsOverflowValueScrollableY()
+}
+
 // isScrollContainerBox mirrors LayoutObject::IsScrollContainer
 // (layout_object.h:1550-1561 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
 // replaced boxes never scroll.
