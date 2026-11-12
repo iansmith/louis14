@@ -4899,7 +4899,7 @@ func (d *DeclarationResult) SetDeclaration(property, value string) bool {
 		return false
 	}
 	for _, p := range parsed.Order {
-		if _, ok := keys[p]; !ok && p != property {
+		if !slices.Contains(keys, p) && p != property {
 			return false
 		}
 	}
@@ -4910,7 +4910,7 @@ func (d *DeclarationResult) SetDeclaration(property, value string) bool {
 		d.Set(property, v, false)
 		return true
 	}
-	for _, p := range shorthandOrder(property, keys) {
+	for _, p := range keys {
 		v, set := parsed.Declarations[p]
 		if !set {
 			v = "initial"
@@ -4920,44 +4920,31 @@ func (d *DeclarationResult) SetDeclaration(property, value string) bool {
 	return true
 }
 
-// declarationKeys is what a declaration of property can store: the keys
-// `property: initial` stores (a shorthand's longhands, a logical longhand's
-// storage key, or property itself).
-func declarationKeys(property string) map[string]string {
-	return parseDeclarations(property + ": initial").Declarations
-}
-
-// shorthandOrder lists keys in property's longhand order (shorthandLonghands,
-// each longhand under its own name or its logical storage key), so a
-// shorthand write sets its longhands in a fixed order.
-func shorthandOrder(property string, keys map[string]string) []string {
+// declarationKeys is what a declaration of property can store, in
+// longhand order: a shorthand's longhands (shorthandLonghands, Blink's
+// shorthandForProperty @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) or the
+// property itself, a logical longhand under its storage key.
+func declarationKeys(property string) []string {
 	longhands := shorthandLonghands[property]
 	if longhands == nil {
-		longhands = []string{property}
+		longhands = append([]string{property}, storedWholeShorthandLonghands[property]...)
 	}
-	var out []string
-	for _, lh := range longhands {
-		for _, k := range []string{lh, "_" + lh} {
-			if _, ok := keys[k]; ok {
-				out = append(out, k)
-				break
-			}
-		}
+	keys := make([]string, len(longhands))
+	for i, lh := range longhands {
+		keys[i] = storageKey(lh)
 	}
-	return out
+	return keys
 }
 
 // RemoveDeclaration drops what a declaration of property sets: property
-// itself (a var() shorthand stored whole), and every key `property:
-// initial` stores (its longhands and logical storage keys).
+// itself (a var() shorthand stored whole), and its declarationKeys.
 func (d *DeclarationResult) RemoveDeclaration(property string) {
 	d.removeKeys(property, declarationKeys(property))
 }
 
-func (d *DeclarationResult) removeKeys(property string, keys map[string]string) {
+func (d *DeclarationResult) removeKeys(property string, keys []string) {
 	d.RemoveFunc(func(p string) bool {
-		_, set := keys[p]
-		return set || p == property
+		return p == property || slices.Contains(keys, p)
 	})
 }
 
@@ -4965,12 +4952,8 @@ func (d *DeclarationResult) removeKeys(property string, keys map[string]string) 
 // longhand's under its storage key, or a shorthand's serialized from its
 // longhands (serializeShorthand).
 func (d *DeclarationResult) Value(property string) (string, bool) {
-	if v, ok := d.Declarations[property]; ok {
+	if v, ok := d.Declarations[storageKey(property)]; ok {
 		return v, true
-	}
-	if logicalLonghandStorageKeys["_"+property] != "" {
-		v, ok := d.Declarations["_"+property]
-		return v, ok
 	}
 	if _, ok := shorthandLonghands[property]; ok {
 		return d.serializeShorthand(property), true

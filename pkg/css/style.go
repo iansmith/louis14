@@ -3081,7 +3081,7 @@ func expandAllShorthand(style *Style, value string) {
 	for prop := range cssLonghandProperties {
 		switch {
 		case !allShorthandCovers(prop):
-		case logicalLonghandStorageKeys["_"+prop] != "":
+		case storageKey(prop) != prop:
 			expandShorthand(style, prop, keyword)
 		default:
 			style.Set(prop, keyword)
@@ -4334,9 +4334,8 @@ func expandFontProperty(style *Style, value string) {
 		style.Set("font-style", parts[i])
 		i++
 	}
-	// Skip optional font-variant
+	// Optional font-variant: font-variant-caps
 	if i < len(parts) && parts[i] == "small-caps" {
-		style.Set("font-variant", parts[i])
 		style.Set("font-variant-caps", parts[i])
 		i++
 	}

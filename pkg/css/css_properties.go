@@ -40,6 +40,8 @@ var cssProperties = append([]cssProperty{
 	{"bottom", false, nil},                       // :2878
 	{"left", false, nil},                         // :4158
 	{"width", false, nil},                        // :8095
+	{"contain-intrinsic-width", false, nil},      // :3179
+	{"contain-intrinsic-height", false, nil},     // :3194
 	{"min-width", false, nil},                    // :4567
 	{"max-width", false, nil},                    // :4519
 	{"height", false, nil},                       // :3925
@@ -54,7 +56,7 @@ var cssProperties = append([]cssProperty{
 	{"padding-bottom", false, nil},               // :5027
 	{"padding-left", false, nil},                 // :5050
 	{"box-sizing", false, nil},                   // :2929
-	{"overflow", false, nil},                     // :9817 Blink shorthand; louis14 stores one value
+	{"overflow", false, nil},                     // :9817 Blink shorthand; louis14 stores one value and also expands (storedWholeShorthandLonghands)
 	{"overflow-x", false, nil},                   // :4913
 	{"overflow-y", false, nil},                   // :4938
 	{"aspect-ratio", false, nil},                 // :2100
@@ -284,6 +286,7 @@ var cssProperties = append([]cssProperty{
 	{"flex", false, []string{"flex-grow", "flex-shrink", "flex-basis"}},                                                                          // :9628
 	{"flex-flow", false, []string{"flex-direction", "flex-wrap"}},                                                                                // :9637
 	{"list-style", false, []string{"list-style-position", "list-style-image", "list-style-type"}},                                                // :9765
+	{"contain-intrinsic-size", false, []string{"contain-intrinsic-width", "contain-intrinsic-height"}},                                           // :9355
 	{"gap", false, []string{"row-gap", "column-gap"}},                                                                                            // :9705
 	{"grid-gap", false, []string{"row-gap", "column-gap"}},                                                                                       // gap's alias
 	{"place-items", false, []string{"align-items", "justify-items"}},                                                                             // :9694
@@ -317,6 +320,24 @@ var inheritableProperties = func() map[string]bool {
 	}
 	return m
 }()
+
+// storedWholeShorthandLonghands are the longhands of a Blink shorthand
+// louis14 stores under its own name too (cssProperties: "stores one value")
+// and also expands: overflow keeps its declared value as GetOverflow's
+// fallback beside overflow-x and overflow-y (css_properties.json5:9817 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+var storedWholeShorthandLonghands = map[string][]string{
+	"overflow": {"overflow-x", "overflow-y"},
+}
+
+// storageKey is the key a longhand's declaration is stored under: a
+// logical longhand's internal storage key, else its own name.
+func storageKey(longhand string) string {
+	if logicalLonghandStorageKeys["_"+longhand] != "" {
+		return "_" + longhand
+	}
+	return longhand
+}
 
 // logicalLonghands are the flow-relative longhands (CSS Logical Properties
 // 1), each stored under an internal _-prefixed key until

@@ -217,6 +217,7 @@ func TestStyleSheetsRuleWritesParseAsOneValue(t *testing.T) {
 		{"font with small-caps applies", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.font="small-caps 12px serif";`, "font-variant-caps", "small-caps"},
 		{"contain-intrinsic-size applies", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.containIntrinsicSize="10px 20px";`, "contain-intrinsic-height", "20px"},
 		{"contain-intrinsic-size none applies", `<style>#d{contain-intrinsic-width:5px}</style><div id="d">x</div>`, `r[0].style.containIntrinsicSize="none";`, "contain-intrinsic-width", "none"},
+		{"overflow applies", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.overflow="hidden auto";`, "overflow-y", "auto"},
 		{"partial shorthand reads back empty", `<style>#d{margin-top:1px}</style><div id="d">x</div>`, `if (r[0].style.margin !== "") throw new Error("margin read back " + JSON.stringify(r[0].style.margin));`, "margin-top", "1px"},
 	} {
 		doc := parseHTML(t, tc.html)
