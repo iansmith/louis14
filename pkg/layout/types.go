@@ -40,6 +40,15 @@ type Box struct {
 	// Text holds the rendered text content for inline text boxes.
 	Text string
 
+	// IsHiddenForPaint marks a box the line truncator hid (and every box
+	// under it): it keeps its geometry but paints nothing. Copied from
+	// PhysicalFragment.IsHiddenForPaint by fragmentToBox.
+	IsHiddenForPaint bool
+
+	// IsEllipsis marks the text box of a text-overflow ellipsis. Copied
+	// from PhysicalFragment.IsEllipsis by fragmentToBox.
+	IsEllipsis bool
+
 	// IsVerticalText is true when text should be rendered vertically
 	// (writing-mode is vertical-rl, vertical-lr, sideways-rl, or sideways-lr).
 	IsVerticalText bool
