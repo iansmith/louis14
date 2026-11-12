@@ -660,7 +660,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// OOF candidates at the current block offset and continue without
 		// advancing. This matches Blink's behavior where a trailing line
 		// after a <br> containing only positioned content collapses away.
-		if lineHasOnlyOutOfFlow(&line, itemsData, wdm) {
+		if lineHasOnlyOutOfFlow(&line, itemsData, wdm, lineSpace.PercentageResolutionInlineSize) {
 			// The base items of a ruby without ruby-text are this line's
 			// own (forEachLineItemResult); a column with ruby-text never
 			// reaches here, as it makes lineHasOnlyOutOfFlow false.
@@ -2550,7 +2550,9 @@ func createLineBoxEx(
 				IsInlinePaintGroup(span.style, span.node)) {
 				return
 			}
-			geom := ComputeFragmentGeometry(span.style, wdm)
+			// Padding resolves against the containing block's inline size,
+			// as the line breaker resolved it (percentageMarginBase).
+			geom := ComputeFragmentGeometry(span.style, wdm, relativeAvailableSize.InlineSize)
 			// Save original inline-end edges before suppression.
 			origIEBorder := geom.Border.InlineEnd
 			origIEPadding := geom.Padding.InlineEnd
@@ -3750,8 +3752,9 @@ func forEachLineItemResult(results []InlineItemResult, fn func(r *InlineItemResu
 //
 // The empty-line path in layoutInlineChildren relies on a true result never
 // covering a column with ruby-text: it surfaces OOFs and places floats from
-// the walked results only.
-func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm WritingDirectionMode) bool {
+// the walked results only. percentageBase is the line breaker's inline-box
+// margin/padding percentage base (percentageMarginBase).
+func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm WritingDirectionMode, percentageBase float64) bool {
 	// A forced break by itself does not create a line box: a <br> or
 	// preserved newline does (its InlineItemControl below), the forced break
 	// before a block-in-inline does not (LineBreaker::HandleBlockInInline →
@@ -3786,7 +3789,7 @@ func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm Writin
 			// inline/line_breaker.cc:3947-4030, inline/inline_item.cc:
 			// 32-67, :128-139 @ a9f50e522efa). Empty span with padding/
 			// border is the canonical case (wpt-css2/linebox/empty-inline-002).
-			if r.Item.Style != nil && !isInlineBoxEdgeEmpty(r.Item.Style, wdm, line.AvailableWidth, r.Item.Type == InlineItemOpenTag) {
+			if r.Item.Style != nil && !isInlineBoxEdgeEmpty(r.Item.Style, wdm, percentageBase, r.Item.Type == InlineItemOpenTag) {
 				return false
 			}
 		}
@@ -3800,7 +3803,7 @@ func lineHasOnlyOutOfFlow(line *LineInfo, itemsData *InlineItemsData, wdm Writin
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no line-height
 // quirks mode, so a margin always counts.
 func isInlineBoxEdgeEmpty(style *css.Style, wdm WritingDirectionMode, percentageBase float64, isStart bool) bool {
-	geom := ComputeFragmentGeometry(style, wdm)
+	geom := ComputeFragmentGeometry(style, wdm, percentageBase)
 	margins := ResolveMargins(style, wdm, percentageBase)
 	if isStart {
 		return geom.Border.InlineStart == 0 && geom.Padding.InlineStart == 0 && margins.InlineStart == 0
