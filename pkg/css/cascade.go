@@ -17,10 +17,17 @@ import (
 // Phase 17: applyUserAgentStyles applies default browser styles based on element type.
 // These are html.css's rules, which declare `@namespace
 // "http://www.w3.org/1999/xhtml"` and so match only HTML elements: an
-// element of another namespace with an HTML tag name gets none of them
+// element of another namespace with an HTML tag name gets none of them,
+// only display's initial value (stampInitialDisplay)
 // (core/html/resources/html.css @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func applyUserAgentStyles(node *html.Node, style *Style) {
-	if node.Type != html.ElementNode || node.NamespaceURI() != html.XHTMLNamespaceURI {
+	if node.Type != html.ElementNode {
+		return
+	}
+	if node.NamespaceURI() != html.XHTMLNamespaceURI {
+		// Inline <svg>, <math> and their descendants, and createElementNS
+		// elements, sit on the line.
+		stampInitialDisplay(style)
 		return
 	}
 
@@ -189,9 +196,7 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		"canvas", "video", "embed", "iframe",
 		"first-letter", "first-line":
-		if _, ok := style.Get("display"); !ok {
-			style.Set("display", "inline")
-		}
+		stampInitialDisplay(style)
 	default:
 		// HTML living spec §15.3.1: elements the UA stylesheet does not
 		// address default to `display: inline` (the CSS initial value).
@@ -199,9 +204,7 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		// elements (WPT refs use e.g. <x>, <ib> as styling hooks) must be
 		// stamped inline here or they wrongly become block boxes.
 		if !isKnownHTMLElement(node.TagName) {
-			if _, ok := style.Get("display"); !ok {
-				style.Set("display", "inline")
-			}
+			stampInitialDisplay(style)
 		}
 	}
 
@@ -298,9 +301,7 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 			// per CSS Display L3 initial value. The `ruby > rt` selector is
 			// parent-scoped, so orphan rt has no UA display set and would
 			// default to block. Mirrors Blink html.css behavior.
-			if _, ok := style.Get("display"); !ok {
-				style.Set("display", "inline")
-			}
+			stampInitialDisplay(style)
 		}
 	case "rb":
 		// CSS Ruby 1 §2 — <rb> participates in ruby inline flow as a plain
@@ -329,9 +330,7 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		// normalizeRubySubtrees, which handles the ruby-specific display
 		// behavior. Mirrors Blink html.css `rb,rbc,rtc{display:inline}`.
 		// @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-		if _, ok := style.Get("display"); !ok {
-			style.Set("display", "inline")
-		}
+		stampInitialDisplay(style)
 	case "rp":
 		// Hidden unconditionally per Blink html.css:972-975 (the flat
 		// element-only display:none rule). Not parent-scoped.
@@ -2615,6 +2614,16 @@ func resolveColorProperty(node *html.Node, style *Style, styles map[*html.Node]*
 	}
 	// For other values (concrete colors, keywords), leave them as-is.
 	// They are already in the style.Properties map from Set().
+}
+
+// stampInitialDisplay gives style display's initial value, inline, when it
+// has no display. It is no UA rule: louis14's GetDisplay falls back to block
+// for an unset display, so an element that takes the initial display needs
+// it set explicitly (LOU-846 makes the fallback inline instead).
+func stampInitialDisplay(style *Style) {
+	if _, ok := style.Get("display"); !ok {
+		style.Set("display", "inline")
+	}
 }
 
 // isKnownHTMLElement reports whether the tag is a standard HTML element.
