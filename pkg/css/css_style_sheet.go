@@ -154,21 +154,33 @@ func (s *StyleSheetContents) DeleteRule(index int) error {
 	if index < 0 || index >= len(texts) {
 		return &RuleMutationError{"IndexSizeError", "the index is not a rule's"}
 	}
+	if layers, imports, namespaces := leadingRuleCounts(texts); index >= layers+imports && index < layers+imports+namespaces && layers+imports+namespaces < len(texts) {
+		// StyleSheetContents::WrapperDeleteRule (style_sheet_contents.cc:
+		// 397-406) refuses to delete a namespace rule while child_rules_
+		// is non-empty.
+		return &RuleMutationError{"InvalidStateError", "failed to delete the rule"}
+	}
 	s.rules = slices.Delete(s.rules, index, index+1)
 	s.reparse(slices.Delete(texts, index, index+1))
 	return nil
 }
 
-// parseOneRule is CSSParser::ParseRule's validity: rule, comments
-// stripped and url()s resolved against the sheet's base, is exactly one
-// rule that parses. It returns the rule's text.
+// parseOneRule is CSSParser::ParseRule's validity (css_parser_impl.cc:
+// 457-485): rule, comments stripped and url()s resolved against the
+// sheet's base, is exactly one rule that parses, with nothing after it. A
+// block left open at EOF closes, as the parser's block guard closes it
+// (splitRules closes it). It returns the rule's text.
 func (s *StyleSheetContents) parseOneRule(rule string) (string, bool) {
 	text := strings.TrimSpace(s.Context.RewriteURLs(stripTopLevelCDOTokens(StripComments(rule))))
 	parts := splitRules(text)
-	if len(parts) != 1 || strings.TrimSpace(parts[0]) != text || !isValidTopLevelRule(text) {
+	if len(parts) != 1 {
 		return "", false
 	}
-	return text, true
+	part := strings.TrimSpace(parts[0])
+	if !strings.HasPrefix(part, text) || !isValidTopLevelRule(part) {
+		return "", false
+	}
+	return part, true
 }
 
 // isValidTopLevelRule reports whether text parses as a rule Blink keeps in
@@ -197,12 +209,12 @@ func isValidTopLevelRule(text string) bool {
 	return true
 }
 
-// canInsertRule is StyleSheetContents::WrapperInsertRule's ordering
-// (style_sheet_contents.cc:287-370): leading @layer statements, then
-// @import, then @namespace, then the other rules. Leading @layer
-// statements of a sheet with no @import or @namespace count as other
-// rules (:291-295).
-func canInsertRule(texts []string, kind ruleKind, index int) bool {
+// leadingRuleCounts splits texts as StyleSheetContents does: the leading
+// @layer statements (pre_import_layer_statement_rules_), then the @import
+// rules, then the @namespace rules; the rest are child_rules_. Leading
+// @layer statements of a sheet with no @import or @namespace are child
+// rules (style_sheet_contents.cc:291-295).
+func leadingRuleCounts(texts []string) (layers, imports, namespaces int) {
 	count := func(from int, k ruleKind) int {
 		n := 0
 		for from+n < len(texts) && ruleKindOf(texts[from+n]) == k {
@@ -210,12 +222,20 @@ func canInsertRule(texts []string, kind ruleKind, index int) bool {
 		}
 		return n
 	}
-	layers := count(0, ruleKindLayerStatement)
-	imports := count(layers, ruleKindImport)
-	namespaces := count(layers+imports, ruleKindNamespace)
+	layers = count(0, ruleKindLayerStatement)
+	imports = count(layers, ruleKindImport)
+	namespaces = count(layers+imports, ruleKindNamespace)
 	if imports == 0 && namespaces == 0 {
 		layers = 0
 	}
+	return layers, imports, namespaces
+}
+
+// canInsertRule is StyleSheetContents::WrapperInsertRule's ordering
+// (style_sheet_contents.cc:287-370): leading @layer statements, then
+// @import, then @namespace, then the other rules (leadingRuleCounts).
+func canInsertRule(texts []string, kind ruleKind, index int) bool {
+	layers, imports, namespaces := leadingRuleCounts(texts)
 	hasOtherRules := layers+imports+namespaces < len(texts)
 	if index < layers || (index == layers && kind == ruleKindLayerStatement) {
 		return kind == ruleKindLayerStatement
@@ -259,7 +279,7 @@ func (s *StyleSheetContents) currentRuleTexts() []string {
 
 // reparse makes texts the sheet's rules and parses it again.
 func (s *StyleSheetContents) reparse(texts []string) {
-	sheet, err := ParseStylesheet(strings.Join(texts, "\n"), s.Context)
+	sheet, err := parseResolvedStylesheet(strings.Join(texts, "\n"), s.Context)
 	s.mu.Lock()
 	s.parsed, s.parseErr = sheet, err
 	s.mu.Unlock()

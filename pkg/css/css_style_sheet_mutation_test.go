@@ -188,7 +188,7 @@ func TestRuleListKeepsTheParse(t *testing.T) {
 // CSSParserImpl::ParseRule accepts a block left open at EOF
 // (css_parser_impl.cc:457-485 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func TestInsertRuleClosesBlockAtEOF(t *testing.T) {
-	c := NewStyleSheetContents("p {}", NewParserContext(""))
+	c := NewStyleSheetContents("p { color: blue }", NewParserContext(""))
 	if _, err := c.InsertRule("div { color: red", 0); err != nil {
 		t.Fatalf("InsertRule of an open block = %v, want inserted", err)
 	}

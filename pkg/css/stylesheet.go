@@ -488,11 +488,27 @@ func stripTopLevelCDOTokens(css string) string {
 // expandNesting recursively expands CSS native nesting into flat rules.
 // parentSelector is the selector of the enclosing rule ("" for top-level).
 func expandNesting(css string, parentSelector string) string {
-	var result strings.Builder
-	parts := splitRules(css)
+	return expandNestingParts(css, parentSelector, nil)
+}
 
-	for _, part := range parts {
+// expandedPart is one rule of the css expandNestingParts expands: its
+// text, and the offset in the expansion where the rules it expands to
+// start.
+type expandedPart struct {
+	text  string
+	start int
+}
+
+// expandNestingParts is expandNesting that, when parts is non-nil, also
+// records each rule of css (splitRules) as an expandedPart.
+func expandNestingParts(css string, parentSelector string, parts *[]expandedPart) string {
+	var result strings.Builder
+
+	for _, part := range splitRules(css) {
 		part = strings.TrimSpace(part)
+		if parts != nil {
+			*parts = append(*parts, expandedPart{text: part, start: result.Len()})
+		}
 		if part == "" {
 			continue
 		}
@@ -814,10 +830,6 @@ func separateDeclsAndNested(body string) (flatDecls, nestedParts string) {
 // "no base URL" (preserves today's relative-URL-as-stored behavior, used
 // by test fixtures that don't exercise URL composition).
 func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
-	stylesheet := &Stylesheet{
-		Rules: make([]Rule, 0),
-	}
-
 	// Strip comments before parsing
 	css = StripComments(css)
 
@@ -838,43 +850,40 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	// declarations (and at-rule descriptors like @font-face src) through the
 	// Blink chokepoint. Per-property typed wrappers (Phase 7) replace this
 	// with per-token CollectUrlData calls.
-	css = ctx.RewriteURLs(css)
+	return parseResolvedStylesheet(ctx.RewriteURLs(css), ctx)
+}
 
-	// The sheet's top-level rules, before CSS nesting is expanded: the
-	// rules CSSRuleList indexes.
-	topLevel := splitRules(strings.TrimSpace(css))
+// parseResolvedStylesheet is ParseStylesheet on css whose comments,
+// top-level CDO/CDC tokens and url()s are already handled: the text a
+// sheet's rule list holds, which a CSSOM mutation re-parses.
+func parseResolvedStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
+	stylesheet := &Stylesheet{
+		Rules: make([]Rule, 0),
+	}
 
-	// Expand CSS native nesting into flat rules before parsing
-	css = expandNesting(css, "")
+	// Expand CSS native nesting into flat rules before parsing, keeping
+	// where each top-level rule's expansion starts.
+	var topLevel []expandedPart
+	css = expandNestingParts(css, "", &topLevel)
 
 	// Simple parser: split by } to get rules (selector { declarations }).
-	// An empty sheet still records its rule list below: a rule with an
-	// empty block expands to nothing but is a rule.
-	var rules []string
-	if css = strings.TrimSpace(css); css != "" {
-		rules = splitRules(css)
-	}
+	var starts []int
+	rules := splitRulesAt(css, &starts)
 
 	// The rule list holds the top-level rules Blink keeps (not an invalid
-	// selector, an unknown at-rule, @charset). ruleIndexes is, per flat
-	// rule, the index in RuleTexts of the top-level rule it was expanded
-	// from: a top-level rule expands to the flat rules its own expansion
-	// splits into. When those counts do not account for the flat rules
-	// (malformed input), the rules keep the list but no flat rule maps to
-	// one (-1, as for a dropped rule).
-	var ruleIndexes []int
-	for _, top := range topLevel {
-		index := -1
-		if text := strings.TrimSpace(top); isValidTopLevelRule(text) {
-			index = len(stylesheet.RuleTexts)
-			stylesheet.RuleTexts = append(stylesheet.RuleTexts, text)
+	// selector, an unknown at-rule, @charset); an empty one still counts.
+	// A flat rule belongs to the top-level rule whose expansion it starts
+	// in (-1 when that rule is not in the list). Each valid rule's
+	// expansion is balanced, so flat rules split on its boundaries; a
+	// malformed rule's flat rule can run into the next rule's expansion,
+	// whose first flat rules then map to the malformed one.
+	listIndex := make([]int, len(topLevel))
+	for k, top := range topLevel {
+		listIndex[k] = -1
+		if isValidTopLevelRule(top.text) {
+			listIndex[k] = len(stylesheet.RuleTexts)
+			stylesheet.RuleTexts = append(stylesheet.RuleTexts, top.text)
 		}
-		for range splitRules(strings.TrimSpace(expandNesting(top, ""))) {
-			ruleIndexes = append(ruleIndexes, index)
-		}
-	}
-	if len(ruleIndexes) != len(rules) {
-		ruleIndexes = slices.Repeat([]int{-1}, len(rules))
 	}
 
 	// @namespace ordering (CSS Namespaces 3 §2): valid only after any
@@ -888,11 +897,19 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	namespaceAllowed := true
 	seenImportOrNamespace := false
 
+	k := -1 // the top-level rule whose expansion rules[i] starts in
 	for i, ruleStr := range rules {
+		for k+1 < len(topLevel) && topLevel[k+1].start <= starts[i] {
+			k++
+		}
+		index := -1
+		if k >= 0 {
+			index = listIndex[k]
+		}
 		firstRule := len(stylesheet.Rules)
 		stylesheet.parseFlatRule(ctx, ruleStr, &namespaceAllowed, &seenImportOrNamespace)
-		for k := firstRule; k < len(stylesheet.Rules); k++ {
-			stylesheet.Rules[k].SourceRuleIndex = ruleIndexes[i]
+		for r := firstRule; r < len(stylesheet.Rules); r++ {
+			stylesheet.Rules[r].SourceRuleIndex = index
 		}
 	}
 
@@ -1074,7 +1091,22 @@ func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
 // `[} { ... }` (Acid2 line 32; covered by
 // TestErrorRecovery_InvalidSelectors).
 func splitRules(css string) []string {
+	return splitRulesAt(css, nil)
+}
+
+// splitRulesAt is splitRules that, when starts is non-nil, also records
+// per rule the offset in css of the rule text's first non-whitespace byte.
+func splitRulesAt(css string, starts *[]int) []string {
 	rules := make([]string, 0)
+	emit := func(text string, from int) {
+		rules = append(rules, text)
+		if starts != nil {
+			for from < len(css) && isCSSWhitespace(css[from]) {
+				from++
+			}
+			*starts = append(*starts, from)
+		}
+	}
 	depth := 0
 	parenDepth := 0
 	start := 0
@@ -1130,7 +1162,7 @@ func splitRules(css string) []string {
 				depth = 0
 				ruleStr := css[start : i+1]
 				if strings.TrimSpace(ruleStr) != "" {
-					rules = append(rules, ruleStr)
+					emit(ruleStr, start)
 				}
 				start = i + 1
 			}
@@ -1160,7 +1192,7 @@ func splitRules(css string) []string {
 				ruleText := strings.TrimSpace(css[start : i+1])
 				if strings.HasPrefix(ruleText, "@layer") || strings.HasPrefix(ruleText, "@import") ||
 					strings.HasPrefix(ruleText, "@namespace") {
-					rules = append(rules, ruleText)
+					emit(ruleText, start)
 				}
 				start = i + 1
 			}
@@ -1179,7 +1211,7 @@ func splitRules(css string) []string {
 	// call, corrupting the rule body.
 	if (depth > 0 || parenDepth > 0) && start < len(css) && strings.TrimSpace(css[start:]) != "" {
 		synthesized := closeUnmatchedTokens(css[start:])
-		rules = append(rules, synthesized)
+		emit(synthesized, start)
 	}
 	return rules
 }

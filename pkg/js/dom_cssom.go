@@ -84,18 +84,24 @@ func (ctx *domContext) styleSheetWrapper(sheet *css.StyleSheetContents) goja.Val
 	// insertRule(rule, optional index = 0) and deleteRule(index)
 	// (core/css/css_style_sheet.idl).
 	obj.Set("insertRule", func(call goja.FunctionCall) goja.Value {
-		index := 0
-		if len(call.Arguments) > 1 {
-			index = int(call.Argument(1).ToInteger())
+		if len(call.Arguments) < 1 {
+			panic(vm.NewTypeError("Failed to execute 'insertRule' on 'CSSStyleSheet': 1 argument required"))
 		}
-		n, err := sheet.InsertRule(call.Argument(0).String(), index)
+		var index uint32
+		if len(call.Arguments) > 1 {
+			index = toUint32(call.Argument(1))
+		}
+		n, err := sheet.InsertRule(call.Argument(0).String(), int(index))
 		if err != nil {
 			ctx.throwDOMException(err)
 		}
 		return vm.ToValue(n)
 	})
 	obj.Set("deleteRule", func(call goja.FunctionCall) goja.Value {
-		if err := sheet.DeleteRule(int(call.Argument(0).ToInteger())); err != nil {
+		if len(call.Arguments) < 1 {
+			panic(vm.NewTypeError("Failed to execute 'deleteRule' on 'CSSStyleSheet': 1 argument required"))
+		}
+		if err := sheet.DeleteRule(int(toUint32(call.Argument(0)))); err != nil {
 			ctx.throwDOMException(err)
 		}
 		return goja.Undefined()
@@ -243,3 +249,4 @@ func (s *ruleStyleAccessor) Delete(key string) bool {
 func (s *ruleStyleAccessor) Keys() []string {
 	return slices.Clone(s.declarations().Order)
 }
+
