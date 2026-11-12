@@ -49,6 +49,13 @@ type Box struct {
 	// from PhysicalFragment.IsEllipsis by fragmentToBox.
 	IsEllipsis bool
 
+	// TextNode and BidiLevel are a text box's source DOM text node and
+	// resolved bidi level, copied from its PhysicalFragment by
+	// fragmentToBox. Text holds the content in visual order, reversed for
+	// an odd BidiLevel.
+	TextNode  *html.Node
+	BidiLevel int
+
 	// IsVerticalText is true when text should be rendered vertically
 	// (writing-mode is vertical-rl, vertical-lr, sideways-rl, or sideways-lr).
 	IsVerticalText bool

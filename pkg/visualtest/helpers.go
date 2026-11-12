@@ -125,6 +125,9 @@ func RenderHTMLToFileWithBase(htmlContent string, outputPath string, width, heig
 	// addRange); nil when the test's script never touched it, in which
 	// case drawText's selection check no-ops immediately.
 	renderer.SetSelectionContext(doc.Selection, parsedStylesheets, float64(width), float64(height))
+	// LOU-705: the focused element decides whether the caret at a collapsed
+	// selection paints (FrameCaret::ShouldShowCaret).
+	renderer.SetFocusedElement(doc.FocusedElement)
 	// LOU-349: ::target-text highlight painting. doc.TargetTextRanges is
 	// populated by the JS execution above (window.location.hash/href
 	// assigning a `:~:text=` directive, see pkg/js/dom_location.go); nil

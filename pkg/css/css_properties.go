@@ -229,6 +229,9 @@ var cssProperties = append([]cssProperty{
 	{"counter-reset", false, nil},                // :3349
 	{"quotes", true, nil},                        // :5324
 	{"cursor", true, nil},                        // :3375
+	{"caret-animation", true, nil},               // :3005
+	{"caret-color", true, nil},                   // :3016
+	{"caret-shape", true, nil},                   // :3033
 	{"z-index", false, nil},                      // :8174
 	{"will-change", false, nil},                  // :8120
 	{"contain", false, nil},                      // :3164

@@ -195,9 +195,9 @@ func AdjustStyleForDisplay(element *html.Node, style, layoutParentStyle *Style) 
 		}
 	}
 	// No layout parent (the root): compare against the initial horizontal-tb.
-	parentIsVertical := layoutParentStyle != nil && isVerticalWritingMode(layoutParentStyle)
+	parentIsVertical := layoutParentStyle != nil && IsVerticalWritingMode(layoutParentStyle)
 	if element != nil && style.GetDisplay() == DisplayInline &&
-		isVerticalWritingMode(style) != parentIsVertical {
+		IsVerticalWritingMode(style) != parentIsVertical {
 		setDisplay(style, DisplayInlineBlock)
 	}
 }
@@ -238,7 +238,8 @@ func isDocumentElement(element *html.Node) bool {
 		(element.Parent == nil || element.Parent.Type != html.ElementNode || element.Parent.TagName == "document")
 }
 
-func isVerticalWritingMode(s *Style) bool {
+// IsVerticalWritingMode reports whether s has a vertical writing mode.
+func IsVerticalWritingMode(s *Style) bool {
 	switch wm, _ := s.Get("writing-mode"); wm {
 	case "vertical-rl", "vertical-lr", "sideways-rl", "sideways-lr":
 		return true

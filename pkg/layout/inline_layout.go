@@ -2960,6 +2960,7 @@ func createLineBoxEx(
 					}, wdm.WM)),
 					Type:             FragmentText,
 					TextContent:      piece,
+					TextNode:         r.Item.Node,
 					BidiLevel:        r.Item.BidiLevel,
 					Node:             parentNode,
 					Style:            rStyle,
