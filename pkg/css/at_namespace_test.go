@@ -1,6 +1,8 @@
 package css
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"louis14/pkg/html"
@@ -92,8 +94,8 @@ func TestParseStylesheet_NamespaceRuleRecordsDefaultNamespace(t *testing.T) {
 }
 
 // TestParseStylesheet_NamespaceRuleOrdering pins Blink's
-// ComputeNewAllowedRules (css_parser_impl.cc:696-745 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520): @namespace is valid only
+// ComputeNewAllowedRules (css_parser_impl.cc:695-745 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): @namespace is valid only
 // before every regular rule; @layer statements before the first
 // @import/@namespace keep it valid; @import keeps it valid.
 func TestParseStylesheet_NamespaceRuleOrdering(t *testing.T) {
@@ -109,12 +111,60 @@ func TestParseStylesheet_NamespaceRuleOrdering(t *testing.T) {
 		{"after a late @layer statement", `@namespace "hello"; @layer feh; @namespace "world";`, "hello"},
 		{"after @import", `@import "a.css"; @namespace "x";`, "x"},
 		{"two in a row, last wins", `@namespace "a"; @namespace "b";`, "b"},
+		// A rule Blink does not parse is a null rule and changes no
+		// ordering state (ComputeNewAllowedRules returns early,
+		// css_parser_impl.cc:699-701 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		{"after an unknown at-rule statement", `@layerfoo; @namespace url(svg);`, "svg"},
+		{"after an unknown at-rule block", `@foo {} @namespace url(svg);`, "svg"},
+		{"after an invalid style rule", `a[ { color: blue } @namespace url(svg);`, "svg"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ss := mustParseSheet(t, tc.css, nil)
 			if ss.DefaultNamespace != tc.want {
 				t.Errorf("DefaultNamespace = %q, want %q", ss.DefaultNamespace, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseStylesheet_ImportRuleOrdering pins the @import half of Blink's
+// ComputeNewAllowedRules (css_parser_impl.cc:695-745 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): @import is allowed only
+// before @namespace and every regular rule (an @layer statement after an
+// @import is a regular rule); an @import after them is dropped. A rule
+// Blink does not parse (an unknown at-rule, an invalid selector) changes
+// nothing.
+func TestParseStylesheet_ImportRuleOrdering(t *testing.T) {
+	cases := []struct {
+		name     string
+		css      string
+		imported []string // the sheets whose rule arrived, by name
+	}{
+		{"first", `@import "a.css";`, []string{"a"}},
+		{"after an early @layer statement", `@layer x; @import "a.css";`, []string{"a"}},
+		{"after an unknown at-rule", `@foo; @import "a.css";`, []string{"a"}},
+		{"after an invalid style rule", `a[ { color: blue } @import "a.css";`, []string{"a"}},
+		{"after @namespace", `@namespace "x"; @import "a.css";`, nil},
+		{"after a style rule", `p { color: blue } @import "a.css";`, nil},
+		{"after a block at-rule", `@media all {} @import "a.css";`, nil},
+		{"after a late @layer statement", `@import "a.css"; @layer x; @import "b.css";`, []string{"a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := NewParserContext("")
+			// Each sheet's one rule is the class named after it.
+			ctx.Fetcher = func(url string) (string, error) {
+				return "." + strings.TrimSuffix(url, ".css") + " { color: red }", nil
+			}
+			var imported []string
+			for _, r := range mustParseSheet(t, tc.css, ctx).Rules {
+				if name, ok := strings.CutPrefix(r.Selector.Raw, "."); ok {
+					imported = append(imported, name)
+				}
+			}
+			if !slices.Equal(imported, tc.imported) {
+				t.Errorf("imported %q, want %q", imported, tc.imported)
 			}
 		})
 	}
