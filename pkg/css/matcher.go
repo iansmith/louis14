@@ -2,6 +2,8 @@ package css
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	xbidi "golang.org/x/text/unicode/bidi"
 
@@ -43,11 +45,23 @@ type matchContext struct {
 	// Like that AutoReset, setting it on the by-value ctx scopes it to the
 	// argument.
 	resistDefaultNamespace bool
+
+	// scope is the scoping root :scope matches (SelectorCheckingContext::
+	// scope, core/css/selector_checker.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an @scope activation's
+	// root, or nil for the document, where :scope is the root element.
+	scope *html.Node
 }
 
 // Phase 17: MatchesSelector returns true if the node matches the complex selector
 func MatchesSelector(node *html.Node, selector Selector) bool {
-	return matchesSelectorCtx(node, selector, matchContext{defaultNamespace: selector.defaultNamespace})
+	return matchesSelectorInScope(node, selector, nil)
+}
+
+// matchesSelectorInScope matches selector against node with :scope as
+// scope (nil: the document, so the root element).
+func matchesSelectorInScope(node *html.Node, selector Selector, scope *html.Node) bool {
+	return matchesSelectorCtx(node, selector, matchContext{defaultNamespace: selector.defaultNamespace, scope: scope})
 }
 
 // parseNestedSelector parses one comma branch of a functional pseudo-class
@@ -61,11 +75,40 @@ func MatchesSelector(node *html.Node, selector Selector) bool {
 // d4ecdfed88f962439247c2ad36b8fe47805b1520), and an earlier branch is
 // followed by a comma. No Blink analog for re-parsing: louis14 keeps those
 // arguments as strings (SelectorPart.PseudoClasses).
+//
+// Parses are cached by their inputs (nestedSelectorCache): an argument is
+// re-matched for every candidate element, and a parsed Selector is only
+// read.
 func parseNestedSelector(sel string, ctx matchContext, atEnd bool) Selector {
+	key := nestedSelectorKey{sel, ctx.defaultNamespace, ctx.resistDefaultNamespace && atEnd}
+	if s, ok := nestedSelectorCache.Load(key); ok {
+		return s.(Selector)
+	}
 	s := ParseSelector(sel)
-	s.resolveNamespaces(ctx.defaultNamespace, ctx.resistDefaultNamespace && atEnd)
+	s.resolveNamespaces(key.defaultNamespace, key.resist)
+	if nestedSelectorCacheSize.Load() < maxNestedSelectorCacheSize && nestedSelectorCacheSize.Add(1) <= maxNestedSelectorCacheSize {
+		nestedSelectorCache.Store(key, s)
+	}
 	return s
 }
+
+// nestedSelectorKey is what a parseNestedSelector parse depends on.
+type nestedSelectorKey struct {
+	sel, defaultNamespace string
+	resist                bool
+}
+
+// nestedSelectorCache holds parseNestedSelector's parses (a sync.Map of
+// nestedSelectorKey to Selector); the cascade matches from several
+// goroutines.
+var nestedSelectorCache sync.Map
+
+// nestedSelectorCacheSize counts parses offered to nestedSelectorCache,
+// which stops growing at maxNestedSelectorCacheSize entries: the cache
+// lives as long as the process, and its keys come from documents.
+var nestedSelectorCacheSize atomic.Int64
+
+const maxNestedSelectorCacheSize = 1 << 14
 
 // parseNestedSelectorList parses the comma branches of a functional
 // pseudo-class argument with parseNestedSelector, skipping empty branches.
@@ -413,9 +456,12 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		// privacy distinction.
 		return isHyperlink(node)
 	case pc == "scope":
-		// :scope matches the element serving as the scope reference.
-		// In a static document context, approximate as :root (LOU-860
-		// ports @scope).
+		// SelectorChecker::CheckPseudoScope (selector_checker.cc:3650-3659
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the scoping root, or
+		// the root element when the scope is the document.
+		if ctx.scope != nil {
+			return node == ctx.scope
+		}
 		return isRootElement(node)
 	case pc == "link":
 		// Per CSS Selectors 4 §6.6.1, `:link` matches a non-visited hyperlink
@@ -1481,8 +1527,8 @@ func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, v
 			continue
 		}
 
-		if MatchesSelector(node, rule.Selector) {
-			matches = append(matches, rule)
+		if matched, ok := matchRule(node, &rule); ok {
+			matches = append(matches, matched)
 		}
 	}
 
