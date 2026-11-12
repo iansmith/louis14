@@ -182,8 +182,17 @@ func computeReplacedChildPercentageBlockSize(bla *BlockLayoutAlgorithm) (float64
 	if bla.space.TableSectionData != nil && bla.style.GetDisplay() == css.DisplayTableCell {
 		wdm := bla.space.WritingDirection
 		if _, isFixed := bla.style.GetLength(logicalBlockSizeProperty(wdm)); isFixed {
-			if content, ok := ResolveBlockSize(bla.style, wdm, ConstraintSpace{}, ComputeFragmentGeometry(bla.style, wdm)); ok {
-				return max(0, content.Float64()), true
+			// The cell's own block size, clamped by its min/max block
+			// sizes (ComputeBlockSizeForFragmentInternal, length_utils.cc:
+			// 1851-1858), less its border, scrollbar and padding.
+			geom := ComputeFragmentGeometry(bla.style, wdm)
+			if content, ok := ResolveBlockSize(bla.style, wdm, ConstraintSpace{}, geom); ok {
+				size := content.Float64()
+				if maxSize, hasMax := ResolveMaxBlockSize(bla.style, wdm, ConstraintSpace{}, geom); hasMax {
+					size = min(size, maxSize.Float64())
+				}
+				size = max(size, ResolveMinBlockSize(bla.style, wdm, ConstraintSpace{}, geom).Float64())
+				return max(0, size-geom.BlockScrollbarSum()), true
 			}
 		}
 	}

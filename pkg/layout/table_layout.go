@@ -6,6 +6,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"louis14/pkg/geometry/layoutunit"
 )
 
 // TableLayoutAlgorithm implements CSS 2.1 §17 table layout.
@@ -883,8 +884,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			if !isUnwrapped {
 				cellBlockSize, initialIndefinite := computeCellBlockSize(spRows, rowIdx, 1, blockSpacing,
 					cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-				result = layoutElement(tla.ctx, cl.cell.node,
-					tla.tableCellConstraintSpace(cl.cellWDM, cl.layoutInlineSize, cellBlockSize, initialIndefinite, tableData))
+				result = tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, tableData)
 			}
 			cellFrag := result.Fragment
 			contentBlockSize := cl.contentBlockSize
@@ -1104,8 +1104,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// the cell will continue to show") and is clipped to the border box.
 		spannedBlock, initialIndefinite := computeCellBlockSize(spRows, rowIdx, cl.cell.rowSpan, blockSpacing,
 			cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-		result := layoutElement(tla.ctx, cl.cell.node,
-			tla.tableCellConstraintSpace(cl.cellWDM, cl.layoutInlineSize, spannedBlock, initialIndefinite, tableData))
+		result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, spannedBlock, initialIndefinite, tableData)
 		cellFrag := result.Fragment
 		cellFrag.HasCollapsedBorders = borderCollapse
 		if spansCollapsedRow {
@@ -1689,6 +1688,24 @@ func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirecti
 	return b.Build()
 }
 
+// layoutCellAtFinalSize lays a cell out again at its final block size,
+// unless that is the block size it measured at: then the final space lays
+// it out as the measure space did (its children see the same percentage
+// base, an indefinite one or the cell's own fixed block size, and there is
+// no free space to align), so the measure result stands. Blink gets the
+// same reuse from its layout cache (BlockNode::Layout → CachedLayoutResult,
+// layout_result_caching.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// without it each level of nested tables lays its cells out twice, which
+// is exponential in the nesting depth.
+func (tla *TableLayoutAlgorithm) layoutCellAtFinalSize(cell *LayoutInputNode, cellWDM WritingDirectionMode, inlineSize float64, measure *LayoutResult, cellBlockSize float64, initialIndefinite bool, tableData *TableConstraintSpaceData) *LayoutResult {
+	measured := NewLogicalFragment(tla.space.WritingDirection, measure.Fragment).BlockSize()
+	if layoutunit.FromFloat64Round(measured) == layoutunit.FromFloat64Round(cellBlockSize) {
+		return measure
+	}
+	return layoutElement(tla.ctx, cell,
+		tla.tableCellConstraintSpace(cellWDM, inlineSize, cellBlockSize, initialIndefinite, tableData))
+}
+
 // computeCellBlockSize returns a table cell's final block size, the sum of
 // the non-collapsed rows it spans plus the spacing between them, and
 // whether its initial block size is indefinite: it is definite only when
@@ -1715,19 +1732,15 @@ func computeCellBlockSize(rows TableTypesRows, rowIndex, rowSpan int, blockSpaci
 }
 
 // cellHasSpecifiedBlockSize reports whether a cell's block size is a fixed
-// length or a percentage, which constrains it (CellBlockConstraint::
-// is_constrained, table/table_layout_utils.cc:264-289 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink does not count calc()
-// (its TODO 1105272), so neither does this.
+// length, which constrains it: CellBlockConstraint::is_constrained is
+// cell_specified_block_length.IsFixed() (table/table_layout_utils.cc:
+// 248-253 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a percentage only
+// constrains its row (:264-289).
 func cellHasSpecifiedBlockSize(style *css.Style, wdm WritingDirectionMode) bool {
 	if style == nil {
 		return false
 	}
-	prop := logicalBlockSizeProperty(wdm)
-	if _, ok := style.GetLength(prop); ok {
-		return true
-	}
-	_, ok := style.GetPercentage(prop)
+	_, ok := style.GetLength(logicalBlockSizeProperty(wdm))
 	return ok
 }
 
