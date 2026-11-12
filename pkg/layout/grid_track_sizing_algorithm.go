@@ -206,8 +206,11 @@ type gridSizingItem struct {
 	item                   *gridItem
 	start, end             int
 	minContent, maxContent float64
-	// isScrollContainer: the item's automatic minimum size is 0.
-	isScrollContainer bool
+	// isTrackScrollContainer: the item's overflow is scrollable along the
+	// tracks' axis, so its automatic minimum size is 0 (is_track_scroll_
+	// container in CalculateIntrinsicMinimumContribution, grid/
+	// grid_layout_utils.cc:554-559 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	isTrackScrollContainer bool
 	// mainIsAuto: its size in the track axis is auto-like
 	// (gridItemIsAutoLike); then minIsAuto: its min size there is auto, and
 	// minimumSize: its min size, border box, plus its margins
@@ -267,7 +270,7 @@ func (a *gridTrackSizingAlgorithm) contribution(t gridContributionType, it *grid
 			return it.minContent
 		}
 		special := !a.spansAny(it, gridTrackSize.hasAutoMin) || (a.spansFlexible(it) && it.span() > 1)
-		if !it.minIsAuto || it.isScrollContainer || special {
+		if !it.minIsAuto || it.isTrackScrollContainer || special {
 			return it.minimumSize
 		}
 		return it.minContent
@@ -729,7 +732,7 @@ func (gla *GridLayoutAlgorithm) columnSizingItems(sets []gridSet, items []*gridI
 		}
 		var edges float64
 		it.minContent, it.maxContent, edges = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
-		it.isScrollContainer = item.style.IsScrollContainer()
+		it.isTrackScrollContainer = isOverflowValueScrollableAlong(item.style, wdm.IsHorizontal())
 		inlineProp := logicalInlineSizeProperty(wdm)
 		if it.mainIsAuto = gridItemIsAutoLike(item.style, inlineProp); it.mainIsAuto {
 			it.minimumSize, it.minIsAuto = gridItemMinimum(it, item.style, wdm, inlineProp, edges)
@@ -877,7 +880,7 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 			block := blockSize + margins.BlockStart + margins.BlockEnd
 			it.minContent, it.maxContent = block, block
 		}
-		it.isScrollContainer = item.style.IsScrollContainer()
+		it.isTrackScrollContainer = isOverflowValueScrollableAlong(item.style, !wdm.IsHorizontal())
 		if it.mainIsAuto = gridItemIsAutoLike(item.style, blockProp); it.mainIsAuto {
 			it.minimumSize, it.minIsAuto = gridItemMinimum(it, item.style, wdm, blockProp, edges)
 		}
