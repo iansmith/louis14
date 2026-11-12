@@ -14,9 +14,13 @@ import (
 
 // Phase 3: CSS Cascade - computing final styles for a node
 
-// Phase 17: applyUserAgentStyles applies default browser styles based on element type
+// Phase 17: applyUserAgentStyles applies default browser styles based on element type.
+// These are html.css's rules, which declare `@namespace
+// "http://www.w3.org/1999/xhtml"` and so match only HTML elements: an
+// element of another namespace with an HTML tag name gets none of them
+// (core/html/resources/html.css @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func applyUserAgentStyles(node *html.Node, style *Style) {
-	if node.Type != html.ElementNode {
+	if node.Type != html.ElementNode || node.NamespaceURI() != html.XHTMLNamespaceURI {
 		return
 	}
 
@@ -3702,7 +3706,13 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	//
 	// These presentational hints run before author CSS, so author `counter-reset`
 	// rules override them. Only applied to the specific elements; not inherited.
-	switch node.TagName {
+	// They are HTML elements' hints (and html.css's list rules), so an element
+	// of another namespace with the same tag name gets none.
+	tagName := node.TagName
+	if node.NamespaceURI() != html.XHTMLNamespaceURI {
+		tagName = ""
+	}
+	switch tagName {
 	case "ol":
 		_, hasReversed := node.GetAttribute("reversed")
 		startVal, hasStart := node.GetAttribute("start")
