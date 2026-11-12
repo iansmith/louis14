@@ -6274,9 +6274,7 @@ func (r *Renderer) drawBlurredTextShadow(layer *PaintLayer, text string, box *la
 
 	// Apply 3-pass box blur (approximates Gaussian blur).
 	blurRadius := int(math.Round(sigma))
-	boxBlur(buf, blurRadius)
-	boxBlur(buf, blurRadius)
-	boxBlur(buf, blurRadius)
+	gaussianBlur3Box(buf, blurRadius)
 
 	// Composite back at shadow offset position.
 	dx := int(math.Round(box.X + shadow.OffsetX - extend))
@@ -7270,7 +7268,8 @@ func (r *Renderer) drawOutsetBoxShadows(layer *PaintLayer, rect layout.PhysicalR
 }
 
 // drawOutsetShadowBuffer renders an outset shadow using an offscreen buffer.
-// Fills the shadow shape, clears the border box area, optionally blurs, then composites.
+// Fills the shadow shape, optionally blurs it, clears the border box area,
+// then composites.
 func (r *Renderer) drawOutsetShadowBuffer(
 	sx, sy, sw, sh float64, shadowRadii css.EllipticalRadii,
 	bx, by, bw, bh float64, borderRadii css.EllipticalRadii,
@@ -7299,35 +7298,24 @@ func (r *Renderer) drawOutsetShadowBuffer(
 	lsx, lsy := sx-minX, sy-minY
 	lbx, lby := bx-minX, by-minY
 
-	// Fill the shadow shape, then clip out the border box
-	// (ClipOutContouredRect / ClipOut in BoxPainterBase::
-	// PaintNormalBoxShadow, box_painter_base.cc:188-196 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The hole is cleared by
-	// its anti-aliased coverage, as the border painter's clip-out
-	// (paintClippedOut) cuts the same rrect.
+	// Fill the shadow shape and blur it whole: the blur is a draw looper on
+	// the fill (BoxPainterBase::PaintNormalBoxShadow, box_painter_base.cc:
+	// 348-353, :383 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	if !shadowRadii.IsZero() {
 		buildRoundedRectPathOnDC(childDC, lsx, lsy, sw, sh, shadowRadii)
 	} else {
 		childDC.DrawRectangle(lsx, lsy, sw, sh)
 	}
 	childDC.Fill()
-	r.clearHoleFromBuffer(buf, lbx, lby, bw, bh, borderRadii)
-
-	// Apply box blur if needed.
 	if shadow.Blur > 0 {
-		boxBlur(buf, int(math.Round(sigma)))
-		boxBlur(buf, int(math.Round(sigma)))
-		boxBlur(buf, int(math.Round(sigma)))
-
-		// Re-clip the border box out of the *blurred* buffer. The blur spreads
-		// shadow back across the cleared boundary into the border box by a few
-		// pixels; without this an outset shadow paints inside the border box,
-		// visible whenever the element background is transparent (e.g. a
-		// backdrop-filter element). Mirrors Blink's
-		// GraphicsContext::ClipOut(border_box) in
-		// BoxPainterBase::PaintNormalBoxShadow (CSS Backgrounds 3 §7.1).
-		r.clearHoleFromBuffer(buf, lbx, lby, bw, bh, borderRadii)
+		gaussianBlur3Box(buf, int(math.Round(sigma)))
 	}
+	// Then clip out the border box (ClipOutContouredRect / ClipOut,
+	// box_painter_base.cc:175-197). Cutting it before the blur would spread
+	// the hole outward, leaving the shadow see-through next to the box. The
+	// hole is cleared by its anti-aliased coverage, as the border painter's
+	// clip-out (paintClippedOut) cuts the same rrect.
+	r.clearHoleFromBuffer(buf, lbx, lby, bw, bh, borderRadii)
 
 	r.dc.DrawImage(buf, int(math.Round(minX)), int(math.Round(minY)))
 }
@@ -7337,8 +7325,7 @@ func (r *Renderer) drawOutsetShadowBuffer(
 // the shape to an alpha mask using the draw context's rasterizer — so rounded
 // corners match other path rendering exactly — then multiplies each covered
 // buffer pixel toward zero by the mask's inverse coverage. Shared by the outset
-// shadow's hole clear, its post-blur re-clip, and the inset shadow's inner-hole
-// clear. Coordinates are buffer-local.
+// shadow's hole clear and the inset shadow's inner-hole clear. Coordinates are buffer-local.
 func (r *Renderer) clearHoleFromBuffer(buf *image.RGBA, x, y, w, h float64, radii css.EllipticalRadii) {
 	if w <= 0 || h <= 0 {
 		return
@@ -7358,8 +7345,7 @@ func (r *Renderer) clearHoleFromBuffer(buf *image.RGBA, x, y, w, h float64, radi
 
 	// The mask is non-zero only within the hole's bounding box, so clamp the
 	// scan to it: the buffer is deliberately expanded by the blur radius on all
-	// sides, and this helper runs twice per outset shadow (pre- and post-blur),
-	// so walking the transparent margin each time is pure waste.
+	// sides, so walking its transparent margin is pure waste.
 	x0, y0 := max(0, int(math.Floor(x))), max(0, int(math.Floor(y)))
 	x1, y1 := min(bw, int(math.Ceil(x+w))), min(bh, int(math.Ceil(y+h)))
 	for py := y0; py < y1; py++ {
@@ -7472,15 +7458,13 @@ func (r *Renderer) drawInsetShadowBuffer(
 	}
 
 	// Clear the inner hole (set to transparent). The inner edge is then blurred
-	// below, which is correct for inset shadows: their inner boundary is soft,
-	// so — unlike the outset case — no post-blur re-clip is applied here.
+	// below, which is correct for inset shadows: their inner boundary is soft.
+	// An outset shadow, by contrast, cuts its border-box hole after its blur.
 	r.clearHoleFromBuffer(buf, ix-bx, iy-by, iw, ih, innerRadii)
 
 	// Apply box blur if needed.
 	if shadow.Blur > 0 {
-		boxBlur(buf, int(math.Round(sigma)))
-		boxBlur(buf, int(math.Round(sigma)))
-		boxBlur(buf, int(math.Round(sigma)))
+		gaussianBlur3Box(buf, int(math.Round(sigma)))
 	}
 
 	// Clip the buffer to the padding box before compositing.
@@ -7543,6 +7527,15 @@ func (r *Renderer) clipInsetShadowBuffer(buf *image.RGBA, bx, by, cx, cy, cw, ch
 			}
 		}
 	}
+}
+
+// gaussianBlur3Box approximates a Gaussian blur of standard deviation
+// about radius with three box-blur passes. no Blink analog: Blink blurs
+// with Skia's Gaussian image filter; louis14 rasterizes in Go.
+func gaussianBlur3Box(img *image.RGBA, radius int) {
+	boxBlur(img, radius)
+	boxBlur(img, radius)
+	boxBlur(img, radius)
 }
 
 // boxBlur applies a separable box blur (horizontal then vertical pass)
