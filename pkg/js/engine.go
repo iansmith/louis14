@@ -324,6 +324,7 @@ func (e *Engine) Execute(doc *html.Document) error {
 	}
 
 	e.registerImageConstructor(ctx)
+	registerWindowViewportSize(e.vm, ctx)
 
 	// Each step below is a task; tasks it posts (image load/error events)
 	// run after it.
@@ -426,4 +427,33 @@ func findBodyNode(root *html.Node) *html.Node {
 		}
 	}
 	return nil
+}
+
+// registerWindowViewportSize defines window.innerWidth and innerHeight: the
+// viewport's size, scrollbars included, as integers, after bringing layout
+// up to date (LocalDOMWindow::innerWidth / innerHeight → GetViewportSize →
+// LocalFrameView::Size, core/frame/local_dom_window.cc:1723-1771 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14's LayoutView box,
+// keyed by the Document node, is the viewport. Without a layout updater
+// (no frame view) both are 0, as with no frame.
+func registerWindowViewportSize(vm *goja.Runtime, ctx *domContext) {
+	viewportSize := func() (int, int) {
+		if ctx.updateLayout == nil {
+			return 0, 0
+		}
+		view := ctx.updateLayout()[ctx.doc.Root]
+		if view == nil {
+			return 0, 0
+		}
+		return int(view.Width), int(view.Height)
+	}
+	window := vm.GlobalObject()
+	_ = window.DefineAccessorProperty("innerWidth", vm.ToValue(func(goja.FunctionCall) goja.Value {
+		w, _ := viewportSize()
+		return vm.ToValue(w)
+	}), nil, goja.FLAG_TRUE, goja.FLAG_TRUE)
+	_ = window.DefineAccessorProperty("innerHeight", vm.ToValue(func(goja.FunctionCall) goja.Value {
+		_, h := viewportSize()
+		return vm.ToValue(h)
+	}), nil, goja.FLAG_TRUE, goja.FLAG_TRUE)
 }

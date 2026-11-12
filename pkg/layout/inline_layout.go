@@ -86,7 +86,7 @@ func isAtomicBaselineDisplay(d css.DisplayType) bool {
 // - inline-flex, inline-grid, flex, grid: always derive from content baseline.
 // This mirrors Blink LayoutBox::UseLogicalBottomMarginEdgeForInlineBlockBaseline
 // (third_party/blink/renderer/core/layout/layout_box.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css.Style) bool {
+func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css.Style, node *html.Node) bool {
 	if st == nil {
 		return false
 	}
@@ -96,12 +96,9 @@ func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css
 		// follows the same rule (pure inline list items never reach the
 		// atomic baseline path).
 		css.DisplayInlineListItem:
-		// These displays synthesize from margin box when they are scroll
-		// containers, unless the style ignores overflow for the inline-block
-		// baseline (ForceInlineBaselineSynthesis, physical_box_fragment.h:
-		// 169-173 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		return (st.GetOverflowX() != css.OverflowVisible || st.GetOverflowY() != css.OverflowVisible) &&
-			!st.ShouldIgnoreOverflowPropertyForInlineBlockBaseline()
+		// These displays synthesize from the margin box when they are
+		// block-axis scroll containers (forceInlineBaselineSynthesis).
+		return forceInlineBaselineSynthesis(st, node)
 	}
 	// Flex, grid, and other displays derive from content baseline regardless of overflow.
 	return false
@@ -125,7 +122,7 @@ func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css
 // physical_box_fragment.h:167-173 @ a9f50e52).
 func atomicInlineBaseline(r *InlineItemResult, display css.DisplayType, blockSize float64, wdm WritingDirectionMode) float64 {
 	if (r.Item.Style != nil && NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)) ||
-		useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style) {
+		useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style, r.Item.Node) {
 		return synthesizedInlineBaseline(r, blockSize, wdm, false)
 	}
 	switch display {
