@@ -5352,6 +5352,11 @@ func validateDeclaredLonghand(prop, value string) (string, bool) {
 		return value, isValidImageValue(value)
 	case prop == "font-family":
 		return normalizeAndValidateFontFamily(value)
+	case keywordPropertyValues[prop] != nil:
+		if isDeferredOrCSSWideValue(value) {
+			return value, true
+		}
+		return consumeKeywordPropertyValue(prop, value)
 	case isGridTrackListProperty[prop]:
 		if isDeferredOrCSSWideValue(value) {
 			return value, true

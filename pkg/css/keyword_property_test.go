@@ -10,7 +10,7 @@ import "testing"
 func TestKeywordPropertyValues(t *testing.T) {
 	for _, tt := range []struct{ decl, prop, want string }{
 		{"caret-shape: block", "caret-shape", "block"},
-		{"caret-shape: BAR", "caret-shape", "BAR"},
+		{"caret-shape: BAR", "caret-shape", "bar"},
 		{"caret-shape: underscore", "caret-shape", "underscore"},
 		{"caret-shape: auto", "caret-shape", "auto"},
 		{"caret-shape: block; caret-shape: foo", "caret-shape", "block"},
