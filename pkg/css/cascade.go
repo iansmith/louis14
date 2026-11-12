@@ -681,7 +681,7 @@ func cascadeOrderLess(a, b *Rule, layerA, layerB int) bool {
 // records are left untouched; the document cascade (ApplyStylesToDocument)
 // samples them against the document timeline instead.
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
-	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil, nil)
+	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil, nil, nil)
 }
 
 // computeStyle is ComputeStyle with the document's AnimationClock and the
@@ -691,7 +691,10 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 // updated (calculateAnimationUpdate) and sampled at their timeline local
 // times. A nil clock samples every animation at local time 0 and leaves the
 // records alone, for probes that are not the element's style recalc.
-func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock, parent *Style) *Style {
+//
+// frame is node's styleScopeFrame during the document's cascade pass, nil
+// for a probe.
+func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock, parent *Style, frame *styleScopeFrame) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -711,7 +714,7 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	allRules := make([]Rule, 0)
 
 	for _, stylesheet := range stylesheets {
-		matches := FindMatchingRules(node, stylesheet, viewportWidth, viewportHeight)
+		matches := findMatchingRules(node, stylesheet, viewportWidth, viewportHeight, frame)
 		allRules = append(allRules, matches...)
 	}
 
@@ -1302,7 +1305,7 @@ func ApplyStylesToDocumentWithFontSelector(doc *html.Document, viewportWidth, vi
 	effW, effH := effectiveViewportForUnits(doc, stylesheets, viewportWidth, viewportHeight, ctx)
 
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, fs, &doc.AnimationClock)
+	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, fs, &doc.AnimationClock, nil)
 
 	// Propagate the owning document's BaseDir onto every Style — see
 	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
@@ -1658,7 +1661,7 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 					// (not the matching element itself)
 					ancestor := node.Parent
 					for ancestor != nil {
-						if matched, ok := matchRule(ancestor, &rule); ok {
+						if matched, ok := matchRule(ancestor, &rule, nil); ok {
 							allRules = append(allRules, matched)
 							break
 						}
@@ -1667,7 +1670,7 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 			} else if rulePseudo == pseudoElement {
 				// Direct pseudo-element match
-				if matched, ok := matchRule(node, &rule); ok {
+				if matched, ok := matchRule(node, &rule, nil); ok {
 					allRules = append(allRules, matched)
 				}
 			}
@@ -2420,7 +2423,7 @@ func HasFirstLetterRules(node *html.Node, stylesheets []*Stylesheet, viewportWid
 			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
-			if _, ok := matchRule(node, &rule); ok {
+			if _, ok := matchRule(node, &rule, nil); ok {
 				return true
 			}
 		}
@@ -2439,7 +2442,7 @@ func HasFirstLineRules(node *html.Node, stylesheets []*Stylesheet, viewportWidth
 			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
-			if _, ok := matchRule(node, &rule); ok {
+			if _, ok := matchRule(node, &rule, nil); ok {
 				return true
 			}
 		}
@@ -2463,14 +2466,14 @@ func HasPseudoElementRules(node *html.Node, pseudoElement string, stylesheets []
 				continue
 			}
 			if pseudo == pseudoElement {
-				if _, ok := matchRule(node, &rule); ok {
+				if _, ok := matchRule(node, &rule, nil); ok {
 					return true
 				}
 			} else {
 				// Descendant pseudo-element: check if node is a descendant.
 				ancestor := node.Parent
 				for ancestor != nil {
-					if _, ok := matchRule(ancestor, &rule); ok {
+					if _, ok := matchRule(ancestor, &rule, nil); ok {
 						return true
 					}
 					ancestor = ancestor.Parent
@@ -3303,15 +3306,20 @@ func isPxLiteral(val string) bool {
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
-func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector, clock *html.AnimationClock) {
+//
+// frame is the parent element's styleScopeFrame (nil at the root); node's
+// own frame chains to it (Blink creates a StyleScopeFrame per element in
+// style recalc).
+func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector, clock *html.AnimationClock, frame *styleScopeFrame) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock, styles[node.Parent])
+		frame = newStyleScopeFrame(node, frame)
+		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock, styles[node.Parent], frame)
 		style.fontSelector = fs
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		resolveComputedTimeDeclarations(node, style, styles)
 		// Apply container query rules after base style (needs ancestor styles resolved)
-		if applyContainerQueryRules(node, stylesheets, styles, style) {
+		if applyContainerQueryRules(node, stylesheets, styles, style, frame) {
 			resolveLateDeclarations(node, style, styles)
 		}
 		// The element's font properties are final here (@container rules
@@ -3428,7 +3436,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 
 	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
-		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, fs, clock)
+		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, fs, clock, frame)
 	}
 }
 
@@ -3495,7 +3503,7 @@ func applyDeclarationPass(style *Style, block *DeclarationResult, important bool
 // Like the main cascade it runs a normal pass, which leaves the properties
 // the cascade set with !important, then an important pass, each applying a
 // rule's `all` before its other declarations.
-func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style) bool {
+func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style, frame *styleScopeFrame) bool {
 	var matched []Rule
 	for _, stylesheet := range stylesheets {
 		for _, rule := range stylesheet.Rules {
@@ -3503,7 +3511,7 @@ func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles
 			if rule.ContainerQuery == nil || rule.Selector.PseudoElement != "" {
 				continue
 			}
-			if m, ok := matchRule(node, &rule); ok && evaluateContainerQuery(node, rule.ContainerQuery, styles) {
+			if m, ok := matchRule(node, &rule, frame); ok && evaluateContainerQuery(node, rule.ContainerQuery, styles) {
 				matched = append(matched, m)
 			}
 		}

@@ -627,18 +627,13 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 
 		// Resolve the effective selector for declaration segments.
 		// - Top-level: "& at the top level counts as :scope" per CSS
-		//   Nesting 1 §2.1, so swap any `&` in sel for `:where(:scope)`.
+		//   Nesting 1 §2.1; the parser keeps it (nestingParentPseudo).
 		// - Nested: use resolveNestedSelector against the parent.
-		var declSel, childParent string
+		declSel := sel
 		if parentSelector != "" {
 			declSel = resolveNestedSelector(parentSelector, sel)
-			childParent = declSel
-		} else {
-			declSel = resolveTopLevelNestingSelector(sel)
-			childParent = declSel
 		}
-
-		writeBodySegments(&result, segments, declSel, childParent)
+		writeBodySegments(&result, segments, declSel, declSel)
 	}
 	return result.String()
 }
@@ -662,10 +657,10 @@ func writeBodySegments(b *strings.Builder, segments []bodySegment, declSel, chil
 // expandScopeRule expands an @scope rule's body (CSSParserImpl::
 // ConsumeScopeRule, css_parser_impl.cc:2135-2172 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The body is a scope, not
-// the parent rule: its `&` is :where(:scope) (StyleScope::RuleForNesting,
+// the parent rule: its `&` has no parent rule (StyleScope::RuleForNesting,
 // style_scope.cc:142-147, CSSScopeifiedParentPseudoClass stable), so its
 // rules expand as top-level ones, and declarations directly in it are a
-// `:where(:scope)` rule in source order (css_parser_impl.cc:1298-1305).
+// `&` rule in source order (css_parser_impl.cc:1298-1305).
 // Nested in a style rule, the <scope-start> is relative to the parent rule
 // (StyleScope::Consume parses it with the parent's nesting type).
 func expandScopeRule(prelude, body, parentSelector string) string {
@@ -675,7 +670,7 @@ func expandScopeRule(prelude, body, parentSelector string) string {
 	var b strings.Builder
 	b.WriteString(prelude)
 	b.WriteString(" { ")
-	writeBodySegments(&b, anchorScopeBody(splitBodySegments(body)), ":where(:scope)", "")
+	writeBodySegments(&b, anchorScopeBody(splitBodySegments(body)), "&", "")
 	b.WriteString("}\n")
 	return b.String()
 }
@@ -761,19 +756,13 @@ func resolveNestedSelector(parent, nested string) string {
 	return wrappedParent + " " + nested
 }
 
-// resolveTopLevelNestingSelector substitutes occurrences of `&` in a top-
-// level selector with `:where(:scope)`. A `&` with no parent rule matches
-// like :scope (selector_checker.cc:2532-2540) with no specificity
-// (css_selector.cc:223-227 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
-// in an @scope body it is :where(:scope) too, as
-// CSSScopeifiedParentPseudoClass is stable (style_scope.cc:142-147).
+// nestingParentPseudo is the PseudoClasses entry for a `&` with no parent
+// rule (Blink's kPseudoParent with a null parent): at the top level, and in
+// an @scope body, where CSSScopeifiedParentPseudoClass (stable,
+// style_scope.cc:142-147 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) gives
+// its rules no parent rule. It matches like :scope with no specificity.
 // Required by css-nesting/nesting-basic.html test-12 (`& .test-12 { ... }`).
-func resolveTopLevelNestingSelector(sel string) string {
-	if !strings.Contains(sel, "&") {
-		return sel
-	}
-	return strings.ReplaceAll(sel, "&", ":where(:scope)")
-}
+const nestingParentPseudo = "&"
 
 // wrapParentInIs wraps a parent selector in :is(...) for nesting substitution.
 // Single simple selectors that already are bare functional pseudo-classes
@@ -4098,8 +4087,8 @@ func parseSelector(selectorStr string) Selector {
 					}
 				}
 				specificity += maxSpec
-			} else if strings.HasPrefix(pc, "where(") {
-				// :where() has zero specificity
+			} else if strings.HasPrefix(pc, "where(") || pc == nestingParentPseudo {
+				// :where() and a parentless & have zero specificity
 			} else if strings.HasPrefix(pc, "nth-child(") || strings.HasPrefix(pc, "nth-last-child(") {
 				// Per CSS Selectors 4 §17, `:nth-child(An+B of S)` adds the
 				// pseudo-class's own 10 (class-tier) plus the maximum
@@ -4213,6 +4202,12 @@ func tokenizeSelector(s string) []string {
 }
 
 // parseSelectorPart parses a single selector part like "div.class1.class2#id[attr=value]"
+// isCompoundDelimiter reports whether c starts a simple selector after a
+// type selector, class or id in a compound: `.`, `#`, `[`, `:` or `&`.
+func isCompoundDelimiter(c byte) bool {
+	return c == '.' || c == '#' || c == '[' || c == ':' || c == '&'
+}
+
 func parseSelectorPart(s string) SelectorPart {
 	part := SelectorPart{
 		Classes:       make([]string, 0),
@@ -4229,10 +4224,10 @@ func parseSelectorPart(s string) SelectorPart {
 	i := 0
 
 	// Check for element (must come first)
-	if s[i] != '.' && s[i] != '#' && s[i] != '[' && s[i] != ':' {
+	if !isCompoundDelimiter(s[i]) {
 		// Read element name until we hit a special character
 		j := i
-		for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
+		for j < len(s) && !isCompoundDelimiter(s[j]) {
 			j++
 		}
 		part.Element = strings.ToLower(s[i:j])
@@ -4259,11 +4254,20 @@ func parseSelectorPart(s string) SelectorPart {
 
 	// Parse classes, ID, and attributes
 	for i < len(s) {
-		if s[i] == '.' {
+		if s[i] == '&' {
+			// The nesting selector with no parent rule (a top-level rule,
+			// or an @scope body): Blink's kPseudoParent with a null parent,
+			// which matches like :scope (selector_checker.cc:2532-2540)
+			// with no specificity (css_selector.cc:223-227 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A nested rule's `&`
+			// was replaced by its parent selector before parsing.
+			part.PseudoClasses = append(part.PseudoClasses, nestingParentPseudo)
+			i++
+		} else if s[i] == '.' {
 			// Class
 			i++
 			j := i
-			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
+			for j < len(s) && !isCompoundDelimiter(s[j]) {
 				j++
 			}
 			part.Classes = append(part.Classes, s[i:j])
@@ -4272,7 +4276,7 @@ func parseSelectorPart(s string) SelectorPart {
 			// ID
 			i++
 			j := i
-			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
+			for j < len(s) && !isCompoundDelimiter(s[j]) {
 				j++
 			}
 			part.ID = s[i:j]
@@ -4295,7 +4299,7 @@ func parseSelectorPart(s string) SelectorPart {
 						j++ // include the closing paren
 						break
 					}
-				} else if depth == 0 && (s[j] == '.' || s[j] == '#' || s[j] == '[' || s[j] == ':') {
+				} else if depth == 0 && isCompoundDelimiter(s[j]) {
 					break
 				}
 				j++

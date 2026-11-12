@@ -24,6 +24,9 @@ type StyleScope struct {
 	// styles are computed (ImplicitScopeTrigger,
 	// scoped_style_resolver.cc:444-454). Blink records the trigger on the
 	// element's StyleScopeData when the sheet becomes active instead.
+	// Written once, on a freshly parsed sheet before StyleSheetContents
+	// publishes it under its mutex; matching reaches the sheet only through
+	// ParsedStylesheet, which takes that mutex, so reads need no lock.
 	owner *html.Node
 }
 
@@ -67,33 +70,40 @@ func consumeScopeBoundary(s string, relativeToScope bool) (selectors []Selector,
 }
 
 // parseScopeBoundarySelectors parses a <scope-start> or <scope-end>
-// selector list (CSSSelectorParser::ParseScopeBoundary). An `&` is
-// :where(:scope) (resolveTopLevelNestingSelector): in <scope-end> because
+// selector list (CSSSelectorParser::ParseScopeBoundary). An `&` has no
+// parent rule (nestingParentPseudo): in <scope-end> because
 // CSSScopeifiedParentPseudoClass is stable (style_scope.cc:112-121), and
-// in a top-level <scope-start> because a top-level & matches like :scope
-// with no specificity (selector_checker.cc:2532-2540, css_selector.cc:223-227).
-// The list is not forgiving: one invalid selector drops it.
+// in a top-level <scope-start>. The list is not forgiving: one invalid
+// selector, or one with a pseudo-element (DisallowPseudoElementsScope,
+// css_selector_parser.cc:190 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// drops it.
 //
 // A list parsed relative to the scope (CSSNestingType::kScope, as
-// <scope-end> is) gives each selector without :scope the implicit
-// :where(:scope) anchor (scopedSelectorText).
+// <scope-end> is) gives each selector without :scope the implicit :scope
+// anchor (scopedSelectorText).
 func parseScopeBoundarySelectors(list string, relativeToScope bool) ([]Selector, bool) {
 	var selectors []Selector
 	for _, sel := range splitSelectorGroup(list) {
-		sel = resolveTopLevelNestingSelector(strings.TrimSpace(sel))
+		sel = strings.TrimSpace(sel)
 		if !isValidSelector(sel) {
 			return nil, false
 		}
 		if relativeToScope {
 			sel = scopedSelectorText(sel)
 		}
-		selectors = append(selectors, parseSelector(sel))
+		// A `::` names a pseudo-element even when parseSelector does not
+		// extract it (::placeholder, ::part(), ...).
+		parsed := parseSelector(sel)
+		if parsed.PseudoElement != "" || strings.Contains(sel, "::") {
+			return nil, false
+		}
+		selectors = append(selectors, parsed)
 	}
 	return selectors, len(selectors) > 0
 }
 
-// anchoredToScope gives each selector without :scope the implicit
-// `:where(:scope)` descendant anchor (scopedSelectorText): a selector list
+// anchoredToScope gives each selector without :scope the implicit :scope
+// descendant anchor (scopedSelectorText): a selector list
 // parsed with CSSNestingType::kScope.
 func anchoredToScope(selectors []Selector) []Selector {
 	out := make([]Selector, len(selectors))
@@ -111,8 +121,9 @@ func anchoredToScope(selectors []Selector) []Selector {
 // Blink's MaybeCreateImplicitDescendantAnchor does per complex selector
 // (css_selector_parser.cc:800-823, called at :914-930 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The anchor is implicit
-// (CreateImplicitAnchor, :786-797): it adds no specificity, which :where()
-// expresses, and takes no default namespace, which `*|*` expresses. A
+// (CreateImplicitAnchor, :786-797): it adds no specificity and takes no
+// default namespace, written `*|*&` (a parentless & matches like :scope with
+// no specificity; nestingParentPseudo). A
 // selector starting with a combinator (`> .a`) is relative to the anchor
 // the same way (ConsumeNestedRelativeSelector).
 //
@@ -122,7 +133,7 @@ func scopedSelectorText(sel string) string {
 	if strings.Contains(sel, "&") || containsScopePseudo(sel) {
 		return sel
 	}
-	return "*|*:where(:scope) " + sel
+	return "*|*& " + sel
 }
 
 // containsScopePseudo reports whether a selector contains :scope anywhere,
@@ -160,17 +171,43 @@ const unscopedProximity = ^uint32(0)
 // document (DefaultActivations, selector_checker.cc:3876-3881). Read only.
 var defaultActivations = []styleScopeActivation{{proximity: unscopedProximity}}
 
+// styleScopeFrame mirrors Blink's StyleScopeFrame
+// (core/css/style_scope_frame.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the activations of each scope for one element during one cascade pass,
+// chained to the parent element's frame so CalculateActivations reuses the
+// parent's results instead of walking to the root again. A nil frame
+// caches nothing (a style computed outside the cascade pass).
+type styleScopeFrame struct {
+	element *html.Node
+	parent  *styleScopeFrame
+	data    map[*StyleScope][]styleScopeActivation
+}
+
+// newStyleScopeFrame is element's frame, chained to its parent's.
+func newStyleScopeFrame(element *html.Node, parent *styleScopeFrame) *styleScopeFrame {
+	return &styleScopeFrame{element: element, parent: parent}
+}
+
+// parentFrameFor is the frame of parent, f's element's parent element,
+// when the chain has it (StyleScopeFrame::GetParentFrameOrNull).
+func (f *styleScopeFrame) parentFrameFor(parent *html.Node) *styleScopeFrame {
+	if f == nil || f.parent == nil || f.parent.element != parent {
+		return nil
+	}
+	return f.parent
+}
+
 // ensureActivations mirrors SelectorChecker::EnsureActivations
 // (selector_checker.cc:3918-3964 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
 // the activations of scope for element, within the activations of the
-// enclosing scope (or the default activation, the document). Blink caches
-// these per element on a StyleScopeFrame; louis14 recomputes them.
-func ensureActivations(element *html.Node, scope *StyleScope) []styleScopeActivation {
+// enclosing scope (or the default activation, the document), cached on
+// element's frame.
+func ensureActivations(element *html.Node, scope *StyleScope, frame *styleScopeFrame) []styleScopeActivation {
 	outer := defaultActivations
 	if scope.parent != nil {
-		outer = ensureActivations(element, scope.parent)
+		outer = ensureActivations(element, scope.parent, frame)
 	}
-	return calculateActivations(element, scope, outer)
+	return calculateActivations(element, scope, outer, frame)
 }
 
 // calculateActivations mirrors SelectorChecker::CalculateActivations
@@ -178,7 +215,39 @@ func ensureActivations(element *html.Node, scope *StyleScope) []styleScopeActiva
 // active one generation further out unless element is a scoping limit,
 // and element adds an activation of its own when it is a scoping root
 // within an outer activation. Activations are in decreasing proximity.
-func calculateActivations(element *html.Node, scope *StyleScope, outer []styleScopeActivation) []styleScopeActivation {
+// With element's frame, the result is cached there and the parent's comes
+// from the parent's frame, as Blink caches it (:3974-3985, :4044-4047).
+func calculateActivations(element *html.Node, scope *StyleScope, outer []styleScopeActivation, frame *styleScopeFrame) []styleScopeActivation {
+	if cached, ok := frame.cached(scope); ok {
+		return cached
+	}
+	activations := computeActivations(element, scope, outer, frame)
+	frame.store(scope, activations)
+	return activations
+}
+
+// cached is the frame's activations of scope, if computed.
+func (f *styleScopeFrame) cached(scope *StyleScope) ([]styleScopeActivation, bool) {
+	if f == nil {
+		return nil, false
+	}
+	a, ok := f.data[scope]
+	return a, ok
+}
+
+// store caches the activations of scope on the frame (none on nil).
+func (f *styleScopeFrame) store(scope *StyleScope, activations []styleScopeActivation) {
+	if f == nil {
+		return
+	}
+	if f.data == nil {
+		f.data = map[*StyleScope][]styleScopeActivation{}
+	}
+	f.data[scope] = activations
+}
+
+// computeActivations is calculateActivations without the cache.
+func computeActivations(element *html.Node, scope *StyleScope, outer []styleScopeActivation, frame *styleScopeFrame) []styleScopeActivation {
 	if len(outer) == 0 {
 		return nil
 	}
@@ -187,7 +256,7 @@ func calculateActivations(element *html.Node, scope *StyleScope, outer []styleSc
 	// activation's root (ActivationCeiling, selector_checker.cc:3896-3905).
 	if element != outer[0].root {
 		if parent := parentElement(element); parent != nil {
-			for _, a := range calculateActivations(parent, scope, outer) {
+			for _, a := range calculateActivations(parent, scope, outer, frame.parentFrameFor(parent)) {
 				if !elementIsScopingLimit(scope, a, element) {
 					activations = append(activations, styleScopeActivation{a.root, a.proximity + 1})
 				}
@@ -341,14 +410,16 @@ func parentElement(element *html.Node) *html.Node {
 // SelectorChecker::MatchForScopeActivation (selector_checker.cc:1037-1075):
 // the selector is matched against each activation's root, the most
 // proximate first, and the first match sets the proximity.
-func matchRule(node *html.Node, rule *Rule) (Rule, bool) {
+//
+// frame is node's styleScopeFrame during the cascade pass, nil elsewhere.
+func matchRule(node *html.Node, rule *Rule, frame *styleScopeFrame) (Rule, bool) {
 	if rule.Scope == nil {
 		if !MatchesSelector(node, rule.Selector) {
 			return Rule{}, false
 		}
 		return *rule, true
 	}
-	activations := ensureActivations(node, rule.Scope)
+	activations := ensureActivations(node, rule.Scope, frame)
 	for i := len(activations) - 1; i >= 0; i-- {
 		if matchesSelectorInScope(node, rule.Selector, activations[i].root) {
 			matched := *rule

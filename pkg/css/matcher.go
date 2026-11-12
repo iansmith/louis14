@@ -84,11 +84,15 @@ func parseNestedSelector(sel string, ctx matchContext, atEnd bool) Selector {
 	if s, ok := nestedSelectorCache.Load(key); ok {
 		return s.(Selector)
 	}
+	s := parseNestedSelectorUncached(sel, key.defaultNamespace, key.resist)
+	storeNestedParse(key, s)
+	return s
+}
+
+// parseNestedSelectorUncached is parseNestedSelector's parse.
+func parseNestedSelectorUncached(sel, defaultNamespace string, resist bool) Selector {
 	s := ParseSelector(sel)
-	s.resolveNamespaces(key.defaultNamespace, key.resist)
-	if nestedSelectorCacheSize.Load() < maxNestedSelectorCacheSize && nestedSelectorCacheSize.Add(1) <= maxNestedSelectorCacheSize {
-		nestedSelectorCache.Store(key, s)
-	}
+	s.resolveNamespaces(defaultNamespace, resist)
 	return s
 }
 
@@ -98,10 +102,50 @@ type nestedSelectorKey struct {
 	resist                bool
 }
 
-// nestedSelectorCache holds parseNestedSelector's parses (a sync.Map of
-// nestedSelectorKey to Selector); the cascade matches from several
-// goroutines.
+// nestedArgument is a functional pseudo-class argument (:is/:where/:not)
+// parsed into its branches, and whether a branch has a pseudo-element.
+type nestedArgument struct {
+	branches         []Selector
+	hasPseudoElement bool
+}
+
+// nestedArgumentKey is what a parseNestedArgument parse depends on.
+type nestedArgumentKey struct {
+	arg, defaultNamespace string
+	resist                bool
+}
+
+// parseNestedArgument parses a functional pseudo-class argument into its
+// branches (parseNestedSelectorList), cached whole so a match allocates
+// nothing once the argument has been seen.
+func parseNestedArgument(arg string, ctx matchContext) nestedArgument {
+	key := nestedArgumentKey{arg, ctx.defaultNamespace, ctx.resistDefaultNamespace}
+	if a, ok := nestedSelectorCache.Load(key); ok {
+		return a.(nestedArgument)
+	}
+	branches := splitSelectorGroup(strings.TrimSpace(arg))
+	a := nestedArgument{hasPseudoElement: containsPseudoElementArg(branches)}
+	// The branches are parsed uncached: the argument is cached whole.
+	for i, sel := range branches {
+		if sel = strings.TrimSpace(sel); sel != "" {
+			a.branches = append(a.branches, parseNestedSelectorUncached(sel, ctx.defaultNamespace, ctx.resistDefaultNamespace && i == len(branches)-1))
+		}
+	}
+	storeNestedParse(key, a)
+	return a
+}
+
+// nestedSelectorCache holds parseNestedSelector's and parseNestedArgument's
+// parses (a sync.Map keyed by nestedSelectorKey or nestedArgumentKey); the
+// cascade matches from several goroutines. Parses are only read.
 var nestedSelectorCache sync.Map
+
+// storeNestedParse caches a parse unless the cache is full.
+func storeNestedParse(key, parse any) {
+	if nestedSelectorCacheSize.Load() < maxNestedSelectorCacheSize && nestedSelectorCacheSize.Add(1) <= maxNestedSelectorCacheSize {
+		nestedSelectorCache.Store(key, parse)
+	}
+}
 
 // nestedSelectorCacheSize counts parses offered to nestedSelectorCache,
 // which stops growing at maxNestedSelectorCacheSize entries: the cache
@@ -455,7 +499,7 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		// attribute — the union of :link and :visited, with no visitedness or
 		// privacy distinction.
 		return isHyperlink(node)
-	case pc == "scope":
+	case pc == "scope", pc == nestingParentPseudo:
 		// SelectorChecker::CheckPseudoScope (selector_checker.cc:3650-3659
 		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the scoping root, or
 		// the root element when the scope is the document.
@@ -1108,8 +1152,8 @@ func parseInt(s string) (int, bool) {
 // contextually-invalid-selectors-* tests.
 func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
 	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1627 / :1642 @ d4ecdfed88f9
-	selectors := splitSelectorGroup(strings.TrimSpace(arg))
-	if containsPseudoElementArg(selectors) {
+	parsed := parseNestedArgument(arg, ctx)
+	if parsed.hasPseudoElement {
 		return false
 	}
 	// kPseudoIs/kPseudoWhere dispatch to MatchesAnyInList,
@@ -1117,7 +1161,7 @@ func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
 	// d4ecdfed88f962439247c2ad36b8fe47805b1520. The match context (e.g.
 	// inside-:has) propagates into each branch so :is(:link)/:is(:visited)
 	// follow the same privacy rules as a bare :link/:visited there.
-	return matchesAnyInList(node, parseNestedSelectorList(selectors, ctx), ctx)
+	return matchesAnyInList(node, parsed.branches, ctx)
 }
 
 // checkPseudoNot matches :not(arg): node must match none of the argument's
@@ -1129,7 +1173,7 @@ func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
 // match every element.
 func checkPseudoNot(node *html.Node, arg string, ctx matchContext) bool {
 	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1712 @ d4ecdfed88f9
-	return !matchesAnyInList(node, parseNestedSelectorList(splitSelectorGroup(strings.TrimSpace(arg)), ctx), ctx)
+	return !matchesAnyInList(node, parseNestedArgument(arg, ctx).branches, ctx)
 }
 
 // containsPseudoElementArg returns true if any selector in the list contains a
@@ -1506,6 +1550,11 @@ func matchesReadWrite(node *html.Node) bool {
 // FindMatchingRules returns all rules that match the given node
 // Phase 22: Added viewport dimensions for media query evaluation
 func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, viewportHeight float64) []Rule {
+	return findMatchingRules(node, stylesheet, viewportWidth, viewportHeight, nil)
+}
+
+// findMatchingRules is FindMatchingRules with node's styleScopeFrame.
+func findMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, viewportHeight float64, frame *styleScopeFrame) []Rule {
 	matches := make([]Rule, 0)
 
 	for _, rule := range stylesheet.Rules {
@@ -1527,7 +1576,7 @@ func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, v
 			continue
 		}
 
-		if matched, ok := matchRule(node, &rule); ok {
+		if matched, ok := matchRule(node, &rule, frame); ok {
 			matches = append(matches, matched)
 		}
 	}
