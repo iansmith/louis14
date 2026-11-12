@@ -1,0 +1,51 @@
+package layout
+
+import "testing"
+
+// LOU-885. Open tags are trailable while a line breaks, but a line never
+// ends with them: LineBreaker::RewindTrailingOpenTags moves trailing open
+// tags, and so an inline box's start edge, to the next line, except after a
+// forced break (inline/line_breaker.cc:2536-2568 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Each edged span is 3px margin
+// + 5px border + 6px padding at the start and 10px padding + 8px border +
+// 4px margin at the end: 36px around its content.
+const rewindEdges = `margin:0 4px 0 3px;border:solid gray;border-width:0 8px 0 5px;padding:0 10px 0 6px`
+
+func TestRewindTrailingOpenTags(t *testing.T) {
+	const box = `<span style="display:inline-block;width:20px;height:10px"></span>`
+
+	t.Run("layout: the second span starts the next line with its start edge", func(t *testing.T) {
+		src := `<!DOCTYPE html><body style="margin:0"><div style="width:80px;font-size:0">` +
+			`<span style="` + rewindEdges + `">` + box + `</span><span style="font-size:16px"> </span>` +
+			`<span id="t" style="` + rewindEdges + `">` + box + `</span></div>`
+		r := oofPageRects(t, src)["t"]
+		if len(r) != 1 || r[0].x != 3 || r[0].w != 49 {
+			t.Errorf("second span fragments = %+v, want one at x=3, w=49 (no start-edge fragment left on line 1)", r)
+		}
+	})
+
+	t.Run("min-content: the start edge goes with the span's content", func(t *testing.T) {
+		src := `<!DOCTYPE html><body style="margin:0"><div id="c" style="width:min-content;font:10px/1 Ahem">a ` +
+			`<span style="` + rewindEdges + `">` + box + `</span></div>`
+		b := findBoxByID(layoutRootTestHTML(t, src), "c")
+		if b == nil {
+			t.Fatal("no #c box")
+		}
+		if b.Width != 56 {
+			t.Errorf("min-content width = %v, want 56 (the span's 36px of edges + 20px)", b.Width)
+		}
+	})
+
+	t.Run("guard: after a forced break the open tag stays on the line", func(t *testing.T) {
+		src := `<!DOCTYPE html><body style="margin:0"><div style="font:10px/1 Ahem">` +
+			`<span style="` + rewindEdges + `">aaa</span><span id="t" style="` + rewindEdges + `"><br>aaa</span></div>`
+		r := oofPageRects(t, src)["t"]
+		onLine2 := false
+		for _, f := range r[1:] {
+			onLine2 = onLine2 || f.y == 10
+		}
+		if len(r) < 2 || r[0].y != 0 || r[0].w != 11 || !onLine2 {
+			t.Errorf("second span fragments = %+v, want its 11px start edge on line 1 and its text on line 2", r)
+		}
+	})
+}
