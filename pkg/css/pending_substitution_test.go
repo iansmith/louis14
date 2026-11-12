@@ -169,3 +169,73 @@ func TestPendingSubstitutionPseudoElements(t *testing.T) {
 		}
 	}
 }
+
+// TestPendingSubstitutionRound3: review round 2 of #414, and the var()
+// shorthand ordering cases from #417's review (CSSPendingSubstitutionValue
+// cascading at the shorthand's place; StyleCascade::Apply @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestPendingSubstitutionRound3(t *testing.T) {
+	fresh := func(prop string) string {
+		v, _ := styleByID(t, cascadeHTML(t, `<div id="f"></div>`, nil), "f").Get(prop)
+		return v
+	}
+	for _, tc := range []struct{ name, css, inline, prop, want string }{
+		// An omitted longhand takes its initial value, not the parent's.
+		{"omitted inherited longhand is initial, not inherited", `#p{font-style:italic} #t{--f:12px serif; font:var(--f)}`, ``, "font-style", fresh("font-style")},
+		// @container: a custom property's unset inherits; an own inherit
+		// substitutes the parent's value; revert and revert-layer apply.
+		{"@container --x:unset inherits", `#p{--x:7px; container-type:inline-size; width:500px} #t{--x:1px; margin-left:var(--x)} @container (min-width: 100px) { #t{--x:unset} }`, ``, "margin-left", "7px"},
+		{"@container own --c:inherit", `#p{--c:green; container-type:inline-size; width:500px} #t{--c:red} @container (min-width: 100px) { #t{--c:inherit; background:var(--c)} }`, ``, "background-color", "green"},
+		{"@container all:revert", `#p{container-type:inline-size; width:500px} #t{margin-left:5px} @container (min-width: 100px) { #t{all:revert} }`, ``, "margin-left", fresh("margin-left")},
+		// Substituted values pass the declared-value checks.
+		{"negative gap is IACVT", `#t{row-gap:3px} #t.t{--g:-5px; gap:var(--g)}`, ``, "row-gap", fresh("row-gap")},
+		{"unitless margin is IACVT", `#t{margin-left:3px} #t.t{--m:5; margin:var(--m)}`, ``, "margin-left", fresh("margin-left")},
+		// An own custom property's revert (no lower origin) is the
+		// guaranteed-invalid value: the fallback applies.
+		{"own --m:revert uses the fallback", `#t{--m:revert; margin:var(--m, 4px)}`, ``, "margin-left", "4px"},
+		// The pending longhands cascade at the shorthand's place.
+		{"later physical longhand beats an earlier var() shorthand", `#t{--x:1px; margin:var(--x)} #t.t{margin-left:7px}`, ``, "margin-left", "7px"},
+		{"later border-left-color beats an earlier var() border", `#t{--c:red; border:1px solid var(--c)} #t.t{border-left-color:green}`, ``, "border-left-color", "green"},
+		{"important longhand beats a later var() shorthand", `#t{margin-left:7px !important} #t.t{--x:1px; margin:var(--x)}`, ``, "margin-left", "7px"},
+		{"higher-layer longhand beats a lower-layer var() shorthand", `@layer a { #t{--m:3px; margin:var(--m)} } #t{margin-left:5px}`, ``, "margin-left", "5px"},
+		{"animated longhand beats an author var() shorthand", `#t{--x:1px; margin:var(--x); animation:a 10s paused} @keyframes a{from,to{margin-left:5px}}`, ``, "margin-left", "5px"},
+	} {
+		st := styleByID(t, cascadeHTML(t, `<style>`+tc.css+`</style><div id="p"><div id="t" class="t" style="`+tc.inline+`"></div></div>`, nil), "t")
+		if got, _ := st.Get(tc.prop); got != tc.want {
+			t.Errorf("%s: %s = %q, want %q", tc.name, tc.prop, got, tc.want)
+		}
+	}
+}
+
+// TestPendingSubstitutionNeverEscapes: a pending-substitution value never
+// reaches a computed style, from rules, @keyframes or pseudo-elements.
+func TestPendingSubstitutionNeverEscapes(t *testing.T) {
+	src := `<style>#t{--m:3px; animation:a 10s paused} @keyframes a{from,to{margin:var(--m)}}
+		#t::selection{--c:inherit; background:var(--c)} #p{--c:green}</style>
+		<div id="p"><div id="t">y</div></div>`
+	doc, _ := html.Parse(src)
+	styles := ApplyStylesToDocument(doc, 800, 600)
+	sheets := ParseDocumentStylesheets(doc)
+	for n, st := range styles {
+		check := func(where string, s *Style) {
+			for k, v := range s.Properties {
+				if _, _, pending := parsePendingSubstitution(v); pending {
+					t.Errorf("%s keeps a pending value in %s", where, k)
+				}
+			}
+		}
+		check("<"+n.TagName+">", st)
+		if id, _ := n.GetAttribute("id"); id == "t" {
+			if got, _ := st.Get("margin-left"); got != "3px" {
+				t.Errorf("@keyframes margin:var(--m): margin-left = %q, want 3px", got)
+			}
+			sel := ComputeHighlightPseudoElementStyle(n, "selection", sheets, 800, 600, nil, st)
+			check("::selection", sel)
+			// An own --c:inherit resolves against the originating element's
+			// custom properties.
+			if got, _ := sel.Get("background-color"); got != "green" {
+				t.Errorf("::selection --c:inherit: background-color = %q, want green", got)
+			}
+		}
+	}
+}
