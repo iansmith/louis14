@@ -43,6 +43,11 @@ type domContext struct {
 	// static one-shot renderer, so only events the engine dispatches after
 	// script execution (WPT's "TestRendered", the window load) ever fire.
 	eventListeners map[*html.Node]map[string][]*registeredEventListener
+
+	// sheetWrappers / ruleWrappers keep one CSSOM wrapper per sheet and per
+	// rule ([SameObject]); see dom_cssom.go.
+	sheetWrappers map[*css.StyleSheetContents]goja.Value
+	ruleWrappers  map[*css.CSSOMRule]goja.Value
 	// listenerTargets lists the nodes of eventListeners in the order of
 	// their first registration.
 	listenerTargets []*html.Node
@@ -426,6 +431,11 @@ func (e *elementAccessor) Get(key string) goja.Value {
 	case "__node__":
 		// Internal: used by unwrapNode as a fallback identifier
 		return vm.ToValue(true)
+	case "sheet":
+		// LinkStyle.sheet (HTMLStyleElement, HTMLLinkElement).
+		if e.node.TagName == "style" || e.node.TagName == "link" {
+			return e.ctx.ownedStyleSheet(e.node)
+		}
 	case "addEventListener":
 		// EventTarget::addEventListener / removeEventListener
 		// (event_target.go).
@@ -1203,7 +1213,7 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 
 func (e *elementAccessor) Has(key string) bool {
 	switch key {
-	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className",
+	case "tagName", "nodeName", "nodeType", "nodeValue", "id", "className", "sheet",
 		"textContent", "innerText", "innerHTML", "outerHTML", "src", "poster", "dir", "type", "value", "splitText", "data", "appendData", "insertData",
 		"getAttribute", "setAttribute", "hasAttribute", "removeAttribute",
 		"children", "childNodes", "parentElement", "parentNode", "style",

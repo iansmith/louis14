@@ -274,3 +274,100 @@ func TestStyleSheetsRuleReadsPendingSubstitution(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestStyleSheetInsertAndDeleteRule is css-cascade/import-removal's script:
+// a <style> created by script has a sheet (HTMLStyleElement.sheet, LinkStyle,
+// core/css/style_element.cc), insertRule / deleteRule edit it
+// (CSSStyleSheet::insertRule / deleteRule, core/css/css_style_sheet.cc:
+// 423-497 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the cascade sees
+// the edited rules. The sheet is document.styleSheets' entry for the element
+// ([SameObject]) (LOU-866).
+func TestStyleSheetInsertAndDeleteRule(t *testing.T) {
+	doc := parseHTML(t, `<!DOCTYPE html><meta charset="utf-8"><title>t</title><div></div>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		const style = document.createElement("style");
+		document.head.append(style);
+		const {sheet} = style;
+		if (!sheet) throw new Error("style.sheet is " + sheet);
+		if (style.sheet !== sheet) throw new Error("style.sheet is not [SameObject]");
+		if (document.styleSheets.length !== 1 || document.styleSheets[0] !== sheet)
+			throw new Error("document.styleSheets does not hold the new sheet");
+		if (sheet.insertRule("@import url('data:text/css,div { background: red !important }');") !== 0)
+			throw new Error("insertRule did not return 0");
+		const rules = sheet.cssRules;
+		sheet.insertRule("div { background: green }", 1);
+		sheet.deleteRule(0);
+		if (rules.length !== 1 || sheet.cssRules !== rules)
+			throw new Error("cssRules is not the same live list: length " + rules.length);
+		const threw = (f) => { try { f(); return ""; } catch (e) { return e.name; } };
+		if (threw(() => sheet.insertRule("p {}", 5)) !== "IndexSizeError") throw new Error("insertRule past the end did not throw IndexSizeError");
+		if (threw(() => sheet.insertRule("p {} q {}", 0)) !== "SyntaxError") throw new Error("insertRule of two rules did not throw SyntaxError");
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+	doc.UpdateActiveStyleSheets()
+	sheets := css.ParseDocumentStylesheets(doc)
+	if len(sheets) != 1 || len(sheets[0].Rules) != 1 {
+		t.Fatalf("got %d sheets, want 1 with the one inserted rule", len(sheets))
+	}
+	if got := sheets[0].Rules[0].Declarations["background-color"]; got != "green" {
+		t.Errorf("background-color = %q, want green", got)
+	}
+}
+
+// insertRule / deleteRule follow WebIDL: a missing required argument is a
+// TypeError, and an unsigned long index wraps modulo 2^32
+// (core/css/css_style_sheet.idl:29-30 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). CSSParserImpl::ParseRule
+// accepts a block left open at EOF (css_parser_impl.cc:457-485; the block
+// guard closes it), so "p {" inserts a rule.
+func TestStyleSheetRuleMutationArguments(t *testing.T) {
+	doc := parseHTML(t, `<!DOCTYPE html><style></style>`)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `
+		const sheet = document.styleSheets[0];
+		const threw = (f) => { try { f(); return ""; } catch (e) { return e.name; } };
+		if (threw(() => sheet.insertRule()) !== "TypeError") throw new Error("insertRule() did not throw TypeError");
+		if (threw(() => sheet.deleteRule()) !== "TypeError") throw new Error("deleteRule() did not throw TypeError");
+		if (sheet.insertRule("p {", 0) !== 0) throw new Error("insertRule of an open block did not insert");
+		if (sheet.insertRule("a { color: green }", 4294967296) !== 0) throw new Error("index 2^32 did not wrap to 0");
+		if (sheet.cssRules.length !== 2) throw new Error("rule count " + sheet.cssRules.length);
+		if (threw(() => sheet.deleteRule(-1)) !== "IndexSizeError") throw new Error("deleteRule(-1) (2^32 - 1) did not throw IndexSizeError");
+		sheet.deleteRule(4294967297);
+		if (sheet.cssRules.length !== 1 || sheet.cssRules[0].style.color !== "green")
+			throw new Error("deleteRule(2^32 + 1) did not delete rule 1");
+	`)
+	if err := engine.Execute(doc); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A url() set through a rule's CSSOM style resolves against the sheet's
+// base once, as one a stylesheet declares does, and stays resolved once
+// after a mutation re-parses the sheet (Blink resolves a url() against the
+// parser context's base when it parses the value into a CSSUrlData,
+// core/css/css_url_data.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestRuleStyleURLResolvesAgainstSheetBase(t *testing.T) {
+	doc := parseHTML(t, `<!DOCTYPE html><style>a { color: red }</style>`)
+	doc.BaseDir = "support"
+	run := func(script string) {
+		t.Helper()
+		doc.Scripts = []string{script}
+		if err := New().Execute(doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backgroundImage := func() string {
+		return css.ParseDocumentStylesheets(doc)[0].Rules[0].Declarations["background-image"]
+	}
+	run(`document.styleSheets[0].cssRules[0].style.backgroundImage = "url(rel.png)";`)
+	if got := backgroundImage(); got != "url(support/rel.png)" {
+		t.Errorf("background-image when set = %q, want url(support/rel.png)", got)
+	}
+	run(`document.styleSheets[0].insertRule("b { color: blue }", 1);`)
+	if got := backgroundImage(); got != "url(support/rel.png)" {
+		t.Errorf("background-image after insertRule = %q, want url(support/rel.png)", got)
+	}
+}

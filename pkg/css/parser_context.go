@@ -42,7 +42,7 @@ type ParserContext struct {
 
 // NewParserContext returns a ParserContext with the given BaseDir.
 // Fetcher is nil — callers that need @import resolution stamp the
-// Fetcher field after construction (see getOrBuildStyleSheetContents
+// Fetcher field after construction (see DocumentStyleSheetContents
 // in cascade.go).
 func NewParserContext(baseDir string) *ParserContext {
 	return &ParserContext{BaseDir: baseDir}
@@ -54,7 +54,7 @@ func NewParserContext(baseDir string) *ParserContext {
 // becomes the base URL for inline `style=""` attributes — anything that
 // shares the document's URL identity. Fetcher is left nil: inline `style=""`
 // parses cannot meaningfully contain @import. The per-sheet path
-// (<style>/<link>-sourced) is built by getOrBuildStyleSheetContents and
+// (<style>/<link>-sourced) is built by DocumentStyleSheetContents and
 // stamps Fetcher = doc.CSSResourceFetcher onto each per-sheet context.
 func NewParserContextFromDocument(doc *html.Document) *ParserContext {
 	return NewParserContext(doc.BaseDir)

@@ -54,8 +54,10 @@ func isCSSStyleType(n *Node) bool {
 // StyleEngine::UpdateActiveStyleSheets (core/css/style_engine.cc:674 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 //
-// Whitespace-only <style> sheets are omitted, as louis14's parser always
-// has (they contribute no rules). <template> subtrees are skipped: their
+// Every CSS <style> owns a sheet, an empty one too (StyleElement::Process,
+// core/css/style_element.cc:163-190), so style.sheet and
+// document.styleSheets see it. Each source names its owner element
+// (StyleSheet::ownerNode). <template> subtrees are skipped: their
 // content belongs to the template's unconnected content fragment
 // (HTMLTemplateElement::content), so no candidate inside one is connected.
 func (d *Document) UpdateActiveStyleSheets() {
@@ -67,12 +69,14 @@ func (d *Document) UpdateActiveStyleSheets() {
 			case "template":
 				return
 			case "style":
-				if text := n.TextFromChildren(); isCSSStyleType(n) && strings.TrimSpace(text) != "" {
-					sheets = append(sheets, StylesheetSource{Text: text})
+				if isCSSStyleType(n) {
+					sheets = append(sheets, StylesheetSource{Text: n.TextFromChildren(), Owner: n})
 				}
 			case "link":
 				if n.LinkStyle != nil {
-					sheets = append(sheets, *n.LinkStyle)
+					sheet := *n.LinkStyle
+					sheet.Owner = n
+					sheets = append(sheets, sheet)
 				}
 			}
 		}

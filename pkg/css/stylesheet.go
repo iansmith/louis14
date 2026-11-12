@@ -119,6 +119,13 @@ type Rule struct {
 	// mirroring Blink's `CSSImportRule::ApplyRule` chained media check at
 	// third_party/blink/renderer/core/css/css_import_rule.cc @ 4883d11f.
 	ImportMediaQueries []*MediaQuery
+
+	// SourceRuleIndex is the index of the sheet's top-level rule this rule
+	// was parsed from (Stylesheet.RuleTexts): the rule CSSRuleList shows,
+	// which louis14 may flatten into several Rules (a selector list, CSS
+	// nesting, an @media body, an @import's sheet). -1 when that rule is
+	// one Blink drops.
+	SourceRuleIndex int
 }
 
 // MediaQueryResult mirrors Blink's KleeneValue
@@ -339,6 +346,11 @@ type Stylesheet struct {
 	// @import'ed sheet resolves its own selectors against its own default
 	// namespace, and resolveAtImport does not copy this field.
 	DefaultNamespace string
+
+	// RuleTexts are the sheet's top-level rules as parsed (comments
+	// stripped, url()s resolved): StyleSheetContents' child rules, which
+	// CSSRuleList indexes.
+	RuleTexts []string
 }
 
 // StripComments removes all /* ... */ comments from CSS source, while
@@ -476,11 +488,27 @@ func stripTopLevelCDOTokens(css string) string {
 // expandNesting recursively expands CSS native nesting into flat rules.
 // parentSelector is the selector of the enclosing rule ("" for top-level).
 func expandNesting(css string, parentSelector string) string {
-	var result strings.Builder
-	parts := splitRules(css)
+	return expandNestingParts(css, parentSelector, nil)
+}
 
-	for _, part := range parts {
+// expandedPart is one rule of the css expandNestingParts expands: its
+// text, and the offset in the expansion where the rules it expands to
+// start.
+type expandedPart struct {
+	text  string
+	start int
+}
+
+// expandNestingParts is expandNesting that, when parts is non-nil, also
+// records each rule of css (splitRules) as an expandedPart.
+func expandNestingParts(css string, parentSelector string, parts *[]expandedPart) string {
+	var result strings.Builder
+
+	for _, part := range splitRules(css) {
 		part = strings.TrimSpace(part)
+		if parts != nil {
+			*parts = append(*parts, expandedPart{text: part, start: result.Len()})
+		}
 		if part == "" {
 			continue
 		}
@@ -802,10 +830,6 @@ func separateDeclsAndNested(body string) (flatDecls, nestedParts string) {
 // "no base URL" (preserves today's relative-URL-as-stored behavior, used
 // by test fixtures that don't exercise URL composition).
 func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
-	stylesheet := &Stylesheet{
-		Rules: make([]Rule, 0),
-	}
-
 	// Strip comments before parsing
 	css = StripComments(css)
 
@@ -826,19 +850,41 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	// declarations (and at-rule descriptors like @font-face src) through the
 	// Blink chokepoint. Per-property typed wrappers (Phase 7) replace this
 	// with per-token CollectUrlData calls.
-	css = ctx.RewriteURLs(css)
+	return parseResolvedStylesheet(ctx.RewriteURLs(css), ctx)
+}
 
-	// Expand CSS native nesting into flat rules before parsing
-	css = expandNesting(css, "")
-
-	// Simple parser: split by } to get rules
-	css = strings.TrimSpace(css)
-	if css == "" {
-		return stylesheet, nil
+// parseResolvedStylesheet is ParseStylesheet on css whose comments,
+// top-level CDO/CDC tokens and url()s are already handled: the text a
+// sheet's rule list holds, which a CSSOM mutation re-parses.
+func parseResolvedStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
+	stylesheet := &Stylesheet{
+		Rules: make([]Rule, 0),
 	}
 
-	// Find each rule (selector { declarations })
-	rules := splitRules(css)
+	// Expand CSS native nesting into flat rules before parsing, keeping
+	// where each top-level rule's expansion starts.
+	var topLevel []expandedPart
+	css = expandNestingParts(css, "", &topLevel)
+
+	// Simple parser: split by } to get rules (selector { declarations }).
+	var starts []int
+	rules := splitRulesAt(css, &starts)
+
+	// The rule list holds the top-level rules Blink keeps (not an invalid
+	// selector, an unknown at-rule, @charset); an empty one still counts.
+	// A flat rule belongs to the top-level rule whose expansion it starts
+	// in (-1 when that rule is not in the list). Each valid rule's
+	// expansion is balanced, so flat rules split on its boundaries; a
+	// malformed rule's flat rule can run into the next rule's expansion,
+	// whose first flat rules then map to the malformed one.
+	listIndex := make([]int, len(topLevel))
+	for k, top := range topLevel {
+		listIndex[k] = -1
+		if isValidTopLevelRule(top.text) {
+			listIndex[k] = len(stylesheet.RuleTexts)
+			stylesheet.RuleTexts = append(stylesheet.RuleTexts, top.text)
+		}
+	}
 
 	// @namespace ordering (CSS Namespaces 3 §2): valid only after any
 	// @charset/@import and before every other rule, except that @layer
@@ -851,62 +897,80 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	namespaceAllowed := true
 	seenImportOrNamespace := false
 
-	for _, ruleStr := range rules {
-		trimmed := strings.TrimSpace(ruleStr)
-		if strings.HasPrefix(trimmed, "@") {
-			if strings.HasPrefix(trimmed, "@namespace") {
-				// A valid, in-order @namespace records the default
-				// namespace (StyleSheetContents::ParserAppendRule, namespace
-				// branch, style_sheet_contents.cc:206-213 @ d4ecdfed88f9).
-				// A rejected one (out of order, or a parse error) changes
-				// no state: Blink drops it as a null rule.
-				if prefix, uri, ok := consumeNamespaceRule(trimmed); ok && namespaceAllowed {
-					seenImportOrNamespace = true
-					stylesheet.parserAddNamespace(prefix, uri)
-				}
-				continue
-			}
-			if strings.HasPrefix(trimmed, "@import") {
-				seenImportOrNamespace = true
-				// Fetch and parse the imported sheet with a fresh
-				// ParserContext rooted at the imported sheet's own URL
-				// dir, so url() refs inside resolve against that base
-				// (mirrors Blink's StyleRuleImport::NotifyFinished —
-				// core/css/style_rule_import.cc:77-82 @ d4ecdfed8).
-				// Rules + FontFaces + CounterStyles + Keyframes +
-				// LayerOrder fold into the importing stylesheet at the
-				// @import's position. No-op when ctx.Fetcher is nil
-				// (matches pre-Phase-6 silent-skip behavior).
-				resolveAtImport(ctx, trimmed, stylesheet)
-				continue
-			}
-			// An @layer statement before any @import/@namespace keeps
-			// @namespace valid; any other rule is a regular rule.
-			isEarlyLayerStatement := strings.HasPrefix(trimmed, "@layer") &&
-				!strings.Contains(trimmed, "{") && !seenImportOrNamespace
-			if !isEarlyLayerStatement {
-				namespaceAllowed = false
-			}
-			// All other at-rules dispatch through the shared registry
-			// helper so @font-face / @keyframes / @counter-style nested
-			// inside @media / @supports bodies register identically to
-			// top-level (CSS Conditional 3 §2.5; mirrors Blink's
-			// CSSParserImpl::ConsumeAtRule recursion at
-			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-			stylesheet.parserAppendRules(dispatchAtRuleIntoStylesheet(ruleStr, stylesheet))
-			continue
+	k := -1 // the top-level rule whose expansion rules[i] starts in
+	for i, ruleStr := range rules {
+		for k+1 < len(topLevel) && topLevel[k+1].start <= starts[i] {
+			k++
 		}
-
-		rules, err := parseRules(ruleStr)
-		if err != nil {
-			// Skip malformed rules
-			continue
+		index := -1
+		if k >= 0 {
+			index = listIndex[k]
 		}
-		namespaceAllowed = false
-		stylesheet.parserAppendRules(rules)
+		firstRule := len(stylesheet.Rules)
+		stylesheet.parseFlatRule(ctx, ruleStr, &namespaceAllowed, &seenImportOrNamespace)
+		for r := firstRule; r < len(stylesheet.Rules); r++ {
+			stylesheet.Rules[r].SourceRuleIndex = index
+		}
 	}
 
 	return stylesheet, nil
+}
+
+// parseFlatRule parses one flat rule of a sheet (its CSS nesting already
+// expanded) into stylesheet. namespaceAllowed and seenImportOrNamespace
+// carry the @namespace ordering state across the sheet's rules.
+func (stylesheet *Stylesheet) parseFlatRule(ctx *ParserContext, ruleStr string, namespaceAllowed, seenImportOrNamespace *bool) {
+	trimmed := strings.TrimSpace(ruleStr)
+	if strings.HasPrefix(trimmed, "@") {
+		if strings.HasPrefix(trimmed, "@namespace") {
+			// A valid, in-order @namespace records the default
+			// namespace (StyleSheetContents::ParserAppendRule, namespace
+			// branch, style_sheet_contents.cc:206-213 @ d4ecdfed88f9).
+			// A rejected one (out of order, or a parse error) changes
+			// no state: Blink drops it as a null rule.
+			if prefix, uri, ok := consumeNamespaceRule(trimmed); ok && *namespaceAllowed {
+				*seenImportOrNamespace = true
+				stylesheet.parserAddNamespace(prefix, uri)
+			}
+			return
+		}
+		if strings.HasPrefix(trimmed, "@import") {
+			*seenImportOrNamespace = true
+			// Fetch and parse the imported sheet with a fresh
+			// ParserContext rooted at the imported sheet's own URL
+			// dir, so url() refs inside resolve against that base
+			// (mirrors Blink's StyleRuleImport::NotifyFinished —
+			// core/css/style_rule_import.cc:77-82 @ d4ecdfed8).
+			// Rules + FontFaces + CounterStyles + Keyframes +
+			// LayerOrder fold into the importing stylesheet at the
+			// @import's position. No-op when ctx.Fetcher is nil
+			// (matches pre-Phase-6 silent-skip behavior).
+			resolveAtImport(ctx, trimmed, stylesheet)
+			return
+		}
+		// An @layer statement before any @import/@namespace keeps
+		// @namespace valid; any other rule is a regular rule.
+		isEarlyLayerStatement := ruleKindOf(trimmed) == ruleKindLayerStatement && !*seenImportOrNamespace
+		if !isEarlyLayerStatement {
+			*namespaceAllowed = false
+		}
+		// All other at-rules dispatch through the shared registry
+		// helper so @font-face / @keyframes / @counter-style nested
+		// inside @media / @supports bodies register identically to
+		// top-level (CSS Conditional 3 §2.5; mirrors Blink's
+		// CSSParserImpl::ConsumeAtRule recursion at
+		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+		stylesheet.parserAppendRules(dispatchAtRuleIntoStylesheet(ruleStr, stylesheet))
+		return
+	}
+
+	rules, err := parseRules(ruleStr)
+	if err != nil {
+		// Skip malformed rules
+		return
+	}
+	*namespaceAllowed = false
+	stylesheet.parserAppendRules(rules)
 }
 
 // dispatchAtRuleIntoStylesheet routes a single at-rule string (everything
@@ -1027,7 +1091,22 @@ func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
 // `[} { ... }` (Acid2 line 32; covered by
 // TestErrorRecovery_InvalidSelectors).
 func splitRules(css string) []string {
+	return splitRulesAt(css, nil)
+}
+
+// splitRulesAt is splitRules that, when starts is non-nil, also records
+// per rule the offset in css of the rule text's first non-whitespace byte.
+func splitRulesAt(css string, starts *[]int) []string {
 	rules := make([]string, 0)
+	emit := func(text string, from int) {
+		rules = append(rules, text)
+		if starts != nil {
+			for from < len(css) && isCSSWhitespace(css[from]) {
+				from++
+			}
+			*starts = append(*starts, from)
+		}
+	}
 	depth := 0
 	parenDepth := 0
 	start := 0
@@ -1083,7 +1162,7 @@ func splitRules(css string) []string {
 				depth = 0
 				ruleStr := css[start : i+1]
 				if strings.TrimSpace(ruleStr) != "" {
-					rules = append(rules, ruleStr)
+					emit(ruleStr, start)
 				}
 				start = i + 1
 			}
@@ -1113,7 +1192,7 @@ func splitRules(css string) []string {
 				ruleText := strings.TrimSpace(css[start : i+1])
 				if strings.HasPrefix(ruleText, "@layer") || strings.HasPrefix(ruleText, "@import") ||
 					strings.HasPrefix(ruleText, "@namespace") {
-					rules = append(rules, ruleText)
+					emit(ruleText, start)
 				}
 				start = i + 1
 			}
@@ -1132,7 +1211,7 @@ func splitRules(css string) []string {
 	// call, corrupting the rule body.
 	if (depth > 0 || parenDepth > 0) && start < len(css) && strings.TrimSpace(css[start:]) != "" {
 		synthesized := closeUnmatchedTokens(css[start:])
-		rules = append(rules, synthesized)
+		emit(synthesized, start)
 	}
 	return rules
 }
