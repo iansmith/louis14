@@ -169,3 +169,37 @@ func TestFontTest_IdeographicFullWidthUprightCjkVmtx(t *testing.T) {
 		t.Errorf("upright IdeographicInlineSize = %v, want 16", w)
 	}
 }
+
+// TestFontHeightFromFont_BlinkLineSpacing pins line-height: normal to
+// Blink's line spacing: lroundf(ascent) + lroundf(descent) +
+// lroundf(line_gap), each term rounded on its own
+// (SimpleFontData::PlatformInit, platform/fonts/simple_font_data.cc:168-176
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the ascent and descent
+// already rounded by FontMetrics::AscentDescentWithHacks (font_metrics.cc:
+// 113-117, same SHA) and the line gap SkFontMetrics::fLeading, the hhea
+// line gap for a font without USE_TYPO_METRICS (SkScalerContext_FreeType::
+// generateFontMetrics, src/ports/SkFontHost_FreeType.cpp:1603-1611 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). Expected values come from an
+// independent read of each font's tables, not from louis14 output:
+//
+//   - LiberationSerif-Regular: upem 2048, hhea 1825/-443, line gap 87, no
+//     USE_TYPO_METRICS. 16px: 14.26 + 3.46 + 0.68 → 14 + 3 + 1 = 18 (Chrome's
+//     line box, LOU-464); 20px: 17.82 + 4.33 + 0.85 → 18 + 4 + 1 = 23.
+//   - Ahem: upem 1000, hhea 800/-200, line gap 0. 16px: 12.8 + 3.2 → 13 + 3 = 16.
+func TestFontHeightFromFont_BlinkLineSpacing(t *testing.T) {
+	serif := DefaultFontConfig().resolveBuiltinFamily("serif", false, false)
+	for _, tc := range []struct {
+		name string
+		path string
+		size float64
+		want float64
+	}{
+		{"LiberationSerif 16px", serif, 16, 18},
+		{"LiberationSerif 20px", serif, 20, 23},
+		{"Ahem 16px (no line gap)", "../../fonts/Ahem.ttf", 16, 16},
+	} {
+		if got := FontHeightFromFont(tc.size, tc.path, nil); got != tc.want {
+			t.Errorf("%s: FontHeightFromFont = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
