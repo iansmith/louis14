@@ -408,7 +408,16 @@ func forceInlineBaselineSynthesis(style *css.Style, node *html.Node) bool {
 	if !isScrollContainerBox(style, node) || style.ShouldIgnoreOverflowPropertyForInlineBlockBaseline() {
 		return false
 	}
-	if css.IsVerticalWritingMode(style) {
+	return isOverflowValueScrollableAlong(style, css.IsVerticalWritingMode(style))
+}
+
+// isOverflowValueScrollableAlong reports whether style's overflow is
+// scrollable along the physical horizontal (horizontal) or vertical axis:
+// Blink's ComputedStyle::IsOverflowValueScrollableX/Y, and Inline/Block
+// mapped through the box's writing mode (computed_style.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func isOverflowValueScrollableAlong(style *css.Style, horizontal bool) bool {
+	if horizontal {
 		return style.IsOverflowValueScrollableX()
 	}
 	return style.IsOverflowValueScrollableY()

@@ -4060,10 +4060,12 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 	}
 
 	// §4.5: min-size is auto (default). The automatic minimum size is the
-	// content-based minimum size. Only applies when overflow is not scrollable.
-	// Per CSSWG resolution (issue #7714) and Blink's IsOverflowValueScrollable(),
-	// only scroll containers disable auto-min. overflow:clip is NOT a scroll container.
-	if style.IsScrollContainer() {
+	// content-based minimum size, unless the item's overflow is scrollable
+	// in the main axis (CSSWG issue #7714; overflow:clip is not):
+	// FlexLayoutAlgorithm::ShouldApplyAutoMinSize,
+	// flex/flex_layout_algorithm.cc:422-440 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+	if isOverflowValueScrollableAlong(style, isRow == fla.space.WritingDirection.IsHorizontal()) {
 		return 0
 	}
 
