@@ -25,12 +25,13 @@ func TestTableCellFinalLayout(t *testing.T) {
 		{"constrained cell", `<table style="height:100px;border-spacing:0"><tr><td style="height:100%;padding:0">` +
 			`<div id="c" style="width:10px;height:40%"></div></td></tr></table>`, 40},
 		// Unconstrained cell that grew in a table with a specified height:
-		// its height:100% child is the row's 300px. (The same in an
-		// anonymous cell, css-sizing/table-child-percentage-height-with-
-		// border-box, waits on LOU-900, which stops unwrapping a lone block
-		// into the cell.)
+		// its height:100% child is the row's 300px.
 		{"grown cell, specified table height", `<table style="height:300px;border-spacing:0"><tr>` +
 			`<td style="padding:0"><div id="c" style="height:100%"></div></td></tr></table>`, 300},
+		// The same in an anonymous cell, whose lone block child is laid out
+		// inside it (css-sizing/table-child-percentage-height-with-border-box).
+		{"grown anonymous cell, specified table height", `<div style="height:300px"><div style="display:table;height:100%;width:100px">` +
+			`<div style="display:table-row"><div id="c" style="height:100%"></div></div></div></div>`, 300},
 		// A replaced child of a fixed-height cell resolves against the
 		// cell's own 50px, not the 150px row it grew to: 200% is 100px
 		// (CalculateReplacedChildPercentageSize, length_utils.cc:1830-1867;

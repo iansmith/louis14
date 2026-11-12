@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
-	"louis14/pkg/geometry"
 	"louis14/pkg/geometry/layoutunit"
 )
 
@@ -43,12 +42,11 @@ func NewTableLayoutAlgorithm(ctx *LayoutContext, node *LayoutInputNode, space Co
 
 // tableCell tracks a cell during table layout.
 type tableCell struct {
-	node        *LayoutInputNode
-	style       *css.Style
-	colIndex    int
-	colSpan     int
-	rowSpan     int
-	isAnonymous bool // true for non-table-structural children wrapped in anonymous cell boxes
+	node     *LayoutInputNode
+	style    *css.Style
+	colIndex int
+	colSpan  int
+	rowSpan  int
 }
 
 // tableRow tracks a row during table layout.
@@ -331,16 +329,11 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	// Per-cell measurement data captured during Phase 1 and consumed by
-	// Phase 3. contentBlockSize and intrinsicContentBorderBox serve only
-	// the stretch of a block unwrapped from an anonymous cell (its
-	// contentBlockSize is the row's intrinsic height, so its VA is
-	// suppressed at that size); they go with the unwrap (LOU-900).
+	// Phase 3.
 	type cellMeasurement struct {
-		result           *LayoutResult
-		inlineOffset     float64
-		cell             tableCell
-		contentBlockSize float64
-		cellBlockOffset  float64 // block offset of the child inside an anon-cell wrapper
+		result       *LayoutResult
+		inlineOffset float64
+		cell         tableCell
 		// layoutInlineSize and cellWDM rebuild the cell's space for its
 		// final layout (Phase 3).
 		layoutInlineSize float64
@@ -348,16 +341,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// intrinsicBlockSize is the cell's own minimum block-size — the
 		// value that contributes to row intrinsic for rowSpan == 1 cells,
 		// and that DistributeRowspanCellToRows distributes across spanned
-		// rows for rowSpan > 1 cells. Includes anon-cell child margins.
+		// rows for rowSpan > 1 cells.
 		intrinsicBlockSize float64
-		// intrinsicContentBorderBox is the cell's laid-out content extent in
-		// the table block axis, expressed as a BORDER-box value
-		// (content-box IntrinsicBlockSize + cell block border+padding). Unlike
-		// intrinsicBlockSize it is never substituted with the column width for
-		// orthogonal cells, so it is the correct extent for the §17.5.4
-		// vertical-align shift of overflow-clamped content.
-		intrinsicContentBorderBox float64
-		rowIndex                  int // originating row for rowspan cells
+		rowIndex           int // originating row for rowspan cells
 	}
 	type rowMeasurement struct {
 		intrinsic       float64
@@ -418,19 +404,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				cellWDM = NewWritingDirectionMode(cell.style)
 			}
 
-			// For anonymous cell wrappers, the child's inline margins reduce
-			// the available width for content (the anonymous cell acts as a
-			// block container whose content area = column width - child margins).
-			// The child is then offset by its inline-start margin within the row.
 			layoutWidth := cellWidth
-			if cell.isAnonymous && cell.style != nil {
-				childMargins := ResolveMargins(cell.style, wdm, cellWidth)
-				layoutWidth -= childMargins.InlineStart + childMargins.InlineEnd
-				if layoutWidth < 0 {
-					layoutWidth = 0
-				}
-				cellInlineOffset += childMargins.InlineStart
-			}
 
 			// The column width is a fixed inline-size constraint from the table's
 			// perspective. For parallel (same-axis) cells this becomes a fixed
@@ -448,8 +422,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// SetPercentageResolutionSize({percentage_inline_size,
 			// kIndefiniteSize}) at :1411-1412, quoting css-tables-3
 			// #computing-the-table-height at :1409-1410), so a %-height
-			// cell child (or the child an anonymous cell was unwrapped to,
-			// see buildRow) is auto. Blink's measure pass also lays the cell
+			// cell child is auto. Blink's measure pass also lays the cell
 			// out with an indefinite initial block size (:222-230); its
 			// layout pass makes it definite only when ComputeCellBlockSize
 			// says so (:1333-1361: a fixed cell height, or a row that grew in
@@ -500,15 +473,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 					cellBlockForRow = intrinsicContentBorderBox
 				}
 			}
-			// For anonymous cell wrappers (non-table-structural children wrapped per
-			// CSS Tables §2.1), the child's block margins must be included in the row
-			// height. Real table-cell boxes suppress margins (CSS 2.1 §17.5.3), but
-			// anonymous cell wrappers act as block containers — the child's margin-box
-			// determines the cell's content height.
-			if cell.isAnonymous && cell.style != nil {
-				childMargins := ResolveMargins(cell.style, wdm, cellWidth)
-				cellBlockForRow += childMargins.BlockStart + childMargins.BlockEnd
-			}
 			// Rowspan cells contribute to MULTIPLE rows' intrinsic
 			// block-sizes via DistributeRowspanCellToRows after Phase 1
 			// — their block-size is *not* attributed to the originating
@@ -530,40 +494,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
-			// contentBlockSize: for real cells, the cell fragment's own
-			// block-size; for anonymous wrappers, the row's intrinsic
-			// height (assigned below after the row's max cell settles).
-			// cellBlockOffset positions the wrapped child within the anon
-			// cell to honor the child's block-start margin.
-			contentBlockSize := cellLogical.BlockSize()
-			cellBlockOffset := 0.0
-			if cell.isAnonymous && cell.style != nil {
-				childMargins := ResolveMargins(cell.style, wdm, cellLogical.InlineSize())
-				cellBlockOffset = childMargins.BlockStart
-			}
-
 			cellLayouts = append(cellLayouts, cellMeasurement{
-				result:                    cellResult,
-				inlineOffset:              cellInlineOffset,
-				cell:                      cell,
-				contentBlockSize:          contentBlockSize,
-				cellBlockOffset:           cellBlockOffset,
-				layoutInlineSize:          layoutWidth,
-				cellWDM:                   cellWDM,
-				intrinsicBlockSize:        cellBlockForRow,
-				intrinsicContentBorderBox: intrinsicContentBorderBox,
-				rowIndex:                  rowIdx,
+				result:             cellResult,
+				inlineOffset:       cellInlineOffset,
+				cell:               cell,
+				layoutInlineSize:   layoutWidth,
+				cellWDM:            cellWDM,
+				intrinsicBlockSize: cellBlockForRow,
+				rowIndex:           rowIdx,
 			})
-		}
-
-		// Anonymous-cell wrappers: their contentBlockSize is the row's
-		// intrinsic height, so the §17.5.4 pass does not shift the wrapped
-		// child when the row does not grow past its intrinsic size. Matches
-		// the legacy "no VA for anon at intrinsic height" behavior.
-		for ci := range cellLayouts {
-			if cellLayouts[ci].cell.isAnonymous && cellLayouts[ci].cell.style != nil {
-				cellLayouts[ci].contentBlockSize = rowHeight
-			}
 		}
 
 		// Track cell baselines for this row (CSS 2.1 §17.5.2).
@@ -872,84 +811,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// Lay the cell out again at its final block size, which also
 			// applies its vertical-align (TableRowLayoutAlgorithm::Layout →
 			// PlaceCells, table/table_row_layout_algorithm.cc:37-200 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A single block an
-			// anonymous cell was unwrapped to (buildRow) is not a cell: it
-			// keeps the measure-pass fragment, stretched below, until
-			// LOU-900 drops the unwrap.
-			result := cl.result
-			isUnwrapped := cl.cell.isAnonymous && cl.cell.style != nil && cl.cell.style.GetDisplay() != css.DisplayTableCell
-			if !isUnwrapped {
-				cellBlockSize, initialIndefinite := computeCellBlockSize(spRows, rowIdx, 1, blockSpacing,
-					cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-				result = tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, tableData)
-			}
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			cellBlockSize, initialIndefinite := computeCellBlockSize(spRows, rowIdx, 1, blockSpacing,
+				cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
+			result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, tableData)
 			cellFrag := result.Fragment
-			contentBlockSize := cl.contentBlockSize
-
 			cellFrag.HasCollapsedBorders = borderCollapse
 
-			// §17.5.4: stretch the unwrapped block to the final row
-			// block-size and apply vertical-align. Its contentBlockSize
-			// equals the row's intrinsic size, so this only fires when
-			// distribution grew the row.
-			if isUnwrapped && contentBlockSize < rowHeight {
-				cellLogical := NewLogicalFragment(wdm, cellFrag)
-				cellFrag.Size = oldSizeToGeom(ToPhysicalSize(LogicalSize{
-					InlineSize: cellLogical.InlineSize(),
-					BlockSize:  rowHeight,
-				}, wdm.WM))
-
-				va := css.VerticalAlignMiddle // default for td/th
-				if cl.cell.style != nil {
-					va = cl.cell.style.GetVerticalAlign()
-				}
-				// CSS Tables 3 §height-distribution: the VA shift positions
-				// the cell's CONTENT extent within the row block-size. When
-				// the cell's intrinsic content exceeded the cell's explicit
-				// height, the row grew to match the intrinsic extent, so the
-				// "effective content size" for VA is that intrinsic extent,
-				// not the (clamped) fragment block-size. Using the clamped
-				// fragment size here would over-shift the content downward
-				// when it already fills the row (e.g. `<td height:20px
-				// overflow:hidden>` with a 300px child: row grew to the
-				// intrinsic, content extends 0..rowHeight, no shift needed;
-				// using fragment block 20 here would shift content down by
-				// ~150px). cl.intrinsicContentBorderBox is the cell's laid-out
-				// content extent on a BORDER-box basis (the same basis as
-				// rowHeight) — and, unlike cl.intrinsicBlockSize, it is never
-				// substituted with the column width for orthogonal cells, so it
-				// stays a true content extent here. Comparing it against the
-				// border-box rowHeight avoids the content-box/border-box
-				// mismatch that would otherwise over-shift by the cell's block
-				// border+padding. Mirrors Blink's
-				// TableCellLayoutAlgorithm::ApplyIntrinsicPadding which reasons
-				// over intrinsic extent.
-				effectiveContent := contentBlockSize
-				if cl.intrinsicContentBorderBox > effectiveContent {
-					effectiveContent = cl.intrinsicContentBorderBox
-					if effectiveContent > rowHeight {
-						effectiveContent = rowHeight
-					}
-				}
-				var blockShift float64
-				switch va {
-				case css.VerticalAlignMiddle:
-					blockShift = (rowHeight - effectiveContent) / 2
-				case css.VerticalAlignBottom:
-					blockShift = rowHeight - effectiveContent
-				}
-				if blockShift > 0 {
-					shift := geometry.PhysicalOffsetFromF64Round(
-						cellResizeVAShift(wdm, contentBlockSize, rowHeight, blockShift))
-					for cci := range cellFrag.Children {
-						cellFrag.Children[cci].Offset = cellFrag.Children[cci].Offset.Add(shift)
-					}
-				}
-				cellFrag.updateScrollableOverflow()
-			}
-
-			cellOffset := LogicalOffset{InlineOffset: cl.inlineOffset, BlockOffset: cl.cellBlockOffset}
-			cellRelativeOffset := relativeCellOffset(cellFrag, cl.cell, row.style, wdm, totalInlineForRows)
+			cellOffset := LogicalOffset{InlineOffset: cl.inlineOffset}
+			cellRelativeOffset := relativeCellOffset(cl.cell, row.style, wdm, totalInlineForRows)
 			rowBuilder.AddChildWithRelativeOffset(cellFrag, cellOffset, cellRelativeOffset)
 			// The cell's OOF candidates, in row-content-box coordinates.
 			if cl.cell.style != nil {
@@ -1112,8 +982,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// row's block-offset. Its relative offset still resolves against
 		// the originating row, the row Blink adds it through, not the
 		// table's child available size.
-		cellOffset := LogicalOffset{InlineOffset: cl.inlineOffset, BlockOffset: p.blockOffset + cl.cellBlockOffset}
-		cellRelativeOffset := relativeCellOffset(cellFrag, cl.cell, rows[rowIdx].style, wdm, totalInlineForRows)
+		cellOffset := LogicalOffset{InlineOffset: cl.inlineOffset, BlockOffset: p.blockOffset}
+		cellRelativeOffset := relativeCellOffset(cl.cell, rows[rowIdx].style, wdm, totalInlineForRows)
 		builder.AddChildWithRelativeOffset(cellFrag, cellOffset, cellRelativeOffset)
 		if cl.cell.style != nil {
 			builder.PropagateOOFPositionedInfo(&LayoutResult{Fragment: cellFrag, PropagatedOOFCandidates: result.PropagatedOOFCandidates},
@@ -1497,9 +1367,10 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 // buildRow extracts cells from a table-row element. After tree-build
 // normalization (LayoutTreeBuilder.wrapAnonymousTableBoxes), every row
 // child is a table-cell — either authored or an anonymous wrapper around
-// stray content. Anonymous and authored cells are both layout-time cells;
-// only the isAnonymous flag disambiguates for the row-height / margin
-// accounting in Layout().
+// stray content. An anonymous cell is an ordinary cell: its content is
+// laid out inside it, as Blink's LayoutTableRow::AddChild wraps every
+// non-cell child (table/layout_table_row.cc:87-115 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Style) tableRow {
 	row := tableRow{node: node, style: style}
 	colIdx := 0
@@ -1515,24 +1386,6 @@ func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Styl
 		if childStyle.GetDisplay() != css.DisplayTableCell {
 			// Defensive — tree-build should have wrapped this.
 			continue
-		}
-
-		// For anonymous cell wrappers holding a single block element,
-		// expose that inner block directly as the cell's node/style.
-		// This preserves the pre-refactor semantics where a bare block
-		// inside a <table> contributed its margins to the row height
-		// via the special cell.isAnonymous path (lines ~288/340 in
-		// Layout()). Without this unwrap, cell.style would be the
-		// anon-cell's (margin-free) style and those margins would be
-		// lost.
-		cellNode := child
-		cellStyleUsed := childStyle
-		isAnon := child.IsAnonymous()
-		if isAnon {
-			if inner := singleBlockInnerChild(child); inner != nil {
-				cellNode = inner
-				cellStyleUsed = inner.Style()
-			}
 		}
 
 		colSpan := 1
@@ -1562,12 +1415,11 @@ func (tla *TableLayoutAlgorithm) buildRow(node *LayoutInputNode, style *css.Styl
 			}
 		}
 		row.cells = append(row.cells, tableCell{
-			node:        cellNode,
-			style:       cellStyleUsed,
-			colIndex:    colIdx, // provisional; assignColumnIndices overwrites
-			colSpan:     colSpan,
-			rowSpan:     rowSpan,
-			isAnonymous: isAnon,
+			node:     child,
+			style:    childStyle,
+			colIndex: colIdx, // provisional; assignColumnIndices overwrites
+			colSpan:  colSpan,
+			rowSpan:  rowSpan,
 		})
 		colIdx += colSpan
 	}
@@ -1742,7 +1594,7 @@ func cellHasSpecifiedBlockSize(style *css.Style, wdm WritingDirectionMode) bool 
 }
 
 // relativeCellOffset returns a table cell's relative offset in the table's
-// logical coordinates. An authored cell resolves against its row: the
+// logical coordinates. A cell resolves against its row: the
 // row's inline size and specified block size (chromium bug 1227884, WPT
 // css-position/position-relative-010/013). Mirrors Blink, where
 // TableRowLayoutAlgorithm adds each cell (table_row_layout_algorithm.cc:167)
@@ -1750,61 +1602,12 @@ func cellHasSpecifiedBlockSize(style *css.Style, wdm WritingDirectionMode) bool 
 // child_available_size (box_fragment_builder.cc:262-267); the section gives
 // the row an indefinite available block size
 // (table_section_layout_algorithm.cc:38-39, :76-77), all @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520. An anonymous unwrapped cell's
-// node stands in for the anonymous cell's child, whose containing block is
-// that cell: its inline size and indefinite block size (the percentage
-// resolution size the cell's constraint space gives it).
-func relativeCellOffset(cellFrag *PhysicalFragment, cell tableCell, rowStyle *css.Style, wdm WritingDirectionMode, rowInlineSize float64) LogicalOffset {
-	if cell.isAnonymous {
-		return ComputeRelativeOffset(cellFrag.Style, wdm, LogicalSize{
-			InlineSize: NewLogicalFragment(wdm, cellFrag).InlineSize(),
-			BlockSize:  Indefinite,
-		})
-	}
+// d4ecdfed88f962439247c2ad36b8fe47805b1520.
+func relativeCellOffset(cell tableCell, rowStyle *css.Style, wdm WritingDirectionMode, rowInlineSize float64) LogicalOffset {
 	return ComputeRelativeOffset(cell.style, wdm, LogicalSize{
 		InlineSize: rowInlineSize,
 		BlockSize:  specifiedBlockSize(rowStyle, wdm),
 	})
-}
-
-// singleBlockInnerChild returns the sole non-text, non-whitespace child of
-// an anonymous cell wrapper if exactly one exists and it is an in-flow
-// block-level element — otherwise nil. Used by buildRow to preserve
-// margin-propagation semantics for bare blocks wrapped at tree-build time.
-// A floated or absolutely positioned child keeps its wrapper: unwrapped, it
-// would be laid out as the cell itself, in flow, whereas Blink keeps it a
-// float / out-of-flow box inside the anonymous cell
-// (LayoutTableRow::AddChild, table/layout_table_row.cc:87-116 @
-// d4ecdfed88f962439247c2ad36b8fe47805b1520).
-func singleBlockInnerChild(wrapper *LayoutInputNode) *LayoutInputNode {
-	var found *LayoutInputNode
-	for _, c := range wrapper.Children() {
-		if c.IsText() {
-			if strings.TrimSpace(c.TextContent()) == "" {
-				continue
-			}
-			return nil // non-whitespace text ⇒ inline content, keep wrapper
-		}
-		s := c.Style()
-		if s == nil || isOutOfFlowOrFloat(c) {
-			return nil
-		}
-		// Inline-level children stay inside the wrapper (multi-inline runs
-		// or mixed inline/block can't be collapsed to a single content box).
-		d := s.GetDisplay()
-		switch d {
-		case css.DisplayBlock, css.DisplayFlex, css.DisplayFlowRoot,
-			css.DisplayGrid, css.DisplayTable, css.DisplayListItem:
-			// ok
-		default:
-			return nil
-		}
-		if found != nil {
-			return nil // more than one block child
-		}
-		found = c
-	}
-	return found
 }
 
 // computeColumnWidthsFixed computes column widths using the fixed table layout
@@ -2101,19 +1904,6 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 						cellBP := ComputeFragmentGeometry(cell.style, childWDM).InlineBorderPadding()
 						cellMin = mm.MinContent + cellBP
 						cellMax = mm.MaxContent + cellBP
-					}
-					// Anonymous cell wrappers: the wrapped child's inline
-					// margins are part of the cell's intrinsic contribution
-					// (the layout pass at Phase 2/3 offsets the child by
-					// them — see the isAnonymous blocks above). Percentages
-					// resolve against zero here per CSS Sizing 3
-					// §min-percentage-contribution. In Blink the anonymous
-					// cell is a real block container, so its
-					// ComputeMinMaxSizes includes child margins natively.
-					if cell.isAnonymous && cell.style != nil {
-						anonMarginSum := ResolveMargins(cell.style, childWDM, 0).InlineSum()
-						cellMin += anonMarginSum
-						cellMax += anonMarginSum
 					}
 				}
 			}
