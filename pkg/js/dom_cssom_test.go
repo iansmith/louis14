@@ -234,3 +234,43 @@ func TestStyleSheetsRuleWritesParseAsOneValue(t *testing.T) {
 		}
 	}
 }
+
+// TestStyleSheetsRuleReadsPendingSubstitution: a var() shorthand's
+// longhands are pending substitution, and read back as "" (a pending value
+// serializes as empty, CSSPendingSubstitutionValue::CustomCSSText,
+// core/css/css_pending_substitution_value.cc:16); the shorthand reads back
+// its own declared text when all its longhands are pending from it
+// (StylePropertySerializer::CommonShorthandChecks,
+// core/css/style_property_serializer.cc:550-570 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). No internal value leaks.
+func TestStyleSheetsRuleReadsPendingSubstitution(t *testing.T) {
+	for _, tc := range []struct{ name, css, script string }{
+		{"parsed margin", `#d{--x:1px;margin:var(--x)}`, ``},
+		{"written margin", `#d{--x:1px}`, `r[0].style.margin="var(--x)";`},
+	} {
+		doc := parseHTML(t, `<style>`+tc.css+`</style><div id="d">x</div>`)
+		css.ParseDocumentStylesheets(doc)
+		engine := New()
+		doc.Scripts = append(doc.Scripts, `var r = document.styleSheets[0].cssRules; `+tc.script+`
+			function check(what, got, want) { if (got !== want) throw new Error(what + ": " + JSON.stringify(got) + " want " + JSON.stringify(want)); }
+			check("margin", r[0].style.margin, "var(--x)");
+			check("marginTop", r[0].style.marginTop, "");
+			check("marginLeft", r[0].style.marginLeft, "");`)
+		if err := engine.Execute(doc); err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+		}
+	}
+	doc := parseHTML(t, `<style>#d{--c:red; --f:12px serif; border:1px solid var(--c); font:var(--f); list-style:var(--l, square); background:var(--c)}</style><div id="d">x</div>`)
+	css.ParseDocumentStylesheets(doc)
+	engine := New()
+	doc.Scripts = append(doc.Scripts, `var s = document.styleSheets[0].cssRules[0].style;
+		var leaks = [];
+		for (var p of ["border", "borderLeftColor", "font", "fontStyle", "lineHeight", "listStyle", "listStyleType", "background", "backgroundColor", "backgroundImage"])
+			if (String(s[p]).indexOf("\u0000") >= 0) leaks.push(p);
+		if (leaks.length) throw new Error("internal value leaks through " + leaks.join(", "));
+		if (s.border !== "1px solid var(--c)") throw new Error("border: " + JSON.stringify(s.border));
+		if (s.font !== "var(--f)") throw new Error("font: " + JSON.stringify(s.font));`)
+	if err := engine.Execute(doc); err != nil {
+		t.Error(err)
+	}
+}

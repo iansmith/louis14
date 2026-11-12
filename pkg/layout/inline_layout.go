@@ -493,6 +493,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// CSS 2.1 §16.1: text-indent offsets the first line of a block container.
 	// CSS Values §10.2: calc() with percent is resolved against the containing
 	// block's inline-size, same as bare-percent text-indent.
+	// Whether overflowing lines are truncated for 'text-overflow' is fixed
+	// for the block (LayoutBlockFlow::ShouldTruncateOverflowingText).
+	shouldTruncateOverflowingText := bla.node.ShouldTruncateOverflowingText()
 	textIndent := 0.0
 	if bla.style != nil {
 		textIndent = bla.style.ResolveTextIndent(contentInlineSize)
@@ -1067,8 +1070,28 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if isFirstLineForBox {
 			firstLineBgStyle = bla.node.FirstLineStyle
 		}
+		// GetLineClampState's kTextOverflowEllipsis case
+		// (inline/inline_layout_algorithm.cc:353-356 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the line overflows its
+		// opportunity in a block that truncates overflowing text. Floats
+		// placed on this line narrowed the opportunity to
+		// lineAvailableInline; lineVisualInline does not see them.
+		var truncator *LineTruncator
+		if !line.IsBlockInInline && shouldTruncateOverflowingText {
+			opportunity := lineVisualInline
+			if floatsPlacedOnLine && lineAvailableInline < opportunity {
+				opportunity = lineAvailableInline
+			}
+			if line.Width > opportunity+offsetToFitEpsilon {
+				lineStyle := bla.style
+				if isFirstLineForBox {
+					lineStyle = mergeFirstLineStyle(bla.style, bla.node.FirstLineStyle, fonts)
+				}
+				truncator = NewLineTruncator(lineStyle, opportunity, line.BaseDirection, fonts)
+			}
+		}
 		lineFragment, lineHeight, lineAscent, residualStack, lineOOFCandidates := createLineBoxEx(
-			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, relativeAvailableSize, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate, atomicInlineContainers,
+			itemsData, &line, effectiveWDM, lineVisualInline, fonts, centralBaseline, relativeAvailableSize, bla.style, openInlineStack, firstLineBgStyle, isFirstLineForCreate, atomicInlineContainers, truncator,
 		)
 		openInlineStack = residualStack
 		// no Blink analog for the line box type: a zero-height line stands
@@ -2146,7 +2169,7 @@ func createLineBox(
 	availableInline float64,
 	fonts text.FontConfig,
 ) (*PhysicalFragment, float64, float64) {
-	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), LogicalSize{}, nil, nil, nil, true, nil)
+	frag, h, a, _, _ := createLineBoxEx(itemsData, line, wdm, availableInline, fonts, wdm.UsesCentralBaseline(), LogicalSize{}, nil, nil, nil, true, nil, nil)
 	return frag, h, a
 }
 
@@ -2176,6 +2199,7 @@ func createLineBoxEx(
 	firstLineStyle *css.Style,
 	isFirstLine bool,
 	atomicInlineContainers map[*InlineItem]AtomicInlineContainers,
+	truncator *LineTruncator,
 ) (*PhysicalFragment, float64, float64, []*InlineItem, []OutOfFlowCandidate) { // returns (fragment, lineHeight, maxAscent, residualSpanStack, oofCandidates)
 	// Step 1: Compute line height from font metrics of all items.
 	maxAscent, maxDescent := computeLineMetricsEx(line, wdm, fonts, centralBaseline, parentStyle, itemsData.TextContent)
@@ -2318,6 +2342,9 @@ func createLineBoxEx(
 		InlineSize: availableInline,
 		BlockSize:  lineHeight,
 	})
+	// The line box's children, added to lineBuilder once the line is
+	// truncated. Mirrors InlineLayoutAlgorithm::CreateLine's line_box.
+	var lineBox LogicalLineItems
 
 	// LOU-149 Phase 4: pre-compute per-text-fragment decorating-box metadata
 	// for any decoration on this line. Returns nil when no fragment carries
@@ -2400,9 +2427,10 @@ func createLineBoxEx(
 			WritingDirection: wdm,
 			PaintGroup:       flGroup,
 		}
-		lineBuilder.AddChild(bgFrag, LogicalOffset{
-			InlineOffset: alignOffset,
-			BlockOffset:  flBlockOffset,
+		lineBox.AddChild(LogicalLineItem{
+			Fragment:   bgFrag,
+			Offset:     LogicalOffset{InlineOffset: alignOffset, BlockOffset: flBlockOffset},
+			InlineSize: line.Width,
 		})
 	}
 
@@ -2702,7 +2730,7 @@ func createLineBoxEx(
 		for len(pendingBg) > 0 && pendingBg[0].itemIndex <= upTo {
 			p := pendingBg[0]
 			pendingBg = pendingBg[1:]
-			lineBuilder.AddChildWithRelativeOffset(p.frag, p.offset, p.relativeOffset)
+			lineBox.AddChild(LogicalLineItem{Fragment: p.frag, Offset: p.offset, RelativeOffset: p.relativeOffset})
 		}
 	}
 
@@ -2938,10 +2966,13 @@ func createLineBoxEx(
 					}
 				}
 
-				lineBuilder.AddChildWithRelativeOffset(frag, LogicalOffset{
-					InlineOffset: pieceOffset,
-					BlockOffset:  blockPos,
-				}, textRelativeOffset)
+				lineBox.AddChild(LogicalLineItem{
+					Fragment:       frag,
+					InlineItem:     r.Item,
+					Offset:         LogicalOffset{InlineOffset: pieceOffset, BlockOffset: blockPos},
+					RelativeOffset: textRelativeOffset,
+					InlineSize:     pieceInline,
+				})
 			}
 
 			if justifyExpansion > 0 && strings.Contains(content, " ") {
@@ -3021,7 +3052,7 @@ func createLineBoxEx(
 					itemsData.TextContent,
 					r.RubyColumn.RubyAlign,
 					wdm, fonts, centralBaseline, sidewaysVLR,
-					lineBuilder,
+					&lineBox,
 				)
 			}
 			inlinePos += r.InlineSize
@@ -3131,10 +3162,14 @@ func createLineBoxEx(
 				// layout-time.
 				atomicRelativeOffset := relativeOffset.Add(
 					ComputeRelativeOffsetForInline(wdm, relativeAvailableSize, r.Item.Style))
-				lineBuilder.AddChildWithRelativeOffset(r.LayoutResult.Fragment, LogicalOffset{
-					InlineOffset: inlinePos,
-					BlockOffset:  blockPos,
-				}, atomicRelativeOffset)
+				lineBox.AddChild(LogicalLineItem{
+					Fragment:       r.LayoutResult.Fragment,
+					InlineItem:     r.Item,
+					LayoutResult:   r.LayoutResult,
+					Offset:         LogicalOffset{InlineOffset: inlinePos, BlockOffset: blockPos},
+					RelativeOffset: atomicRelativeOffset,
+					InlineSize:     r.InlineSize,
+				})
 				// Propagate OOF candidates from atomic inline's subtree.
 				// These are abs/fixed children of the inline-block that need to
 				// reach the nearest positioned ancestor (or the root) for layout,
@@ -3180,6 +3215,22 @@ func createLineBoxEx(
 		inlinePos += r.InlineSize
 	}
 	flushInlineBoxFragments(len(line.Results))
+
+	// Truncate the line for 'text-overflow' (InlineLayoutAlgorithm::
+	// CreateLine, inline/inline_layout_algorithm.cc:447-457 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if truncator != nil {
+		truncator.TruncateLine(line.Width, &lineBox, LineBoxPlacement{
+			LineOffsetForTextAlign: alignOffset,
+			MaxAscent:              maxAscent,
+			WritingDirection:       wdm,
+			CentralBaseline:        centralBaseline,
+			PaintGroup:             flPaintGroup(nil),
+		})
+	}
+	for _, c := range lineBox {
+		lineBuilder.AddChildWithRelativeOffset(c.Fragment, c.Offset, c.RelativeOffset)
+	}
 
 	result := lineBuilder.Build()
 	return result.Fragment, lineHeight, maxAscent, residualSpanStack, lineOOFCandidates

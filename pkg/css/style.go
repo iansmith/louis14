@@ -367,15 +367,7 @@ func (s *Style) Get(property string) (string, bool) {
 		return val, ok
 	}
 	hadVar := containsVarFunction(val)
-	varResolutionFailed := false
-	// Resolve var() references in the value
-	if hadVar {
-		val, varResolutionFailed = s.resolveVarsWithStatus(val)
-	}
-	// Resolve env() references in the value
-	if strings.Contains(val, "env(") {
-		val = resolveEnvValue(val)
-	}
+	val, varResolutionFailed := s.substituteVarAndEnv(val)
 	// CSS Variables §3 "Invalid at Computed Value Time" (IACVT): when a
 	// property's declared value contained a var() reference that failed to
 	// resolve (the referenced custom property is undefined OR cyclic AND no
@@ -509,6 +501,20 @@ func asciiToLower(s string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// substituteVarAndEnv substitutes var() references, then env() ones, in a
+// declared value, and reports whether a var() reference failed to resolve
+// (invalid at computed-value time; resolveVarsWithStatus).
+func (s *Style) substituteVarAndEnv(val string) (string, bool) {
+	failed := false
+	if containsVarFunction(val) {
+		val, failed = s.resolveVarsWithStatus(val)
+	}
+	if strings.Contains(val, "env(") {
+		val = resolveEnvValue(val)
+	}
+	return val, failed
 }
 
 // resolveVarReferences resolves CSS var() function references in a value
@@ -2525,12 +2531,11 @@ func expandShorthand(style *Style, property, value string) {
 	// Case-insensitive per CSS Syntax §4.3.10.
 	if containsVarFunction(value) {
 		if isVarDeferredShorthand[property] {
-			// Store as the shorthand property; reexpandVarShorthands
-			// expands it once var() is substituted.
-			style.Set(property, value)
+			for _, lh := range shorthandLonghands[property] {
+				style.Set(storageKey(lh), pendingSubstitutionValue(property, value))
+			}
 			return
 		}
-		// For "background", expandBackgroundProperty (css_parsing_utils.go) defers var() itself
 	}
 	// CSS Values 5 §11.5: if value contains a typed attr() function, defer
 	// shorthand expansion. attr() is resolved at cascade time via
@@ -3065,8 +3070,7 @@ func expandShorthand(style *Style, property, value string) {
 // generates for it (:8800), every longhand but the affected_by_all: false
 // direction (:1393) and unicode-bidi (:6686), all @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Custom properties are not
-// longhands. A var() shorthand stored under its own name follows its
-// longhands: rolled back by revert and revert-layer, dropped otherwise.
+// longhands.
 func expandAllShorthand(style *Style, value string) {
 	keyword, ok := cssWideKeyword(value)
 	if !ok {
@@ -3087,33 +3091,15 @@ func expandAllShorthand(style *Style, value string) {
 			style.Set(prop, keyword)
 		}
 	}
-	// A var() shorthand stored under its own name: its longhands now carry
-	// the keyword. revert and revert-layer roll the shorthand back with them
-	// (to a lower layer's declaration, say); any other keyword drops it.
-	for _, prop := range varDeferredShorthands {
-		if _, ok := style.Properties[prop]; !ok {
-			continue
-		}
-		if keyword == "revert" || keyword == "revert-layer" {
-			style.Set(prop, keyword)
-		} else {
-			delete(style.Properties, prop)
-		}
-	}
 }
 
 // allShorthandCovers reports whether `all` sets prop: every longhand but
 // direction and unicode-bidi, whose initial values come from the document
 // language and bidi context, not CSS (CSS Cascade 4 §6.3). A logical
-// longhand's internal storage key counts as the longhand, and a var()
-// shorthand stored under its own name as its longhands, all of which `all`
-// sets.
+// longhand's internal storage key counts as the longhand.
 func allShorthandCovers(prop string) bool {
 	if lh, ok := logicalLonghandStorageKeys[prop]; ok {
 		prop = lh
-	}
-	if isVarDeferredShorthand[prop] {
-		return true
 	}
 	return cssLonghandProperties[prop] && prop != "direction" && prop != "unicode-bidi"
 }
@@ -3137,8 +3123,9 @@ func allShorthandCovers(prop string) bool {
 //     rather than leaving the property unset (Blink SHA
 //     4883d11fef4a8713e32cd582ecef6dc5457c8c3f, style_cascade.cc).
 //
-// Properties NOT listed here are non-inheritable AND have spec-conformant
-// getter fallbacks, so deletion is the correct resolution.
+// Properties NOT listed here should be non-inheritable with spec-conformant
+// getter fallbacks, so deletion is the correct resolution; ~37 inherited
+// properties still lack an entry (LOU-842).
 var nonDefaultInitialValues = map[string]string{
 	// CSS Display §2: the initial value of `display` is `inline`. louis14's
 	// GetDisplay returns DisplayBlock when the property is absent (a defensive
@@ -3204,6 +3191,23 @@ var nonDefaultInitialValues = map[string]string{
 	"font-variant-caps":       "normal",
 	"text-wrap":               "normal",
 	"word-wrap":               "normal",
+	// The inherited longhands of the font and list-style shorthands, which a
+	// shorthand (a var() one included) sets to their initial value when its
+	// value omits them; without an entry the inheritance pass would copy the
+	// parent's value instead (css_properties.json5 initial values @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	"font-style":              "normal",
+	"font-weight":             "normal",
+	"font-variant-ligatures":  "normal",
+	"font-variant-numeric":    "normal",
+	"font-variant-east-asian": "normal",
+	"font-variant-alternates": "normal",
+	"font-kerning":            "auto",
+	"font-feature-settings":   "normal",
+	"line-height":             "normal",
+	"list-style-image":        "none",
+	"list-style-position":     "outside",
+	"list-style-type":         "disc",
 }
 
 // applyDeclarationWithVisitedFilter expands `property: value` into `style`,
@@ -3312,6 +3316,21 @@ func snapshotForAllRevert(s *Style) allShorthandRevertSnapshot {
 	return snap
 }
 
+// applyInitialOrUnset applies `initial` or `unset` (kw) to a non-custom
+// property: `unset` on an inherited property becomes `inherit`, for the
+// inheritance pass to resolve; otherwise the property takes its initial
+// value, stored when its getter's fallback differs from it
+// (nonDefaultInitialValues) and dropped otherwise (CSS Cascade 4 §7.3).
+func applyInitialOrUnset(s *Style, prop, kw string) {
+	if kw == "unset" && inheritableProperties[prop] {
+		s.Set(prop, "inherit")
+	} else if init, ok := nonDefaultInitialValues[prop]; ok {
+		s.Set(prop, init)
+	} else {
+		delete(s.Properties, prop)
+	}
+}
+
 // resolveCSSWideKeywords handles the longhand-level CSS-wide keywords that
 // expandShorthand stores verbatim — `initial`, `unset`, `revert`, and
 // `revert-layer`. `inherit` is resolved separately in resolveInheritValues
@@ -3377,11 +3396,7 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 				s.Set(prop, "")
 				continue
 			}
-			if init, ok := nonDefaultInitialValues[prop]; ok {
-				s.Set(prop, init)
-			} else {
-				delete(s.Properties, prop)
-			}
+			applyInitialOrUnset(s, prop, "initial")
 		case "unset":
 			if isCustom {
 				// CSS Custom Properties §2.2: custom properties are inherited
@@ -3392,13 +3407,7 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 				s.Set(prop, "inherit")
 				continue
 			}
-			if inheritableProperties[prop] {
-				s.Set(prop, "inherit")
-			} else if init, ok := nonDefaultInitialValues[prop]; ok {
-				s.Set(prop, init)
-			} else {
-				delete(s.Properties, prop)
-			}
+			applyInitialOrUnset(s, prop, "unset")
 		case "revert":
 			if snapVal, ok := originSnap[prop]; ok {
 				s.Set(prop, snapVal)

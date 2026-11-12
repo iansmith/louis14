@@ -161,7 +161,7 @@ func TestOpenTypeVerticalData_HasVerticalMetricsFonts(t *testing.T) {
 		if !vd.HasVerticalMetrics() {
 			t.Fatal("HasVerticalMetrics = false, want true")
 		}
-		zero := glyphForCharacter(shortZero, 80, kDigitZero)
+		zero := GlyphForCharacter(shortZero, 80, kDigitZero)
 		if zero == 0 {
 			t.Fatal("fixture: ChTestShortZero has no '0' glyph")
 		}

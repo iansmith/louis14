@@ -828,6 +828,32 @@ func TestInlineLayout_OutlineOnlySpanProducesFragments(t *testing.T) {
 	}
 }
 
+// TestInlineLayout_RubyFragmentsInItemOrder (LOU-815 review): a ruby
+// column's fragments are added to the line box in item order like the
+// line's other children, so they paint over the background of the inline
+// box enclosing them. They used to bypass the deferred line box children
+// and land first, under the span's background.
+func TestInlineLayout_RubyFragmentsInItemOrder(t *testing.T) {
+	root := layoutRootTestHTML(t, `<!doctype html><style>body{margin:0}</style>`+
+		`<div style="font:20px/2 Ahem">aa <span id=s style="background:lime">b<ruby>X<rt>Y</rt></ruby>b</span></div>`)
+	span := findBoxByID(root, "s")
+	if span == nil || span.Parent == nil {
+		t.Fatal("no box for #s")
+	}
+	var order []string
+	for _, c := range span.Parent.Children {
+		switch {
+		case c == span:
+			order = append(order, "span")
+		case c.Text == "X" || c.Text == "Y":
+			order = append(order, c.Text)
+		}
+	}
+	if got, want := strings.Join(order, ","), "span,X,Y"; got != want {
+		t.Errorf("line box child order = %s, want %s", got, want)
+	}
+}
+
 // TestInlineLayout_InlineBoxFragmentInItemOrder (LOU-560): an inline box
 // fragment is added to the line box at its OpenTag's position in item order —
 // after the line's earlier text, before its own — because the line box

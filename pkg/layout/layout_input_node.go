@@ -354,6 +354,26 @@ func (n *LayoutInputNode) IsAnonymous() bool {
 	return n.isAnonymous
 }
 
+// ShouldTruncateOverflowingText reports whether lines overflowing this block
+// are truncated for 'text-overflow': the block (for an anonymous block, its
+// parent block container) has non-visible overflow and a text-overflow
+// other than clip. Mirrors LayoutBlockFlow::ShouldTruncateOverflowingText
+// (layout_block_flow.cc:541-554 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// the selection-focus and scrolled-snapshot runtime features are not ported.
+func (n *LayoutInputNode) ShouldTruncateOverflowingText() bool {
+	obj := n
+	if n.IsAnonymous() {
+		parent := n.Parent()
+		if parent == nil || !isBlockContainerStyle(parent.Style()) {
+			return false
+		}
+		obj = parent
+	}
+	style := obj.Style()
+	return style != nil && hasNonVisibleOverflow(style, obj.DOMNode) &&
+		style.GetTextOverflow() != css.TextOverflowClip
+}
+
 // IsElement returns true for element-like nodes (not text, not anonymous).
 func (n *LayoutInputNode) IsElement() bool {
 	return n.DOMNode != nil && n.DOMNode.Type == html.ElementNode

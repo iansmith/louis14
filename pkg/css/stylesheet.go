@@ -4905,8 +4905,8 @@ func (d *DeclarationResult) SetDeclaration(property, value string) bool {
 	}
 	d.removeKeys(property, keys)
 	if v, whole := parsed.Declarations[property]; whole {
-		// Stored whole (a longhand, or a var() shorthand awaiting
-		// substitution): its longhands are pending, not initial.
+		// Stored whole: a longhand, or overflow's whole-value key
+		// (storedWholeShorthandLonghands).
 		d.Set(property, v, false)
 		return true
 	}
@@ -4953,6 +4953,13 @@ func (d *DeclarationResult) removeKeys(property string, keys []string) {
 // longhands (serializeShorthand).
 func (d *DeclarationResult) Value(property string) (string, bool) {
 	if v, ok := d.Declarations[storageKey(property)]; ok {
+		if _, _, pending := parsePendingSubstitution(v); pending {
+			// A pending-substitution value serializes as empty
+			// (CSSPendingSubstitutionValue::CustomCSSText,
+			// css_pending_substitution_value.cc:16 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			return "", true
+		}
 		return v, true
 	}
 	if _, ok := shorthandLonghands[property]; ok {
@@ -5294,24 +5301,11 @@ func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult
 		style := NewStyle()
 		expandShorthand(style, property, value)
 
-		// Copy all expanded properties to declarations, validating color values
+		// Copy all expanded properties to declarations, validating each.
 		for k, v := range style.Properties {
-			if isColorProperty(k) {
-				if !isValidColorValue(v) {
-					continue
-				}
-			}
-			if isImageProperty(k) {
-				if !isValidImageValue(v) {
-					continue
-				}
-			}
-			if k == "font-family" {
-				normalized, ok := normalizeAndValidateFontFamily(v)
-				if !ok {
-					continue
-				}
-				v = normalized
+			v, ok := validateDeclaredLonghand(k, v)
+			if !ok {
+				continue
 			}
 			// Within one declaration block, an !important declaration beats
 			// a later non-important one (CSS Cascade 4 §8.3). Skip the write
@@ -5344,6 +5338,22 @@ func isLengthProperty(prop string) bool {
 		return true
 	}
 	return false
+}
+
+// validateDeclaredLonghand checks a longhand value a shorthand expanded to
+// as a declared value would be checked, returning it normalized (a
+// font-family list) or false when it is invalid: a color property needs a
+// color, an image property an image.
+func validateDeclaredLonghand(prop, value string) (string, bool) {
+	switch {
+	case isColorProperty(prop):
+		return value, isValidColorValue(value)
+	case isImageProperty(prop):
+		return value, isValidImageValue(value)
+	case prop == "font-family":
+		return normalizeAndValidateFontFamily(value)
+	}
+	return value, true
 }
 
 // isColorProperty returns true for CSS properties that expect color values

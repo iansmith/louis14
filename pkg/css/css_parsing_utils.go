@@ -561,9 +561,9 @@ func parseBackgroundOrMask(value string) (longhands [len(backgroundShorthand)]st
 // shorthand via parseBackgroundOrMask. An invalid declaration sets nothing,
 // so an earlier valid declaration survives.
 func expandBackgroundProperty(style *Style, value string) {
-	// var() / attr() defer expansion (resolved at cascade time; CSS Syntax
-	// §4.3.10, CSS Values 5 §11.5).
-	if containsVarFunction(value) || containsAttrFunction(value) {
+	// attr() defers expansion (resolved at cascade time; CSS Values 5
+	// §11.5); expandShorthand makes a var() value pending substitution.
+	if containsAttrFunction(value) {
 		style.Set("background-color", value)
 		return
 	}
