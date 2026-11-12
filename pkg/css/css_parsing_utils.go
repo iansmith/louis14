@@ -694,3 +694,6 @@ func isValidBackgroundSizeValue(value string) bool {
 		}
 	}
 }
+
+// consumeInteger is Blink's ConsumeInteger; not yet ported (LOU-863).
+func consumeInteger(tok string, minimum float64) (int, bool) { return 0, false }
