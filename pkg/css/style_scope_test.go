@@ -13,6 +13,13 @@ func colorOf(t *testing.T, styles map[*html.Node]*Style, id string) string {
 	return c
 }
 
+// backgroundOf is the background-color of the element with the given id.
+func backgroundOf(t *testing.T, styles map[*html.Node]*Style, id string) string {
+	t.Helper()
+	c, _ := styleByID(t, styles, id).Get("background-color")
+	return c
+}
+
 // @scope (<scope-start>) to (<scope-end>): a style rule in the scope's body
 // matches only elements inside a scoping root and not at or below one of
 // its scoping limits (SelectorChecker::CalculateActivations /
@@ -192,7 +199,93 @@ func TestImplicitScopeRoot(t *testing.T) {
 			t.Errorf("#%s matched an implicit scope's .a rule", id)
 		}
 	}
-	if got, _ := styleByID(t, styles, "root").Get("background-color"); got != "blue" {
+	if got := backgroundOf(t, styles, "root"); got != "blue" {
 		t.Errorf(":scope of the implicit scope: #root background-color = %q, want blue", got)
+	}
+}
+
+// <scope-end> and a nested <scope-start> are parsed relative to the scope
+// (CSSNestingType::kScope): without :scope they get the implicit
+// :where(:scope) descendant anchor, so a root is never its own limit and a
+// nested scope's root lies strictly inside the outer root
+// (StyleScope::Consume, style_scope.cc:86-139;
+// MaybeCreateImplicitDescendantAnchor, css_selector_parser.cc:778-824 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestScopeBoundariesAreRelativeToTheScope(t *testing.T) {
+	styles := cascadeHTML(t, `<style>
+		@scope (.x) to (.x) { :scope { color: green } .t { color: green } }
+		@scope (.a) { @scope (.b) { :scope { background-color: green } } }
+	</style>
+	<div class="x" id="x"><div class="t" id="t"></div></div>
+	<div class="a b" id="ab"></div>
+	<div class="a"><div class="b" id="b"></div></div>`, nil)
+	for _, id := range []string{"x", "t"} {
+		if got := colorOf(t, styles, id); got != "green" {
+			t.Errorf("#%s color = %q, want green (a root is not its own limit)", id, got)
+		}
+	}
+	if got := backgroundOf(t, styles, "b"); got != "green" {
+		t.Errorf("#b background-color = %q, want green", got)
+	}
+	if got := backgroundOf(t, styles, "ab"); got == "green" {
+		t.Errorf("#ab, the outer root itself, matched the nested scope's root")
+	}
+}
+
+// @scope nested in a style rule: its <scope-start> is relative to the
+// parent rule (an implicit `&` anchor), and its body rules are scoped,
+// with `&` as :where(:scope) (CSSParserImpl::ConsumeScopeRule,
+// css_parser_impl.cc:2135-2172; StyleScope::RuleForNesting,
+// style_scope.cc:142-147). Declarations directly in an @scope body apply
+// to the scoping root, as `:where(:scope)`.
+func TestScopeNestedInStyleRule(t *testing.T) {
+	styles := cascadeHTML(t, `<style>
+		.p { @scope (.x) { .y { color: green } & > .z { color: green } } }
+		@scope (.r) { background-color: green; }
+	</style>
+	<div class="p"><div class="x"><div class="y" id="in"></div><div class="z" id="z"></div></div></div>
+	<div class="x"><div class="y" id="out"></div></div>
+	<div class="p x"><div class="y" id="px"></div></div>
+	<div class="r" id="r"><div id="r-child"></div></div>`, nil)
+	// & in the body is :where(:scope), the .x root, not the parent .p.
+	for _, id := range []string{"in", "z"} {
+		if got := colorOf(t, styles, id); got != "green" {
+			t.Errorf("#%s color = %q, want green", id, got)
+		}
+	}
+	// The prelude is relative to .p: a .x outside .p, or the .p itself, is
+	// no root.
+	for _, id := range []string{"out", "px"} {
+		if got := colorOf(t, styles, id); got == "green" {
+			t.Errorf("#%s matched the @scope nested in .p", id)
+		}
+	}
+	if got := backgroundOf(t, styles, "r"); got != "green" {
+		t.Errorf("#r background-color = %q, want green (a declaration in the @scope body)", got)
+	}
+	if got := backgroundOf(t, styles, "r-child"); got == "green" {
+		t.Errorf("#r-child took the @scope body's declaration, which applies to the root only")
+	}
+}
+
+// An implicit scope's root is the owner's parent when the style is
+// computed (ImplicitScopeTrigger reads the sheet's owner,
+// scoped_style_resolver.cc:444-454): moving the <style> moves the root.
+func TestImplicitScopeRootFollowsTheOwner(t *testing.T) {
+	doc, err := html.Parse(`<div id="first"><style>@scope { .a { color: green } }</style><div class="a" id="a1"></div></div>
+	<div id="second"><div class="a" id="a2"></div></div>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ApplyStylesToDocument(doc, 800, 600)
+	first := doc.Root.ElementByID("first")
+	doc.Root.ElementByID("second").AddChild(first.RemoveChild(first.Children[0]))
+	doc.UpdateActiveStyleSheets()
+	styles := ApplyStylesToDocument(doc, 800, 600)
+	if got := colorOf(t, styles, "a2"); got != "green" {
+		t.Errorf("#a2 color = %q, want green (the moved <style>'s new parent is the root)", got)
+	}
+	if got := colorOf(t, styles, "a1"); got == "green" {
+		t.Errorf("#a1 still matched the scope of the <style> moved away")
 	}
 }
