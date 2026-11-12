@@ -379,3 +379,35 @@ func TestMatchesSelector_DefaultNamespaceScopedPerSheet(t *testing.T) {
 		})
 	}
 }
+
+// An @import or @namespace the ordering drops is a null rule: it is not in
+// the sheet's rule list (CSSRuleList) either (CSSParserImpl::ConsumeRuleList
+// appends only the rules it parsed, css_parser_impl.cc:748-793 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestParseStylesheet_DroppedOrderingRulesAreNotInTheRuleList(t *testing.T) {
+	cases := []struct {
+		css  string
+		want int
+	}{
+		{`p { color: blue } @import "a.css";`, 1},
+		{`@namespace "x"; @import "a.css";`, 1},
+		{`p { color: blue } @namespace "x";`, 1},
+		{`@media all {} @import "a.css";`, 1},
+		{`@import "a.css"; @layer x; @import "b.css";`, 2},
+		{`@import "a.css"; @namespace "x"; p { color: blue }`, 3},
+		{`@layer x; @import "a.css";`, 2},
+		// A null rule (unknown at-rule, invalid selector, @import with no
+		// URI: ConsumeImportRule, css_parser_impl.cc) neither enters the
+		// list nor changes the ordering.
+		{`@foo; @import "a.css";`, 1},
+		{`a[ { color: blue } @namespace "x";`, 1},
+		{`@import; p { color: blue }`, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.css, func(t *testing.T) {
+			if got := NewStyleSheetContents(tc.css, NewParserContext("")).RuleCount(); got != tc.want {
+				t.Errorf("%d rules in the rule list, want %d", got, tc.want)
+			}
+		})
+	}
+}
