@@ -162,9 +162,15 @@ func TestDirectionAwareCascadePositionsRound3(t *testing.T) {
 		{"var() shorthand later in the block beats a logical longhand", `#t{--x:1px; margin-inline-start:5px; margin:var(--x)}`, ``, "margin-left", "1px"},
 		{"var() shorthand later in the style attribute beats a logical longhand", ``, `--x:1px; margin-inline-start:5px; margin:var(--x)`, "margin-left", "1px"},
 		{"var() border shorthand beats an earlier logical colour", `#t{--c:green; border-inline-start-color:red; border:1px solid var(--c)}`, ``, "border-left-color", "green"},
-		{"animated logical beats an author physical", `#t{margin-left:1px; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}`, ``, "margin-left", "5px"},
-		{"animated physical beats an author logical", `#t{margin-inline-start:1px; animation:a 10s paused} @keyframes a{to{margin-left:5px}}`, ``, "margin-left", "5px"},
-		{"author important physical beats an animated logical", `#t{margin-left:1px !important; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}`, ``, "margin-left", "1px"},
+		// A to-only keyframe paused at 0 is the neutral keyframe: the
+		// underlying value, read through the logical/physical counterpart.
+		{"to-only animated logical at 0 is the author physical", `#t{margin-left:1px; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}`, ``, "margin-left", "1px"},
+		{"to-only animated physical at 0 is the author logical", `#t{margin-inline-start:1px; animation:a 10s paused} @keyframes a{to{margin-left:5px}}`, ``, "margin-left", "1px"},
+		{"animated logical beats an author physical", `#t{margin-left:1px; animation:a 10s paused} @keyframes a{from,to{margin-inline-start:5px}}`, ``, "margin-left", "5px"},
+		{"animated physical beats an author logical", `#t{margin-inline-start:1px; animation:a 10s paused} @keyframes a{from,to{margin-left:5px}}`, ``, "margin-left", "5px"},
+		{"neutral from-keyframe reads the physical counterpart", `#t{margin-left:1px; animation:a 10s -5s paused linear} @keyframes a{to{margin-inline-start:5px}}`, ``, "margin-left", "3px"},
+		{"neutral from-keyframe reads the logical counterpart", `#t{margin-inline-start:1px; animation:a 10s -5s paused linear} @keyframes a{to{margin-left:5px}}`, ``, "margin-left", "3px"},
+		{"author important physical beats an animated logical", `#t{margin-left:1px !important; animation:a 10s paused} @keyframes a{from,to{margin-inline-start:5px}}`, ``, "margin-left", "1px"},
 	} {
 		st := styleByID(t, cascadeHTML(t, `<style>`+tc.css+`</style><div><div id="t" class="t" style="`+tc.inline+`"></div></div>`, nil), "t")
 		if got, _ := st.Get(tc.prop); got != tc.want {

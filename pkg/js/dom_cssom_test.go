@@ -162,3 +162,37 @@ func TestStyleSheetsRuleEditsReachTheCascade(t *testing.T) {
 		t.Errorf("color = %q, want cyan (removed from rule 1)", got)
 	}
 }
+
+// TestStyleSheetsRuleEditsNormalizeLikeTheParser: a CSSOM write to a rule
+// stores what the stylesheet parser would for the same declaration — a
+// logical longhand under its storage key, a shorthand as its longhands,
+// comments stripped — so it cascades like a parsed declaration at its new
+// place, after the rule's earlier declarations
+// (MutableCSSPropertyValueSet::ParseAndSetProperty @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestStyleSheetsRuleEditsNormalizeLikeTheParser(t *testing.T) {
+	for _, tc := range []struct{ name, html, script, prop, want string }{
+		{"logical after physical", `<style>#d{margin-left:3px}</style><div id="d">x</div>`, `r[0].style.marginInlineStart="9px";`, "margin-left", "9px"},
+		{"logical in a later rule", `<style>#d{margin-left:3px} #d{color:red}</style><div id="d">x</div>`, `r[1].style.marginInlineStart="9px";`, "margin-left", "9px"},
+		{"margin shorthand after logical", `<style>#d{margin-inline-start:3px}</style><div id="d">x</div>`, `r[0].style.margin="9px";`, "margin-left", "9px"},
+		{"margin-inline after physical", `<style>#d{margin-left:3px}</style><div id="d">x</div>`, `r[0].style.marginInline="9px";`, "margin-left", "9px"},
+		{"inline-size after width", `<style>#d{width:3px}</style><div id="d">x</div>`, `r[0].style.inlineSize="9px";`, "width", "9px"},
+		{"border shorthand after logical colour", `<style>#d{border-inline-start-color:red}</style><div id="d">x</div>`, `r[0].style.border="1px solid lime";`, "border-left-color", "lime"},
+		{"comment stripped", `<style>#d{width:3px}</style><div id="d">x</div>`, `r[0].style.width="5px /* !important */";`, "width", "5px"},
+		{"logical read back", `<style>#d{color:red}</style><div id="d">x</div>`, `r[0].style.marginInlineStart="9px"; if (r[0].style.marginInlineStart !== "9px") throw new Error("read back " + r[0].style.marginInlineStart);`, "margin-left", "9px"},
+		{"logical removed", `<style>#d{margin-inline-start:3px}</style><div id="d">x</div>`, `r[0].style.marginInlineStart="";`, "margin-left", ""},
+	} {
+		doc := parseHTML(t, tc.html)
+		css.ParseDocumentStylesheets(doc)
+		engine := New()
+		doc.Scripts = append(doc.Scripts, `var r = document.styleSheets[0].cssRules; `+tc.script)
+		if err := engine.Execute(doc); err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		st := css.ApplyStylesToDocument(doc, 800, 600)[getElementById(doc.Root, "d")]
+		if got, _ := st.Get(tc.prop); got != tc.want {
+			t.Errorf("%s: %s = %q, want %q", tc.name, tc.prop, got, tc.want)
+		}
+	}
+}
