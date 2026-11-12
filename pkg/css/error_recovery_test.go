@@ -283,9 +283,9 @@ func TestErrorRecovery_Acid2Patterns(t *testing.T) {
 // inside string literals are preserved (not stripped).
 func TestErrorRecovery_StringsInComments(t *testing.T) {
 	css := `p { content: "/* not a comment */"; color: red; }`
-	result := stripCSSComments(css)
+	result := StripComments(css)
 	if result != css {
-		t.Errorf("stripCSSComments incorrectly stripped inside string literal\n  got:  %q\n  want: %q", result, css)
+		t.Errorf("StripComments incorrectly stripped inside string literal\n  got:  %q\n  want: %q", result, css)
 	}
 }
 

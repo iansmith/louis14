@@ -139,7 +139,7 @@ func blockFlowDisplay(d DisplayType) DisplayType {
 // host to auto so it shrinks to fit its alt text (:274-281). Finally it maps
 // display onto a block-flow display (blockFlowDisplay).
 //
-// Must run after ResolveLogicalPropertiesInTree, which can still write
+// Must run after the cascade, whose resolveDirectionAwareProperties writes
 // width/height from logical properties, and after
 // ResolveAppliedTextDecorations: a display:inline host is not a
 // text-decoration propagation boundary in Blink, so its decorations are

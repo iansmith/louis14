@@ -32,7 +32,6 @@ func fallbackHostStyles(t *testing.T, src string) (*html.Node, map[*html.Node]*S
 	}
 	mark(doc.Root)
 	styles := ApplyStylesToDocument(doc, 800, 600)
-	ResolveLogicalPropertiesInTree(doc.Root, styles)
 	AdjustImageFallbackHostStylesInTree(doc.Root, styles)
 	return first, styles
 }
