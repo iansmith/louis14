@@ -3866,8 +3866,14 @@ func (bla *BlockLayoutAlgorithm) newLineSpace(contentInlineSize, lineAvailableWi
 	}
 
 	orthogonalAvailableBlock, orthogonalFallbackBlock := orthogonalChildBlockSizes(bla.ctx, bla.style, wdm, bla.space, geomForPct, hasOwnBlock, ownContentBlock)
+	replacedBlock, hasReplacedBlock := bla.replacedChildPercentageBlockSize()
 
 	return ConstraintSpace{
+		// The line's replaced atomic inlines resolve against the replaced
+		// percentage size (BlockNode::LayoutAtomicInline, block_node.cc:
+		// 1477-1481 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		ReplacedChildPercentageResolutionBlockSize:    replacedBlock,
+		HasReplacedChildPercentageResolutionBlockSize: hasReplacedBlock,
 		AvailableSize:                  oldLogicalToGeom(LogicalSize{InlineSize: lineAvailableWidth, BlockSize: lineAvailBlock}),
 		PercentageResolutionSize:       oldLogicalToGeom(LogicalSize{InlineSize: contentInlineSize, BlockSize: pctBlockSize}),
 		PercentageResolutionInlineSize: contentInlineSize,

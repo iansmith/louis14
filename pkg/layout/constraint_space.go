@@ -21,6 +21,17 @@ type ConstraintSpace struct {
 	// Typically the containing block's content size in the child's writing mode.
 	PercentageResolutionSize geometry.LogicalSize
 
+	// ReplacedChildPercentageResolutionBlockSize, when
+	// HasReplacedChildPercentageResolutionBlockSize, is the block size the
+	// replaced children of this space's inline content (or anonymous
+	// block) resolve percentages against, where it differs from
+	// PercentageResolutionSize's: a fixed-height table cell's height.
+	// Mirrors Blink's ConstraintSpace::
+	// ReplacedChildPercentageResolutionBlockSize (constraint_space.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	ReplacedChildPercentageResolutionBlockSize    float64
+	HasReplacedChildPercentageResolutionBlockSize bool
+
 	// WritingDirection is the child's writing direction mode.
 	WritingDirection WritingDirectionMode
 
@@ -449,6 +460,31 @@ func (b *ConstraintSpaceBuilder) SetPercentageResolutionSize(size LogicalSize) *
 		})
 	}
 	return b
+}
+
+// SetReplacedChildPercentageResolutionBlockSize sets the block size the
+// space's replaced children resolve percentages against
+// (ConstraintSpaceBuilder::SetReplacedChildPercentageResolutionSize,
+// constraint_space_builder.h:127-147 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, which is parallel-only).
+func (b *ConstraintSpaceBuilder) SetReplacedChildPercentageResolutionBlockSize(blockSize float64) *ConstraintSpaceBuilder {
+	if b.parallel {
+		b.space.ReplacedChildPercentageResolutionBlockSize = blockSize
+		b.space.HasReplacedChildPercentageResolutionBlockSize = true
+	}
+	return b
+}
+
+// ReplacedChildPercentageResolutionSize is the percentage resolution size
+// of the space's replaced children: PercentageResolutionSize with the
+// replaced block size when one is set (ConstraintSpace::
+// ReplacedChildPercentageResolutionSize).
+func (s ConstraintSpace) ReplacedChildPercentageResolutionSize() geometry.LogicalSize {
+	size := s.PercentageResolutionSize
+	if s.HasReplacedChildPercentageResolutionBlockSize {
+		size.BlockSize = layoutunit.FromFloat64Round(s.ReplacedChildPercentageResolutionBlockSize)
+	}
+	return size
 }
 
 // SetIsFixedInlineSize marks the inline-size as predetermined.
