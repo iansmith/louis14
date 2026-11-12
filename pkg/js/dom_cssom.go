@@ -247,4 +247,3 @@ func (s *ruleStyleAccessor) Delete(key string) bool {
 func (s *ruleStyleAccessor) Keys() []string {
 	return slices.Clone(s.declarations().Order)
 }
-

@@ -62,8 +62,8 @@ type Engine struct {
 func New() *Engine {
 	vm := goja.New()
 	e := &Engine{
-		vm:            vm,
-		imageLoaders:  make(map[*html.Node]*imageLoader),
+		vm:           vm,
+		imageLoaders: make(map[*html.Node]*imageLoader),
 	}
 
 	// Register console API

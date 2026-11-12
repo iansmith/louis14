@@ -66,7 +66,7 @@ func TestInsertRuleErrors(t *testing.T) {
 	}{
 		{"p {}", "div {}", 2, "IndexSizeError"},
 		{"p {}", "a {} b {}", 0, "SyntaxError"},
-		{"p {}", "div", 0, "SyntaxError"}, // EOF before the block
+		{"p {}", "div", 0, "SyntaxError"},  // EOF before the block
 		{"", "@import;", 0, "SyntaxError"}, // no URI: ConsumeImportRule's null rule
 		{"p {}", "", 0, "SyntaxError"},
 		// @import only before every rule but @import / leading @layer.
