@@ -4,6 +4,7 @@ import (
 	"math"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
@@ -2497,8 +2498,14 @@ func cellContentBorderBoxBlockSize(result *LayoutResult, style *css.Style, wdm W
 	return size
 }
 
+// layoutAlgorithmRuns counts layoutAndStore's layout-algorithm runs, so a
+// test can check that layout work grows as it should with the document
+// (TestTableCellFinalLayoutNestedTablesStayLinear). No Blink analog.
+var layoutAlgorithmRuns atomic.Int64
+
 // layoutAndStore runs node's layout algorithm and stores the result on it.
 func layoutAndStore(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) *LayoutResult {
+	layoutAlgorithmRuns.Add(1)
 	result := determineAlgorithmAndRun(ctx, node, space)
 	StoreResultInLayoutBox(ctx, node, result, space.BreakToken)
 	return result
