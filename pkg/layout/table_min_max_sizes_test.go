@@ -9,9 +9,7 @@ import "testing"
 // ComputeGridInlineMinMax (table/table_layout_utils.cc:1743-1830), where a
 // percentage column raises the max-content size.
 func TestTableComputeMinMaxSizes(t *testing.T) {
-	ib := func(w string) string {
-		return `<span style="display:inline-block;width:` + w + `;height:5px"></span>`
-	}
+	ib := inlineBlock
 	cell := func(w string) string { return `<div style="display:table-cell">` + ib(w) + `</div>` }
 	cell10, cell20 := cell("10px"), cell("20px")
 	const pctCell = `<div style="display:table-cell;width:100%"></div>`
@@ -79,7 +77,7 @@ func TestTableComputeMinMaxSizes(t *testing.T) {
 func TestTableLayoutWidthWithPercentColumn(t *testing.T) {
 	src := `<!DOCTYPE html><body style="margin:0"><div style="width:100px"><div id="t" style="display:inline-table">` +
 		`<div id="p" style="display:table-cell;width:100%"></div>` +
-		`<div style="display:table-cell"><span style="display:inline-block;width:10px;height:5px"></span></div></div></div>`
+		`<div style="display:table-cell">` + inlineBlock("10px") + `</div></div></div>`
 	root := layoutRootTestHTML(t, src)
 	table, pct := findBoxByID(root, "t"), findBoxByID(root, "p")
 	if table == nil || pct == nil {
@@ -90,14 +88,26 @@ func TestTableLayoutWidthWithPercentColumn(t *testing.T) {
 	}
 }
 
+// inlineBlock is a 5px-high inline-block w wide.
+func inlineBlock(w string) string {
+	return `<span style="display:inline-block;width:` + w + `;height:5px"></span>`
+}
+
 // twoColumnTable is a table #t with cells #c0 and #c1 whose only content
 // is an inline-block 20px and 60px wide, so its grid min/max-content are
 // 80px; style is appended to the table's style.
-func twoColumnTable(style string) string {
+func twoColumnTable(style string) string { return twoColumnTableWithCaption(style, "") }
+
+// twoColumnTableWithCaption is twoColumnTable with caption, the markup of
+// its caption's content, when not empty.
+func twoColumnTableWithCaption(style, caption string) string {
 	td := func(id, w string) string {
-		return `<td id="` + id + `" style="padding:0"><span style="display:inline-block;width:` + w + `;height:5px"></span></td>`
+		return `<td id="` + id + `" style="padding:0">` + inlineBlock(w) + `</td>`
 	}
-	return `<table id="t" style="border-spacing:0;` + style + `"><tr>` + td("c0", "20px") + td("c1", "60px") + `</tr></table>`
+	if caption != "" {
+		caption = `<caption style="padding:0">` + caption + `</caption>`
+	}
+	return `<table id="t" style="border-spacing:0;` + style + `">` + caption + `<tr>` + td("c0", "20px") + td("c1", "60px") + `</tr></table>`
 }
 
 // checkTwoColumnWidths lays out body and checks the widths of
@@ -143,6 +153,22 @@ func TestTableMinWidthIsDistributed(t *testing.T) {
 	for _, display := range []string{"table", "inline-table"} {
 		t.Run(display, func(t *testing.T) {
 			checkTwoColumnWidths(t, `<div style="width:400px">`+twoColumnTable("display:"+display+";min-width:200px")+`</div>`, 200, 50, 150)
+		})
+	}
+}
+
+// A caption's min-content width widens the used table width before the
+// columns are distributed: ComputeAssignableTableInlineSize takes the max of
+// the used width and the caption constraint's min (ComputeCaptionConstraint,
+// table/table_layout_algorithm.cc:38-58, :248-250 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A caption holding a 200px
+// inline-block over columns of max-content 20 and 60 grows them in
+// proportion: 50 and 150.
+func TestTableCaptionMinWidthIsDistributed(t *testing.T) {
+	caption := inlineBlock("200px")
+	for _, display := range []string{"table", "inline-table"} {
+		t.Run(display, func(t *testing.T) {
+			checkTwoColumnWidths(t, `<div style="width:400px">`+twoColumnTableWithCaption("display:"+display, caption)+`</div>`, 200, 50, 150)
 		})
 	}
 }
