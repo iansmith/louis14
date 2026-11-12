@@ -299,6 +299,7 @@ func (s *StyleSheetContents) currentRuleTexts() []string {
 func (s *StyleSheetContents) reparse(texts []string) {
 	sheet, err := parseResolvedStylesheet(strings.Join(texts, "\n"), s.Context)
 	s.mu.Lock()
+	setImplicitScopeOwners(sheet, s.Owner)
 	s.parsed, s.parseErr = sheet, err
 	s.mu.Unlock()
 	for _, r := range s.rules {

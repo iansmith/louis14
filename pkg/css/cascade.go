@@ -647,6 +647,31 @@ func applyUserAgentImportantStyles(node *html.Node, style *Style) []string {
 	return set
 }
 
+// sortCascadeOrder sorts matched rules into cascade order (cascadeOrderLess)
+// with layerPriority giving a layer's priority.
+func sortCascadeOrder(rules []Rule, layerPriority func(string) int) {
+	sort.SliceStable(rules, func(i, j int) bool {
+		return cascadeOrderLess(&rules[i], &rules[j], layerPriority(rules[i].LayerName), layerPriority(rules[j].LayerName))
+	})
+}
+
+// cascadeOrderLess orders two matched rules for the cascade, given their
+// layer priorities: layer, then specificity, then scope proximity (the
+// nearer scoping root wins, an unscoped rule losing to any scoped one),
+// with the stable sort keeping source order last. Mirrors
+// ElementRuleCollector::SortMatchedRules' {layer, specificity, -proximity,
+// sheet index, rule index} (cascade_priority.h:66-70 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func cascadeOrderLess(a, b *Rule, layerA, layerB int) bool {
+	if layerA != layerB {
+		return layerA < layerB
+	}
+	if a.Selector.Specificity != b.Selector.Specificity {
+		return a.Selector.Specificity < b.Selector.Specificity
+	}
+	return a.cascadeProximity() > b.cascadeProximity()
+}
+
 // ComputeStyle computes the final style for a node by applying the cascade.
 // ctx is the owning document's ParserContext — used to resolve url() tokens
 // inside the node's inline `style=""` attribute at parse time. Pass nil for
@@ -656,7 +681,7 @@ func applyUserAgentImportantStyles(node *html.Node, style *Style) []string {
 // records are left untouched; the document cascade (ApplyStylesToDocument)
 // samples them against the document timeline instead.
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
-	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil, nil)
+	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil, nil, nil)
 }
 
 // computeStyle is ComputeStyle with the document's AnimationClock and the
@@ -666,7 +691,10 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 // updated (calculateAnimationUpdate) and sampled at their timeline local
 // times. A nil clock samples every animation at local time 0 and leaves the
 // records alone, for probes that are not the element's style recalc.
-func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock, parent *Style) *Style {
+//
+// frame is node's styleScopeFrame during the document's cascade pass, nil
+// for a probe.
+func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock, parent *Style, frame *styleScopeFrame) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -686,20 +714,13 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	allRules := make([]Rule, 0)
 
 	for _, stylesheet := range stylesheets {
-		matches := FindMatchingRules(node, stylesheet, viewportWidth, viewportHeight)
+		matches := findMatchingRules(node, stylesheet, viewportWidth, viewportHeight, frame)
 		allRules = append(allRules, matches...)
 	}
 
-	// Sort rules by cascade order: layer priority (lowest first), then specificity
+	// Sort rules into cascade order: layer, specificity, scope proximity
 	layerOrder := buildLayerOrder(stylesheets)
-	sort.SliceStable(allRules, func(i, j int) bool {
-		pi := layerPriority(allRules[i].LayerName, layerOrder)
-		pj := layerPriority(allRules[j].LayerName, layerOrder)
-		if pi != pj {
-			return pi < pj
-		}
-		return allRules[i].Selector.Specificity < allRules[j].Selector.Specificity
-	})
+	sortCascadeOrder(allRules, func(name string) int { return layerPriority(name, layerOrder) })
 
 	// Track which properties have been set with !important
 	importantProps := make(map[string]bool)
@@ -788,14 +809,7 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			importantRules = append(importantRules, rule)
 		}
 	}
-	sort.SliceStable(importantRules, func(i, j int) bool {
-		pi := importantLayerPriority(importantRules[i].LayerName, layerOrder)
-		pj := importantLayerPriority(importantRules[j].LayerName, layerOrder)
-		if pi != pj {
-			return pi < pj
-		}
-		return importantRules[i].Selector.Specificity < importantRules[j].Selector.Specificity
-	})
+	sortCascadeOrder(importantRules, func(name string) int { return importantLayerPriority(name, layerOrder) })
 	currentImportantLayerPri := -1
 	var currentImportantLayerSnap allShorthandRevertSnapshot
 	flushImportantLayer := func() {
@@ -1291,7 +1305,7 @@ func ApplyStylesToDocumentWithFontSelector(doc *html.Document, viewportWidth, vi
 	effW, effH := effectiveViewportForUnits(doc, stylesheets, viewportWidth, viewportHeight, ctx)
 
 	// Recursively apply styles to all nodes
-	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, fs, &doc.AnimationClock)
+	applyStylesToNode(doc.Root, stylesheets, styles, effW, effH, ctx, fs, &doc.AnimationClock, nil)
 
 	// Propagate the owning document's BaseDir onto every Style — see
 	// the Style.BaseDir doc for the parse-time URL resolution it feeds.
@@ -1647,8 +1661,8 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 					// (not the matching element itself)
 					ancestor := node.Parent
 					for ancestor != nil {
-						if MatchesSelector(ancestor, rule.Selector) {
-							allRules = append(allRules, rule)
+						if matched, ok := matchRule(ancestor, &rule, nil); ok {
+							allRules = append(allRules, matched)
 							break
 						}
 						ancestor = ancestor.Parent
@@ -1656,23 +1670,16 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				}
 			} else if rulePseudo == pseudoElement {
 				// Direct pseudo-element match
-				if MatchesSelector(node, rule.Selector) {
-					allRules = append(allRules, rule)
+				if matched, ok := matchRule(node, &rule, nil); ok {
+					allRules = append(allRules, matched)
 				}
 			}
 		}
 	}
 
-	// Sort rules by cascade order: layer priority (lowest first), then specificity
+	// Sort rules into cascade order: layer, specificity, scope proximity
 	layerOrder2 := buildLayerOrder(stylesheets)
-	sort.SliceStable(allRules, func(i, j int) bool {
-		pi := layerPriority(allRules[i].LayerName, layerOrder2)
-		pj := layerPriority(allRules[j].LayerName, layerOrder2)
-		if pi != pj {
-			return pi < pj
-		}
-		return allRules[i].Selector.Specificity < allRules[j].Selector.Specificity
-	})
+	sortCascadeOrder(allRules, func(name string) int { return layerPriority(name, layerOrder2) })
 
 	// Track which properties have been set with !important
 	importantProps := make(map[string]bool)
@@ -1807,14 +1814,7 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			pseudoImportantRules = append(pseudoImportantRules, rule)
 		}
 	}
-	sort.SliceStable(pseudoImportantRules, func(i, j int) bool {
-		pi := importantLayerPriority(pseudoImportantRules[i].LayerName, layerOrder2)
-		pj := importantLayerPriority(pseudoImportantRules[j].LayerName, layerOrder2)
-		if pi != pj {
-			return pi < pj
-		}
-		return pseudoImportantRules[i].Selector.Specificity < pseudoImportantRules[j].Selector.Specificity
-	})
+	sortCascadeOrder(pseudoImportantRules, func(name string) int { return importantLayerPriority(name, layerOrder2) })
 	pseudoCurrentImportantPri := -1
 	var pseudoCurrentImportantSnap allShorthandRevertSnapshot
 	pseudoFlushImportant := func() {
@@ -2423,7 +2423,7 @@ func HasFirstLetterRules(node *html.Node, stylesheets []*Stylesheet, viewportWid
 			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
-			if MatchesSelector(node, rule.Selector) {
+			if _, ok := matchRule(node, &rule, nil); ok {
 				return true
 			}
 		}
@@ -2442,7 +2442,7 @@ func HasFirstLineRules(node *html.Node, stylesheets []*Stylesheet, viewportWidth
 			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
-			if MatchesSelector(node, rule.Selector) {
+			if _, ok := matchRule(node, &rule, nil); ok {
 				return true
 			}
 		}
@@ -2466,14 +2466,14 @@ func HasPseudoElementRules(node *html.Node, pseudoElement string, stylesheets []
 				continue
 			}
 			if pseudo == pseudoElement {
-				if MatchesSelector(node, rule.Selector) {
+				if _, ok := matchRule(node, &rule, nil); ok {
 					return true
 				}
 			} else {
 				// Descendant pseudo-element: check if node is a descendant.
 				ancestor := node.Parent
 				for ancestor != nil {
-					if MatchesSelector(ancestor, rule.Selector) {
+					if _, ok := matchRule(ancestor, &rule, nil); ok {
 						return true
 					}
 					ancestor = ancestor.Parent
@@ -3306,15 +3306,20 @@ func isPxLiteral(val string) bool {
 }
 
 // applyStylesToNode recursively applies styles to a node and its children
-func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector, clock *html.AnimationClock) {
+//
+// frame is the parent element's styleScopeFrame (nil at the root); node's
+// own frame chains to it (Blink creates a StyleScopeFrame per element in
+// style recalc).
+func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector, clock *html.AnimationClock, frame *styleScopeFrame) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
-		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock, styles[node.Parent])
+		frame = newStyleScopeFrame(node, frame)
+		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock, styles[node.Parent], frame)
 		style.fontSelector = fs
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		resolveComputedTimeDeclarations(node, style, styles)
 		// Apply container query rules after base style (needs ancestor styles resolved)
-		if applyContainerQueryRules(node, stylesheets, styles, style) {
+		if applyContainerQueryRules(node, stylesheets, styles, style, frame) {
 			resolveLateDeclarations(node, style, styles)
 		}
 		// The element's font properties are final here (@container rules
@@ -3431,7 +3436,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 
 	// Always traverse children (parent is already computed, so top-down order is maintained)
 	for _, child := range node.Children {
-		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, fs, clock)
+		applyStylesToNode(child, stylesheets, styles, viewportWidth, viewportHeight, ctx, fs, clock, frame)
 	}
 }
 
@@ -3498,7 +3503,7 @@ func applyDeclarationPass(style *Style, block *DeclarationResult, important bool
 // Like the main cascade it runs a normal pass, which leaves the properties
 // the cascade set with !important, then an important pass, each applying a
 // rule's `all` before its other declarations.
-func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style) bool {
+func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style, frame *styleScopeFrame) bool {
 	var matched []Rule
 	for _, stylesheet := range stylesheets {
 		for _, rule := range stylesheet.Rules {
@@ -3506,8 +3511,8 @@ func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles
 			if rule.ContainerQuery == nil || rule.Selector.PseudoElement != "" {
 				continue
 			}
-			if MatchesSelector(node, rule.Selector) && evaluateContainerQuery(node, rule.ContainerQuery, styles) {
-				matched = append(matched, rule)
+			if m, ok := matchRule(node, &rule, frame); ok && evaluateContainerQuery(node, rule.ContainerQuery, styles) {
+				matched = append(matched, m)
 			}
 		}
 	}

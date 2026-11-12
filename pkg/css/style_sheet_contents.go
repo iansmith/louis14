@@ -61,6 +61,7 @@ func (s *StyleSheetContents) ParsedStylesheet() (*Stylesheet, error) {
 	defer s.mu.Unlock()
 	if s.parsed == nil && s.parseErr == nil {
 		s.parsed, s.parseErr = ParseStylesheet(s.Text, s.Context)
+		setImplicitScopeOwners(s.parsed, s.Owner)
 	}
 	return s.parsed, s.parseErr
 }
