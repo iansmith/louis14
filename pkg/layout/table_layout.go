@@ -228,7 +228,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	if tla.style.GetTableLayout() == css.TableLayoutFixed && hasExplicitTableWidth {
 		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols, colWidthSpecs)
 	} else {
-		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, colWidthSpecs)
+		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, geom, colWidthSpecs)
 	}
 
 	// Track which columns have explicit col/colgroup widths (used for orthogonal cell row height).
@@ -248,23 +248,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		contentInlineSize += w
 	}
 	contentInlineSize += spacingForCols // include inline spacing in total
-
-	// Apply min-inline-size floor for auto-width tables.
-	// For explicit-width tables, CalculateInitialFragmentGeometry already
-	// enforced min/max on borderBoxInline. For auto-width tables the inline
-	// size was set to fill the container, min-width was trivially satisfied,
-	// and column sizing shrinks to max-content — so the floor must be
-	// re-applied post-column-sizing, mirroring the explicitTableBorderBoxBlock
-	// floor on the block axis above.
-	// Mirrors Blink TableLayoutAlgorithm where ComputeTableInlineSize accounts
-	// for min-inline-size when deriving the final table inline size from
-	// column widths @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	if !hasExplicitTableWidth {
-		minInline := ResolveMinInlineSize(tla.style, wdm, tla.space, geom).Float64()
-		if minInline > 0 && contentInlineSize < minInline {
-			contentInlineSize = minInline
-		}
-	}
 
 	// When a parent algorithm fixed the table's inline size, an auto-layout
 	// table's columns already fill it (computeColumnWidths). The fixed-layout
@@ -1971,7 +1954,7 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 // assignable table inline size, distributed to the column constraints.
 func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	rows []tableRow, numCols int, availableInline float64, borderCollapse bool, hasExplicitWidth bool,
-	colWidthSpecs []tableColWidth,
+	geom FragmentGeometry, colWidthSpecs []tableColWidth,
 ) []float64 {
 	inlineSpacing := 0.0
 	if !borderCollapse {
@@ -1984,20 +1967,37 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): when the parent fixed the
 	// table's inline size (a stretched grid item, a flex item), it is that
 	// size less the border spacing, already out of availableInline
-	// (:231-234). Otherwise it is the used width, never below the grid min,
-	// less the border spacing; an auto width is fit-content over the
-	// layout-pass grid min/max, where percentage columns count. The columns
-	// share it by the width distribution algorithm
+	// (:231-234). Otherwise it is the used width less the border spacing.
+	// The used width (ComputeUsedInlineSizeForTableFragment,
+	// length_utils.cc:527-598, :618-649) is the specified width
+	// (availableInline), or for an auto width fit-content over the
+	// layout-pass grid min/max, where percentage columns count; clamped to
+	// the table's min/max inline sizes, which never go below the grid min
+	// (ComputeMinMaxInlineSizes, :758-799). The columns share the assignable
+	// size by the width distribution algorithm
 	// (SynchronizeAssignableTableInlineSizeAndColumns, table/
 	// table_layout_utils.cc:1849-1864).
 	if tla.space.IsFixedInlineSize {
 		return DistributeInlineSizeToComputedInlineSizeAuto(availableInline, columns.Data, true)
 	}
 	grid := ComputeGridInlineMinMax(tla.node, columns, 0, false, true)
-	assignable := max(availableInline, grid.MinContent)
+	extent := availableInline
 	if !hasExplicitWidth {
-		assignable = min(assignable, grid.MaxContent)
+		extent = min(max(extent, grid.MinContent), grid.MaxContent)
 	}
+	// The min/max inline sizes are content-box; the columns' space is less
+	// the border spacing.
+	spacing := inlineSpacing * float64(numCols+1)
+	wdm := tla.space.WritingDirection
+	minProp, maxProp := "min-width", "max-width"
+	if wdm.IsVertical() {
+		minProp, maxProp = "min-height", "max-height"
+	}
+	content := func() MinMaxSizes {
+		return MinMaxSizes{MinContent: grid.MinContent + spacing, MaxContent: grid.MaxContent + spacing}
+	}
+	sizes := computeMinMaxInlineSizes(tla.style, wdm, tla.space, geom, minProp, maxProp, content, fitContentModeNormal, true)
+	assignable := sizes.ClampSizeToMinAndMax(extent+spacing) - spacing
 	return DistributeInlineSizeToComputedInlineSizeAuto(assignable, columns.Data, true)
 }
 
