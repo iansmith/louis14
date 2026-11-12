@@ -9,9 +9,10 @@ import "testing"
 // ComputeGridInlineMinMax (table/table_layout_utils.cc:1743-1830), where a
 // percentage column raises the max-content size.
 func TestTableComputeMinMaxSizes(t *testing.T) {
-	cell := func(w string) string {
-		return `<div style="display:table-cell"><span style="display:inline-block;width:` + w + `;height:5px"></span></div>`
+	ib := func(w string) string {
+		return `<span style="display:inline-block;width:` + w + `;height:5px"></span>`
 	}
+	cell := func(w string) string { return `<div style="display:table-cell">` + ib(w) + `</div>` }
 	cell10, cell20 := cell("10px"), cell("20px")
 	const pctCell = `<div style="display:table-cell;width:100%"></div>`
 	cases := []struct {
@@ -30,6 +31,18 @@ func TestTableComputeMinMaxSizes(t *testing.T) {
 		// Guard: inside a flexbox, column percentages do not count while
 		// sizing intrinsically (TableNode::AllowColumnPercentages,
 		// table/table_node.cc:63-84), so the table item is 10px.
+		// A collapsed table's outer borders are counted once: half in the
+		// table's border box and half in its edge cells (TableBorders), so
+		// a 10px cell in a 6px collapsed border contributes 6 + 10 + 6.
+		{"collapsed borders", `<div id="t" style="float:left"><table style="border-collapse:collapse;border:6px solid">` +
+			`<tr><td style="padding:0;border:1px solid">` + ib("10px") + `</td></tr></table></div>`, 22},
+		// A colspan cell's min/max spreads across the columns it spans
+		// (DistributeColspanCellsToColumns, table/table_layout_utils.cc:
+		// 1826-1846), so a 100px colspan=2 cell over 10px and 20px cells
+		// makes the table 100px wide.
+		{"colspan cell", `<div id="t" style="float:left"><table style="border-spacing:0">` +
+			`<tr><td colspan=2 style="padding:0">` + ib("100px") + `</td></tr>` +
+			`<tr><td style="padding:0">` + ib("10px") + `</td><td style="padding:0">` + ib("20px") + `</td></tr></table></div>`, 100},
 		{"no percentages in a flex item", `<div style="display:flex;width:100px"><div id="t" style="display:table">` + pctCell + cell10 + `</div></div>`, 10},
 	}
 	for _, c := range cases {
