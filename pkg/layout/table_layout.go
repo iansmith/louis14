@@ -223,7 +223,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		tableBorders = resolveCollapsedCellBorders(rows, colStyleSpecs, tla.style, wdm, numCols)
 	}
 
-	// Choose column width algorithm: fixed (CSS 2.1 §17.5.2.1) or auto (§17.5.2.2).
+	// Choose the column width algorithm: fixed or auto table layout.
 	var colWidths []float64
 	if tla.style.GetTableLayout() == css.TableLayoutFixed && hasExplicitTableWidth {
 		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols, colWidthSpecs)
@@ -1771,8 +1771,9 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 	// set — Blink's Column.is_constrained ("true if any cell for this column is
 	// constrained"; ng_table_layout_algorithm_types.h @ Chromium SHA
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). When a column is constrained, that
-	// width is authoritative: leftover space (CSS 2.1 §17.5.2.2) is not distributed
-	// into it, and an orthogonal cell's unreliable intrinsic sizing is skipped. The
+	// width is authoritative: space above every column's max goes to the auto
+	// columns first (DistributeInlineSizeToComputedInlineSizeAuto's above-max
+	// case), and an orthogonal cell's unreliable intrinsic sizing is skipped. The
 	// set is populated in FULL before the intrinsic-sizing loop — col/colgroup widths
 	// just below, cell widths in the pre-pass — so both readers are independent of
 	// the order cells/rows are visited.
@@ -1968,112 +1969,32 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 	return columns
 }
 
-// computeColumnWidths computes column widths using the auto table layout
-// algorithm (CSS 2.1 §17.5.2).
+// computeColumnWidths returns an auto-layout table's column widths: the
+// assignable table inline size, distributed to the column constraints.
 func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	rows []tableRow, numCols int, availableInline float64, borderCollapse bool, hasExplicitWidth bool,
 	colWidthSpecs []tableColWidth,
 ) []float64 {
-	colWidths := make([]float64, numCols)
-
 	inlineSpacing := 0.0
 	if !borderCollapse {
 		inlineSpacing, _ = tla.logicalBorderSpacing()
 	}
 	columns := tla.computeColumnConstraints(rows, numCols, availableInline, inlineSpacing, colWidthSpecs)
-	colMin := make([]float64, numCols)
-	colMax := make([]float64, numCols)
-	colConstrained := make([]bool, numCols)
-	for i, column := range columns.Data {
-		colMin[i], colMax[i], colConstrained[i] = column.MinInlineSize, column.MaxInlineSize, column.IsConstrained
-	}
 
-	// Distribute available width.
-	totalMin := 0.0
-	for _, w := range colMin {
-		totalMin += w
+	// The assignable table inline size (ComputeAssignableTableInlineSize,
+	// table/table_layout_algorithm.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+	// the used width, never below the grid min, less the border spacing
+	// (already out of availableInline); an auto width is fit-content over
+	// the layout-pass grid min/max, where percentage columns count. The
+	// columns share it by the width distribution algorithm
+	// (SynchronizeAssignableTableInlineSizeAndColumns, table/
+	// table_layout_utils.cc:1849-1864).
+	grid := ComputeGridInlineMinMax(tla.node, columns, 0, false, true)
+	assignable := max(availableInline, grid.MinContent)
+	if !hasExplicitWidth {
+		assignable = min(assignable, grid.MaxContent)
 	}
-
-	if totalMin >= availableInline {
-		// Not enough room — use min widths.
-		copy(colWidths, colMin)
-	} else if !hasExplicitWidth {
-		// CSS 2.1 §17.5.2: Auto-width tables shrink to fit.
-		// Use max-content widths, capped at available inline size.
-		totalMax := 0.0
-		for _, w := range colMax {
-			totalMax += w
-		}
-		if totalMax <= availableInline {
-			copy(colWidths, colMax)
-		} else {
-			// Scale down proportionally.
-			extra := availableInline - totalMin
-			maxExtra := totalMax - totalMin
-			for i := 0; i < numCols; i++ {
-				share := 0.0
-				if maxExtra > 0 {
-					share = (colMax[i] - colMin[i]) / maxExtra * extra
-				}
-				colWidths[i] = colMin[i] + share
-			}
-		}
-	} else {
-		// Explicit width: distribute available space.
-		totalMax := 0.0
-		for _, w := range colMax {
-			totalMax += w
-		}
-		if totalMax <= availableInline {
-			// Everything fits at max — distribute the leftover.
-			// CSS 2.1 §17.5.2.2: leftover space goes ONLY to columns
-			// without a specified width. Mirrors Blink's
-			// DistributeInlineSizeToComputedInlineSizeAuto kAboveMax case
-			// (table_layout_utils.cc @ Chromium SHA
-			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): when
-			// auto_columns_count > 0 grow the unconstrained columns; only
-			// when every column is constrained does the leftover spread
-			// across all columns. This is the inline-axis dual of the
-			// unconstrainedIdx row distributor below.
-			copy(colWidths, colMax)
-			remaining := availableInline - totalMax
-			if remaining > 0 && numCols > 0 {
-				// Grow only the unconstrained columns. When every column is
-				// constrained, fall back to spreading across all of them so
-				// the extra space is still consumed.
-				unconstrained := 0
-				for i := 0; i < numCols; i++ {
-					if !colConstrained[i] {
-						unconstrained++
-					}
-				}
-				targetAll := unconstrained == 0
-				divisor := unconstrained
-				if targetAll {
-					divisor = numCols
-				}
-				each := remaining / float64(divisor)
-				for i := 0; i < numCols; i++ {
-					if targetAll || !colConstrained[i] {
-						colWidths[i] += each
-					}
-				}
-			}
-		} else {
-			// Between min and max — distribute proportionally.
-			extra := availableInline - totalMin
-			maxExtra := totalMax - totalMin
-			for i := 0; i < numCols; i++ {
-				share := 0.0
-				if maxExtra > 0 {
-					share = (colMax[i] - colMin[i]) / maxExtra * extra
-				}
-				colWidths[i] = colMin[i] + share
-			}
-		}
-	}
-
-	return colWidths
+	return DistributeInlineSizeToComputedInlineSizeAuto(assignable, columns.Data, true)
 }
 
 // tableCaption tracks a caption element during table layout.

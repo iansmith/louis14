@@ -92,8 +92,9 @@ func AllowColumnPercentages(table *LayoutInputNode, isLayoutPass bool) bool {
 // table's writing mode, capped by a percentage max-inline-size: the
 // percentage part of Blink's InlineSizesFromStyle
 // (table/table_layout_algorithm_types.cc:62-74 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). calc() percentages are not
-// read.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A calc() whose pixel part is
+// 0 is its percentage, as Blink reads GetPixelsAndPercent for a calc() that
+// is not an expression (min()/max()/clamp() are not read).
 func cellPercentageInlineSize(style *css.Style, tableWD WritingDirectionMode) (float64, bool) {
 	if style == nil {
 		return 0, false
@@ -101,12 +102,30 @@ func cellPercentageInlineSize(style *css.Style, tableWD WritingDirectionMode) (f
 	prop := logicalInlineSizeProperty(tableWD)
 	percent, ok := style.GetPercentage(prop)
 	if !ok {
+		percent, ok = calcPercentWithZeroPixels(style, prop)
+	}
+	if !ok {
 		return 0, false
 	}
 	if maxPercent, ok := style.GetPercentage("max-" + prop); ok {
 		percent = min(percent, maxPercent)
 	}
 	return percent, true
+}
+
+// calcPercentWithZeroPixels returns the percentage of prop's calc(), when
+// it is a linear calc() whose pixel part is 0: resolved against a 0 base it
+// is its pixels, against a 100 base its pixels plus its percent.
+func calcPercentWithZeroPixels(style *css.Style, prop string) (float64, bool) {
+	v, _ := style.Get(prop)
+	if !strings.HasPrefix(strings.TrimSpace(v), "calc(") || !css.IsMathFunctionWithPercent(v) {
+		return 0, false
+	}
+	pixels, ok := style.ResolveLengthPercentage(prop, 0)
+	if !ok || pixels != 0 {
+		return 0, false
+	}
+	return style.ResolveLengthPercentage(prop, 100)
 }
 
 // Width-distribution guesses (css-tables-3 #width-distribution-algorithm).

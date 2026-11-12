@@ -25,9 +25,18 @@ func TestTableComputeMinMaxSizes(t *testing.T) {
 		{"columns sum", `<div style="float:left" id="t"><div style="display:table">` + cell10 + cell20 + `</div></div>`, 30},
 		// A 100% column next to a 10px one makes the table's max-content
 		// size kTableMaxInlineSize, so a float around it fills its 100px
-		// container. (The table's own layout width also needs the
-		// percentage in the layout pass: LOU-901 T3b.)
+		// container. (The table's own layout width:
+		// TestTableLayoutWidthWithPercentColumn.)
 		{"percent column", `<div style="width:100px"><div style="float:left" id="t"><div style="display:table">` + pctCell + cell10 + `</div></div></div>`, 100},
+		// A cell width of calc(N% + 0px) is a percentage column, as N% is:
+		// Blink's InlineSizesFromStyle reads a calc() whose pixel part is 0
+		// as its percent (table/table_layout_algorithm_types.cc:62-74;
+		// css-tables/calc-percent-plus-0px-auto). A 50% column beside a
+		// 100px one makes the table 100 / (100% - 50%) = 200px wide.
+		{"percent beside px", `<table id="t" style="border-spacing:0"><tr><td style="padding:0;width:50%">x</td>` +
+			`<td style="padding:0;width:100px">y</td></tr></table>`, 200},
+		{"calc percent plus 0px beside px", `<table id="t" style="border-spacing:0"><tr><td style="padding:0;width:calc(50% + 0px)">x</td>` +
+			`<td style="padding:0;width:100px">y</td></tr></table>`, 200},
 		// Guard: inside a flexbox, column percentages do not count while
 		// sizing intrinsically (TableNode::AllowColumnPercentages,
 		// table/table_node.cc:63-84), so the table item is 10px.
@@ -55,5 +64,28 @@ func TestTableComputeMinMaxSizes(t *testing.T) {
 				t.Errorf("#t width = %v, want %v", b.Width, c.want)
 			}
 		})
+	}
+}
+
+// An auto-width table's layout width is fit-content over its grid min/max
+// in the layout pass, where percentage columns count, and its columns share
+// it by the width distribution algorithm (TableLayoutAlgorithm::
+// ComputeTableInlineSize → ComputeAssignableTableInlineSize →
+// SynchronizeAssignableTableInlineSizeAndColumns, table/
+// table_layout_algorithm.cc:497-543; table/table_layout_utils.cc:1849-1864
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A 100% column next to a
+// 10px one makes an inline-table fill its 100px container
+// (css-tables/percent-width-cell-dynamic): the percent column gets 90px.
+func TestTableLayoutWidthWithPercentColumn(t *testing.T) {
+	src := `<!DOCTYPE html><body style="margin:0"><div style="width:100px"><div id="t" style="display:inline-table">` +
+		`<div id="p" style="display:table-cell;width:100%"></div>` +
+		`<div style="display:table-cell"><span style="display:inline-block;width:10px;height:5px"></span></div></div></div>`
+	root := layoutRootTestHTML(t, src)
+	table, pct := findBoxByID(root, "t"), findBoxByID(root, "p")
+	if table == nil || pct == nil {
+		t.Fatal("no #t or #p box")
+	}
+	if table.Width != 100 || pct.Width != 90 {
+		t.Errorf("table width = %v, percent cell width = %v; want 100 and 90", table.Width, pct.Width)
 	}
 }
