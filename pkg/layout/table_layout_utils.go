@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 )
 
 // ComputeGridInlineMinMax returns the table grid's min/max inline-sizes,
@@ -289,6 +290,51 @@ func DistributeInlineSizeToComputedInlineSizeAuto(targetInlineSize float64, colu
 		}
 	}
 	return computedSizes
+}
+
+// DistributeColspanCellToColumnsFixed spreads a colspan cell's min and max
+// inline-sizes, less the inner border spacing, evenly across the columns it
+// spans in a fixed-layout table, to those no cell or <col> sized
+// (hasSize), the last of them taking the rounding error; a percentage goes
+// to the unconstrained columns. Its min counts only when the cell is
+// constrained. Mirrors Blink's DistributeColspanCellToColumnsFixed
+// (table/table_layout_utils.cc:924-1005 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no mergeable
+// columns.
+func DistributeColspanCellToColumnsFixed(colspanCell TableTypesColspanCell, inlineBorderSpacing float64, columnConstraints *TableTypesColumns, hasSize []bool) {
+	end := min(colspanCell.StartColumn+colspanCell.Span, len(columnConstraints.Data))
+	span := end - colspanCell.StartColumn
+	if span <= 0 {
+		return
+	}
+	innerSpacing := inlineBorderSpacing * float64(span-1)
+	cell := colspanCell.CellInlineConstraint
+	minSize := 0.0
+	if cell.IsConstrained {
+		minSize = max(0, cell.MinInlineSize-innerSpacing)
+	}
+	maxSize := max(0, cell.MaxInlineSize-innerSpacing)
+	newMin := layoutunit.FromFloat64Trunc(minSize / float64(span)).Float64()
+	newMax := layoutunit.FromFloat64Trunc(maxSize / float64(span)).Float64()
+	roundingMin, roundingMax := minSize, maxSize
+	last := -1
+	for i := colspanCell.StartColumn; i < end; i++ {
+		column := &columnConstraints.Data[i]
+		last = i
+		roundingMin -= newMin
+		roundingMax -= newMax
+		if !hasSize[i] {
+			column.IsConstrained = column.IsConstrained || cell.IsConstrained
+			column.MinInlineSize, column.MaxInlineSize = newMin, newMax
+			hasSize[i] = true
+		}
+		// Percentages only get distributed over auto columns.
+		if !column.HasPercent && !column.IsConstrained && cell.HasPercent {
+			column.Percent, column.HasPercent = cell.Percent/float64(span), true
+		}
+	}
+	columnConstraints.Data[last].MinInlineSize += roundingMin
+	columnConstraints.Data[last].MaxInlineSize += roundingMax
 }
 
 // DistributeColspanCellToColumnsAuto spreads a colspan cell's min and max
