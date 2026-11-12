@@ -264,3 +264,31 @@ func TestDeleteNamespaceRule(t *testing.T) {
 		t.Errorf("DeleteRule(@namespace) beside another @namespace = %v (%d rules), want success", err, c.RuleCount())
 	}
 }
+
+// A statement at-rule may end at EOF with no `;`:
+// CSSParserImpl::ConsumeEndOfPreludeForAtRuleWithoutBlock returns true when
+// the input is exhausted (css_parser_impl.cc:797-807 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), for insertRule and for a
+// sheet's last rule alike.
+func TestStatementAtRuleEndsAtEOF(t *testing.T) {
+	for _, rule := range []string{"@layer z", `@namespace url(http://a)`, "@import url(x.css)"} {
+		c := NewStyleSheetContents("", NewParserContext(""))
+		if _, err := c.InsertRule(rule, 0); err != nil || c.RuleCount() != 1 {
+			t.Errorf("InsertRule(%q) = %v with %d rules, want the one rule inserted", rule, err, c.RuleCount())
+		}
+	}
+	sheet := mustParseSheet(t, `@namespace url(http://a)`, nil)
+	if sheet.DefaultNamespace != "http://a" {
+		t.Errorf("DefaultNamespace = %q, want http://a from a last @namespace with no ;", sheet.DefaultNamespace)
+	}
+	sheet = mustParseSheet(t, `p { color: blue } @layer z`, nil)
+	if !slices.Contains(sheet.LayerOrder, "z") {
+		t.Errorf("LayerOrder = %q, want z from a last @layer with no ;", sheet.LayerOrder)
+	}
+	ctx := NewParserContext("")
+	ctx.Fetcher = func(string) (string, error) { return "div { color: red }", nil }
+	sheet = mustParseSheet(t, `@import url(x.css)`, ctx)
+	if got := len(sheet.Rules); got != 1 {
+		t.Errorf("%d rules, want the imported div rule from a last @import with no ;", got)
+	}
+}
