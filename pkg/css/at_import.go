@@ -173,7 +173,8 @@ func stripImportConditionPrefixesWithSupports(s string) (string, string) {
 //
 // No-ops gracefully when:
 //   - ctx is nil or ctx.Fetcher is nil (no resource lifecycle).
-//   - parseImportURL returns "" (malformed @import).
+//   - the @import has no URL, or an empty one (a URI-less @import is
+//     dropped earlier, by isValidTopLevelRule).
 //   - the fetcher returns an error (imported sheet not found / load fail).
 //
 // Cycle detection is intentionally absent — LOU-139 owns the resource

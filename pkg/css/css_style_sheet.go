@@ -197,15 +197,20 @@ func (s *StyleSheetContents) parseOneRule(rule string) (string, bool) {
 }
 
 // isValidTopLevelRule reports whether text parses as a rule Blink keeps in
-// the sheet's rule list: an at-rule louis14 parses (a valid @namespace),
-// or a style rule whose selector list is all valid selectors.
+// the sheet's rule list: an at-rule louis14 parses (a valid @namespace,
+// an @import with a URI: ConsumeImportRule's null rule has none), or a
+// style rule whose selector list is all valid selectors.
 func isValidTopLevelRule(text string) bool {
 	if strings.HasPrefix(text, "@") {
 		if !slices.ContainsFunc(insertableAtRules, func(kw string) bool { return hasAtKeyword(text, kw) }) {
 			return false
 		}
-		if ruleKindOf(text) == ruleKindNamespace {
+		switch ruleKindOf(text) {
+		case ruleKindNamespace:
 			_, _, ok := consumeNamespaceRule(text)
+			return ok
+		case ruleKindImport:
+			_, _, ok := consumeStringOrURI(statementAtRulePrelude(text, "@import"))
 			return ok
 		}
 		return true
