@@ -10539,10 +10539,15 @@ func backgroundEdgeOrigin(edge string) BackgroundEdgeOrigin {
 
 // BackgroundSize represents a parsed background-size value
 type BackgroundSize struct {
-	Width   float64 // Computed width in pixels (0 = auto)
-	Height  float64 // Computed height in pixels (0 = auto)
-	Cover   bool
-	Contain bool
+	// Width and Height are a length in pixels, or a percentage stored
+	// negated (resolved at paint), when HasWidth / HasHeight; otherwise
+	// that dimension is auto. A 0 length is not auto: Blink's FillSize
+	// keeps a LengthSize whose auto is distinct (fill_layer.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	Width, Height       float64
+	HasWidth, HasHeight bool
+	Cover               bool
+	Contain             bool
 }
 
 // GetBackgroundSize parses the background-size property.
@@ -10552,33 +10557,7 @@ func (s *Style) GetBackgroundSize() BackgroundSize {
 	if !ok {
 		return BackgroundSize{} // auto auto
 	}
-	val = strings.TrimSpace(val)
-	switch val {
-	case "cover":
-		return BackgroundSize{Cover: true}
-	case "contain":
-		return BackgroundSize{Contain: true}
-	case "auto":
-		return BackgroundSize{}
-	}
-
-	parts := strings.Fields(val)
-	var size BackgroundSize
-	if len(parts) >= 1 && parts[0] != "auto" {
-		if w, ok := s.GetLengthForVal(parts[0]); ok {
-			size.Width = w
-		} else if pct, ok := ParsePercentage(parts[0]); ok {
-			// Store as negative to signal percentage (resolved at render time)
-			size.Width = -pct
-		}
-	}
-	if len(parts) >= 2 && parts[1] != "auto" {
-		if h, ok := s.GetLengthForVal(parts[1]); ok {
-			size.Height = h
-		} else if pct, ok := ParsePercentage(parts[1]); ok {
-			size.Height = -pct
-		}
-	}
+	size, _ := parseSizeValue(val, s.GetLengthForVal)
 	return size
 }
 
@@ -10715,8 +10694,9 @@ func parseRepeatValue(val string) (BackgroundRepeat, bool) {
 	return ExpandRepeatShorthand(val), true
 }
 
-// parseSizeValue parses a single background-size value.
-func parseSizeValue(val string) (BackgroundSize, bool) {
+// parseSizeValue parses a single background-size value, length resolving
+// a length component; set is false for auto (or an empty value).
+func parseSizeValue(val string, length func(string) (float64, bool)) (size BackgroundSize, set bool) {
 	val = strings.TrimSpace(val)
 	switch val {
 	case "cover":
@@ -10726,28 +10706,30 @@ func parseSizeValue(val string) (BackgroundSize, bool) {
 	case "auto", "":
 		return BackgroundSize{}, false
 	}
+	return parseBackgroundSizeComponents(val, length)
+}
+
+// parseBackgroundSizeComponents parses a one- or two-value length/percentage
+// background-size, length resolving a length component; a missing second
+// value or `auto` leaves that dimension auto. set reports whether any
+// component is a length or percentage. A percentage is stored negated.
+func parseBackgroundSizeComponents(val string, length func(string) (float64, bool)) (size BackgroundSize, set bool) {
 	parts := strings.Fields(val)
-	var size BackgroundSize
-	set := false
-	if len(parts) >= 1 && parts[0] != "auto" {
-		if w, ok := ParseLength(parts[0]); ok {
-			size.Width = w
-			set = true
-		} else if pct, ok := ParsePercentage(parts[0]); ok {
-			size.Width = -pct
-			set = true
+	component := func(i int) (v float64, ok bool) {
+		if i >= len(parts) || parts[i] == "auto" {
+			return 0, false
 		}
-	}
-	if len(parts) >= 2 && parts[1] != "auto" {
-		if h, ok := ParseLength(parts[1]); ok {
-			size.Height = h
-			set = true
-		} else if pct, ok := ParsePercentage(parts[1]); ok {
-			size.Height = -pct
-			set = true
+		if l, ok := length(parts[i]); ok {
+			return l, true
 		}
+		if pct, ok := ParsePercentage(parts[i]); ok {
+			return -pct, true
+		}
+		return 0, false
 	}
-	return size, set
+	size.Width, size.HasWidth = component(0)
+	size.Height, size.HasHeight = component(1)
+	return size, size.HasWidth || size.HasHeight
 }
 
 // parseClipValue parses a single background-clip value.
@@ -10856,7 +10838,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 
 		// Size
 		if i < len(sizeParts) {
-			if sz, ok := parseSizeValue(sizeParts[i]); ok {
+			if sz, ok := parseSizeValue(sizeParts[i], s.GetLengthForVal); ok {
 				layer.Size = sz
 				layer.SizeSet = true
 			}
