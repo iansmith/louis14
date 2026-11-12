@@ -5585,7 +5585,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		// pixels — the structural fix for the sub-pixel drift identified in
 		// LOU-162's first attempt (see ticket-active/LOU-162/findings.md).
 		if layer.TextEmphasisMark != "" {
-			r.drawSidewaysEmphasisMarks(layer, text, box, fontID, ascent, ta, lh)
+			r.drawSidewaysEmphasisMarks(layer, text, box, fontID, ta)
 		}
 		return
 	}
@@ -5782,9 +5782,9 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 // per fragment here aligns emphasis pixels with where ruby pixels would
 // snap.
 //
-// ta and lh are the parent's off-screen horizontal-frame dimensions
-// (text-advance and line-height); used to compute the rotation mapping.
-func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, ta, lh int) {
+// ta is the parent's off-screen horizontal-frame text advance, used to
+// place counter-clockwise marks along the inline axis.
+func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box *layout.Box, fontID int32, ta int) {
 	mark := layer.TextEmphasisMark
 	emphFontSize := layout.EmphasisMarkFontSize(layer.FontSize)
 	fontPath := r.fontPathForLayer(layer)
@@ -5797,33 +5797,8 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 	emphDescent := float64(emphMetrics.Descent) / 64.0
 	markW := r.dc.MeasureText(mark, emphFontID)
 
-	// Compute the annotation fragment's TOP edge and BASELINE in the parent's
-	// off-screen HORIZONTAL frame (the "logical" frame where the base text was
-	// rendered as horizontal). Mirrors louis14's ruby annotation positioning at
-	// `pkg/layout/inline_layout_ruby.go:77-78 @ b555e690`:
-	//
-	//   annoBaseline = annotationBlockTop + math.Round(annoEmAscent)
-	//
-	// The `math.Round` on the ascent is load-bearing: it is the same per-fragment
-	// integer-snap that LOU-161's ruby annotation paint produces, so emphasis
-	// pixels snap to the SAME positions as ruby annotation pixels.
-	//
-	// The annotation's TOP edge (annotationBlockTop) follows Blink at
-	// `third_party/blink/renderer/core/paint/text_painter.cc:519-528 @
-	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f`:
-	//
-	//   kOver:  annotationBlockTop = -(emphAscent + emphDescent)
-	//           — the strip just above the inline-box top.
-	//   kUnder: annotationBlockTop = base_baseline + baseDescent
-	//                              = ascent + baseDescent
-	//           — the strip just below the inline-box bottom.
-	// (baseAscent/baseDescent were used by the Blink-formula path; the
-	// final formula matches ruby's annotation layout directly via
-	// `screenX = box.X + lh` / `box.X - annotH` and does not need the
-	// Blink offset values here. Keep the metrics fetched in case the
-	// kUnder under-line allotment formula needs them later.)
-	_ = fontID
-	_ = ascent
+	// The buffer's on-screen position comes from Blink's line-relative
+	// geometry (sidewaysEmphasisGeometry.screenX) below.
 
 	// The annotation-fragment's WIDTH (advance dimension in horizontal frame,
 	// = HEIGHT in screen after sideways rotation) is markW. Its HEIGHT (block
@@ -5866,92 +5841,18 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 		}
 	}
 
-	// Compute the loop-invariant screen X for the annotation.
-	//
-	// All sideways emphasis annotations paint on the right (kOver) side of the
-	// base text column. CSS Text Decor §3.4 allows kUnder (left in vertical-rl)
-	// but louis14 delegates emphasis placement to ruby positioning; because
-	// ruby-position:under is not yet implemented it falls back to over (right),
-	// so every reference rendering that uses ruby-position:under to express the
-	// left-side position also ends up on the right. Both kOver and kUnder
-	// positions are therefore the same screen X.
-	//
-	// Two baseline modes apply, differing only in the X offset:
-	//
-	// Central baseline (vertical-rl/lr + text-orientation: mixed, the default):
-	//   annotationAscent = fontSize/2 = annotH, so X = box.X + lh.
-	//   Mirrors ruby annotation layout where lh = lineHeight = 2×annotH for a
-	//   0.5-em mark: lh = annotH + baseColWidth = annotH + annotH.
-	//
-	// Alphabetic baseline (text-orientation: sideways, or writing-mode:sideways-rl):
-	//   annotationAscent = emphTypoAscent + emphTypoDescent ≠ annotH
-	//   (5.547 + 1.719 = 7.266 vs annotH = 8 for Liberation Mono 8pt).
-	//   X = box.X + emphAscent + emphDescent + annotH.
-	//   Derivation: X_annotation − X_base = annotationAscent + annotation.W_phys
-	//               = (emphAscent + emphDescent) + annotH.
-	//
-	// Blink ref: TextEmphasisPainter::Paint → kOver X offset in
-	// third_party/blink/renderer/core/paint/text_emphasis_painter.cc
-	// (Chromium SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-	isCentralBaseline := false
-	isVLR := false
-	if box.Style != nil {
-		wm, _ := box.Style.Get("writing-mode")
-		to, _ := box.Style.Get("text-orientation")
-		// vertical-rl/vertical-lr with text-orientation != "sideways" uses the
-		// central baseline; horizontal-tb (wm == "") is not sideways.
-		// writing-mode: sideways-rl/sideways-lr always uses alphabetic baseline.
-		if wm == "vertical-rl" || wm == "vertical-lr" || wm == "" {
-			isCentralBaseline = to != "sideways"
-		}
-		isVLR = wm == "vertical-lr"
-	}
-	// For vertical-lr, recover the vertical-rl-equivalent fragment X before
-	// either baseline branch. The WPT text-emphasis reftests share a single
-	// vertical-rl reference for both rl and lr variants, so the mark X must
-	// match the vertical-rl geometry. When the line box is symmetric
-	// (maxAscent == maxDescent, the pre-LOU-299 situation) the formula
-	// reduces to box.X and is a no-op; once emphasis marks inflate the
-	// line's ascent side (emphasisMarkAscentFromLine, LOU-299) the run sits
-	// asymmetrically within the line and vertical-lr's blockPos anchor
-	// diverges from vertical-rl's flipped anchor. (For the alphabetic
-	// branch the divergence pre-dates LOU-299 — see the rounding-asymmetry
-	// derivation below.)
-	baseX := box.X
-	if isVLR && box.Parent != nil {
-		baseX = 2*box.Parent.X + box.Parent.Width - box.X - float64(lh)
-	}
-	var screenX float64
-	if isCentralBaseline {
-		// annotationAscent = annotH for central baseline → X = baseX + lh.
-		screenX = baseX + float64(lh)
-	} else {
-		// Alphabetic baseline (text-orientation: sideways, or sideways-rl/lr).
-		//
-		// annotationAscent = emphAscent + emphDescent for alphabetic baseline.
-		// The base formula X = box.X + emphAscent + emphDescent + annotH is
-		// correct for vertical-rl and sideways-rl.
-		//
-		// For vertical-lr + sideways: CSS Writing Modes §7.3 specifies the same
-		// 90°-CW glyph rotation as vertical-rl + sideways; the visual position
-		// must match the vertical-rl reference (WPT reftests share a single
-		// vertical-rl reference for both rl and lr variants). However the layout
-		// engine places the lr text fragment 2 px further right than rl due to
-		// rounding asymmetry:
-		//   vertical-rl: X = round(lineHeight − blockPos − fontSize)
-		//   vertical-lr: X = round(blockPos)
-		// When blockPos is non-integer (e.g. 32.735 from asymmetric
-		// font metrics + half-leading), these round to different integers.
-		// The VLR baseline swap is correct for inline-block alignment
-		// (inline-block-alignment-007.xht) so we cannot change layout.
-		// Instead, the hoisted baseX above computes the VRL-equivalent
-		// annotation X from the parent block container:
-		//   X_rl_equiv = 2·parent.X + parent.Width − box.X − fontSize
-		// which inverts X_lr = parent.X + blockPos_lr to recover the rl formula
-		// X_rl = parent.X + (lineHeight − blockPos_rl − fontSize), using
-		// the fact that blockPos_lr = blockPos_rl (same halfLeading).
-		screenX = baseX + emphAscent + emphDescent + float64(annotH)
-	}
+	// The loop-invariant screen X of the mark buffer, from Blink's
+	// line-relative geometry (sidewaysEmphasisGeometry.screenX). Every mark
+	// goes on the over side: louis14 paints ruby-position: under as over, and
+	// the WPT references express under emphasis with ruby-position: under, so
+	// the two stay aligned until under ruby lands.
+	baseAscent, baseDescent := r.integerAscentDescent(layer.FontSize, fontPath)
+	screenX := sidewaysEmphasisGeometry{
+		boxLeft: box.X, boxWidth: box.Width,
+		ascent: baseAscent, descent: baseDescent,
+		markAscent: emphAscent, markDescent: emphDescent,
+		annotH: annotH,
+	}.screenX(true, layer.IsSidewaysRL)
 	screenXi := int(math.Round(screenX))
 
 	// Iterate characters and blit the (pre-rotated) mark at each non-whitespace
