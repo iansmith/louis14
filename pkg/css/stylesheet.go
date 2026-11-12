@@ -1224,13 +1224,9 @@ func splitRulesAt(css string, starts *[]int) []string {
 				break
 			}
 			if !isAfterCloseBrace {
-				// At-rule terminator (no body) — emit rule text for at-rules
-				// that don't carry a `{ … }` body but still need to reach the
-				// at-rule scanner: @layer (declaration form), @import and
-				// @namespace.
-				ruleText := strings.TrimSpace(css[start : i+1])
-				if strings.HasPrefix(ruleText, "@layer") || strings.HasPrefix(ruleText, "@import") ||
-					strings.HasPrefix(ruleText, "@namespace") {
+				// At-rule terminator (no body): emit the statement at-rules
+				// (ruleKindOf) for the at-rule scanner.
+				if ruleText := strings.TrimSpace(css[start : i+1]); ruleKindOf(ruleText) != ruleKindOther {
 					emit(ruleText, start)
 				}
 				start = i + 1
@@ -1251,9 +1247,16 @@ func splitRulesAt(css string, starts *[]int) []string {
 	if (depth > 0 || parenDepth > 0) && start < len(css) && strings.TrimSpace(css[start:]) != "" {
 		synthesized := closeUnmatchedTokens(css[start:])
 		emit(synthesized, start)
+	} else if ruleText := strings.TrimSpace(css[start:]); ruleKindOf(ruleText) != ruleKindOther {
+		// A statement at-rule may end at EOF with no `;`
+		// (CSSParserImpl::ConsumeEndOfPreludeForAtRuleWithoutBlock,
+		// css_parser_impl.cc:797-807 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		emit(ruleText, start)
 	}
 	return rules
 }
+
 
 // isValidSelector checks if a selector string looks valid enough to parse.
 // Returns false for clearly malformed selectors that should cause the rule to be skipped.
@@ -1646,12 +1649,12 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string, ss *Stylesheet)
 	rest := strings.TrimPrefix(trimmed, "@layer")
 	rest = strings.TrimSpace(rest)
 
-	// Statement form: ends with ";" (no block)
-	// e.g. "@layer reset, base;" or "@layer utilities;"
-	if strings.HasSuffix(rest, ";") {
-		// Remove trailing semicolon
-		nameList := strings.TrimSuffix(rest, ";")
-		nameList = strings.TrimSpace(nameList)
+	// Statement form: no block, ending in ";" or at EOF
+	// (ConsumeEndOfPreludeForAtRuleWithoutBlock, css_parser_impl.cc:797-807
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// e.g. "@layer reset, base;" or "@layer utilities".
+	if ruleKindOf(trimmed) == ruleKindLayerStatement {
+		nameList := statementAtRulePrelude(trimmed, "@layer")
 		// Parse comma-separated names
 		for _, name := range strings.Split(nameList, ",") {
 			name = strings.TrimSpace(name)
