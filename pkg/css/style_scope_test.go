@@ -85,7 +85,7 @@ func TestScopeProximity(t *testing.T) {
 // A scoped selector that does not contain :scope gets an implicit
 // `:scope` anchor with a descendant combinator, and the anchor adds no
 // specificity (CreateImplicitAnchor / MaybeCreateImplicitDescendantAnchor,
-// css_selector_parser.cc:778-824 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// css_selector_parser.cc:786-823 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 // `&` in the body is :where(:scope) (CSSScopeifiedParentPseudoClass,
 // stable; style_scope.cc:142-147), so it adds none either.
 func TestScopeImplicitAnchorAddsNoSpecificity(t *testing.T) {
@@ -304,18 +304,36 @@ func TestImplicitScopeRootFollowsTheOwner(t *testing.T) {
 	}
 }
 
-// A rule nested in a style rule in an @scope body keeps the anchor on the
-// style rule, so `&` brings it along (MaybeCreateImplicitDescendantAnchor
-// adds it when the outer rule is parsed, css_selector_parser.cc:914-930 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): `.q &` needs only .q above
-// the in-scope .p, not inside the scope.
+// The implicit :scope anchor goes on a style rule of an @scope body,
+// directly or in a grouping rule, before CSS nesting expands it: Blink adds
+// it when it parses the rule, so `&` in its nested rules carries it
+// (MaybeCreateImplicitDescendantAnchor, css_selector_parser.cc:800-823,
+// called at :914-930 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `.q &` lets .q sit outside
+// the scope, and a nested `:scope .b` does not stand in for the outer
+// rule's anchor.
 func TestScopeAnchorBeforeNesting(t *testing.T) {
-	styles := cascadeHTML(t, `<style>
-		@scope (.a) { .p { .q & { color: green } } }
-	</style>
-	<div class="q"><div class="a"><div class="p" id="p"></div></div></div>`, nil)
-	if got := colorOf(t, styles, "p"); got != "green" {
-		t.Errorf("#p color = %q, want green (.q may be outside the scope)", got)
+	for _, tc := range []struct {
+		name, body, html string
+		green            bool
+	}{
+		{"& in a nested rule", `.p { .q & { color: green } }`,
+			`<div class="q"><div class="r"><div class="p" id="t"></div></div></div>`, true},
+		{"& in a grouping rule", `@media all { .p { .q & { color: green } } }`,
+			`<div class="q"><div class="r"><div class="p" id="t"></div></div></div>`, true},
+		{"& in a nested grouping rule", `@supports (color: red) { @layer x { .p { .q & { color: green } } } }`,
+			`<div class="q"><div class="r"><div class="p" id="t"></div></div></div>`, true},
+		// `:is(:scope .d) :scope .e`: the in-scope .d would have to sit
+		// above the root, so this never matches; without the anchor on .d,
+		// a .d above the root would wrongly satisfy it.
+		{":scope in a nested rule, its parent outside the scope", `@media all { .d { :scope .e { color: green } } }`,
+			`<div class="d"><div class="r"><div class="e" id="t"></div></div></div>`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			styles := cascadeHTML(t, `<style>@scope (.r) { `+tc.body+` }</style>`+tc.html, nil)
+			if got := colorOf(t, styles, "t") == "green"; got != tc.green {
+				t.Errorf("#t green = %v, want %v", got, tc.green)
+			}
+		})
 	}
 }
 
