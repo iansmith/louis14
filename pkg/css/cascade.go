@@ -1199,26 +1199,21 @@ func resolveAttrTyped(attrVal, attrType string) (string, bool) {
 	}
 }
 
-// validateCSSLength checks whether v is a valid CSS <length>. Returns the value
-// as-is if valid, else ("", false). A bare integer/float without a unit is only
-// valid as a length if the value is exactly 0 (CSS Values 4 §6.2).
+// validateCSSLength checks whether v is a valid CSS <length>: a dimension
+// the length parser resolves, or 0. Returns the value as-is if valid, else
+// ("", false). A bare number other than 0 is not a length (CSS Values 4
+// §6.2).
 func validateCSSLength(v string) (string, bool) {
 	if v == "0" {
 		return "0px", true
 	}
-	// Must end in a recognized length unit.
-	units := []string{"px", "em", "rem", "ex", "ch", "vw", "vh", "vmin", "vmax",
-		"cm", "mm", "in", "pt", "pc", "Q", "lh", "rlh", "svh", "svw", "dvh", "dvw", "lvh", "lvw"}
-	lower := strings.ToLower(v)
-	for _, u := range units {
-		if strings.HasSuffix(lower, u) {
-			numStr := v[:len(v)-len(u)]
-			if _, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64); err == nil {
-				return v, true
-			}
-		}
+	if _, err := strconv.ParseFloat(v, 64); err == nil || strings.ContainsAny(v, "(%") {
+		return "", false
 	}
-	return "", false
+	if _, ok := ParseLength(v); !ok {
+		return "", false
+	}
+	return v, true
 }
 
 // validateCSSPercentage checks whether v is a valid CSS <percentage>.
@@ -4288,13 +4283,14 @@ func isUnitlessMath(v string) bool {
 
 // dimensionUnits returns the unit (or "%") of each <dimension> /
 // <percentage> token in a CSS value, e.g. ["em", "px"] for
-// "calc(1em + 10px)". Function names are not dimensions.
+// "calc(1em + 10PX)", lower-cased since unit names match
+// case-insensitively. Function names are not dimensions.
 func dimensionUnits(val string) []string {
 	var units []string
 	for _, tok := range tokenizeCalc(val) {
 		num := strings.TrimPrefix(tok, "-")
 		if unit := strings.TrimLeft(num, "0123456789."); unit != "" && len(unit) < len(num) {
-			units = append(units, unit)
+			units = append(units, asciiToLower(unit))
 		}
 	}
 	return units
