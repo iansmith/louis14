@@ -100,15 +100,15 @@ type SVGShape struct {
 // geometry attributes are read, the path is built, and the fill
 // bounding box is precomputed. Tags this constructor doesn't recognize
 // produce nil — caller falls back to SVGContainer.
-func NewSVGShape(elt ElementAdapter, lengthCtx SVGLengthContext) *SVGShape {
+func NewSVGShape(elt ElementAdapter, style *css.Style, lengthCtx SVGLengthContext) *SVGShape {
 	if elt == nil {
 		return nil
 	}
 	tag := elt.TagName()
-	shape := &SVGShape{TagName: tag, Element: elt, Viewport: lengthCtx.ViewportSize()}
+	shape := &SVGShape{TagName: tag, Element: elt, Style: style, Viewport: lengthCtx.ViewportSize()}
 	switch tag {
 	case "rect":
-		buildRectPath(shape, elt, lengthCtx)
+		buildRectPath(shape, elt, style, lengthCtx)
 	case "circle":
 		buildCirclePath(shape, elt, lengthCtx)
 	case "ellipse":
@@ -217,11 +217,16 @@ func (s *SVGShape) Paint(ctx *SVGPaintContext) {
 //
 // Negative width/height makes the rect invalid (the spec says "shall be
 // treated as an error" — Blink's behavior is to skip the path).
-func buildRectPath(shape *SVGShape, elt ElementAdapter, ctx SVGLengthContext) {
-	x := getLength(elt, "x", LengthModeWidth, ctx, 0)
-	y := getLength(elt, "y", LengthModeHeight, ctx, 0)
-	w := getLength(elt, "width", LengthModeWidth, ctx, 0)
-	h := getLength(elt, "height", LengthModeHeight, ctx, 0)
+//
+// x, y, width and height come from the computed style (geometryLength;
+// LayoutSVGRect::UpdateShapeFromElement, core/layout/svg/
+// layout_svg_rect.cc:70-95 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// rx and ry stay attributes: louis14 has no rx/ry properties.
+func buildRectPath(shape *SVGShape, elt ElementAdapter, style *css.Style, ctx SVGLengthContext) {
+	x := geometryLength(elt, style, "x", LengthModeWidth, ctx)
+	y := geometryLength(elt, style, "y", LengthModeHeight, ctx)
+	w := geometryLength(elt, style, "width", LengthModeWidth, ctx)
+	h := geometryLength(elt, style, "height", LengthModeHeight, ctx)
 	if w <= 0 || h <= 0 {
 		shape.GeometryType = GeometryRect
 		return
@@ -395,6 +400,29 @@ func getLength(elt ElementAdapter, name string, mode SVGLengthMode, ctx SVGLengt
 		return defaultVal
 	}
 	return ctx.Resolve(v, mode)
+}
+
+// geometryLength resolves the geometry property name (x, y, width or
+// height) of elt from its computed style, to which the attribute maps as a
+// presentation attribute: a CSS <length-percentage>, units and math
+// functions included, its percentages of the SVG viewport
+// (SVGViewportResolver) — width for x and width, height for y and height;
+// auto is 0. Without a style (only a tree built with no style resolver),
+// the attribute. Mirrors the PointForLengthPair / VectorForLengthPair reads
+// of LayoutSVGRect::UpdateShapeFromElement and LayoutSVGImage::
+// UpdateBoundingBox (core/layout/svg/layout_svg_rect.cc:70-95,
+// layout_svg_image.cc:140-153 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func geometryLength(elt ElementAdapter, style *css.Style, name string, mode SVGLengthMode, lengthCtx SVGLengthContext) float64 {
+	if style == nil {
+		return getLength(elt, name, mode, lengthCtx, 0)
+	}
+	viewport := lengthCtx.ViewportSize()
+	base := viewport.Width
+	if mode == LengthModeHeight {
+		base = viewport.Height
+	}
+	v, _ := style.ResolveLengthPercentage(name, base)
+	return v
 }
 
 // getOptLength reads an SVG length attribute and reports whether it
