@@ -178,16 +178,27 @@ func TestDirectionAwareCascadePositionsRound3(t *testing.T) {
 		}
 	}
 
-	// A pseudo-element resolves an animated logical longhand too.
-	doc, _ := html.Parse(`<style>#t::before{content:"x"; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}</style><div id="t">y</div>`)
-	for n, st := range ApplyStylesToDocument(doc, 800, 600) {
-		if id, _ := n.GetAttribute("id"); id == "t" {
-			before := ComputePseudoElementStyle(n, "before", ParseDocumentStylesheets(doc), 800, 600, st)
-			if got, _ := before.Get("margin-left"); got != "5px" {
-				t.Errorf("::before animated margin-inline-start: margin-left = %q, want 5px", got)
-			}
-			if _, kept := before.Properties["_margin-inline-start"]; kept {
-				t.Errorf("::before keeps the storage key _margin-inline-start")
+	// A pseudo-element resolves an animated logical longhand too. A to-only
+	// keyframe paused at 0 is the neutral keyframe, the underlying value
+	// (the author margin-left, through the logical/physical counterpart); a
+	// from+to keyframe is the animation's value. With no author value at
+	// all, the storage key still never leaves the cascade (the underlying
+	// value there is the initial value: LOU-821).
+	for _, tc := range []struct{ css, want string }{
+		{`#t::before{content:"x"; margin-left:1px; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}`, "1px"},
+		{`#t::before{content:"x"; margin-left:1px; animation:a 10s paused} @keyframes a{from,to{margin-inline-start:5px}}`, "5px"},
+		{`#t::before{content:"x"; animation:a 10s paused} @keyframes a{to{margin-inline-start:5px}}`, ""},
+	} {
+		doc, _ := html.Parse(`<style>` + tc.css + `</style><div id="t">y</div>`)
+		for n, st := range ApplyStylesToDocument(doc, 800, 600) {
+			if id, _ := n.GetAttribute("id"); id == "t" {
+				before := ComputePseudoElementStyle(n, "before", ParseDocumentStylesheets(doc), 800, 600, st)
+				if got, _ := before.Get("margin-left"); tc.want != "" && got != tc.want {
+					t.Errorf("::before %s: margin-left = %q, want %s", tc.css, got, tc.want)
+				}
+				if _, kept := before.Properties["_margin-inline-start"]; kept {
+					t.Errorf("::before %s keeps the storage key _margin-inline-start", tc.css)
+				}
 			}
 		}
 	}
