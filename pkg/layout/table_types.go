@@ -131,3 +131,35 @@ type TableConstraintSpaceData struct {
 // percentage block-size". Matches Blink's optional-but-absent semantics
 // without introducing a pointer or wrapper type.
 const TableTypesRowAbsentPercent float64 = -1
+
+// TableTypesColumn mirrors Blink's TableTypes::Column
+// (table/table_layout_algorithm_types.h:58-113 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a column's inline-size
+// constraints, accumulated from <col>/<colgroup> widths and its cells.
+// Sizes are border-box. HasPercent stands for Blink's optional percent
+// (100% is stored as 100).
+type TableTypesColumn struct {
+	MinInlineSize float64
+	MaxInlineSize float64
+	Percent       float64
+	HasPercent    bool
+	// PercentBorderPadding is the border+padding a fixed-layout content-box
+	// percentage cell adds (CreateCellInlineConstraint,
+	// table_layout_algorithm_types.cc:202-206); 0 for auto layout, the only
+	// layout computeColumnConstraints builds.
+	PercentBorderPadding float64
+	// IsConstrained is true if a <col> or any single-column cell gives the
+	// column a specified inline-size.
+	IsConstrained bool
+}
+
+// IsFixed mirrors TableTypes::Column::IsFixed: a constrained column with
+// no percentage.
+func (c TableTypesColumn) IsFixed() bool {
+	return c.IsConstrained && !c.HasPercent
+}
+
+// TableTypesColumns mirrors Blink's TableTypes::Columns.
+type TableTypesColumns struct {
+	Data []TableTypesColumn
+}
