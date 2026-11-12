@@ -871,26 +871,14 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		clipY = true
 	}
 
-	// An inline <svg> is clipped by default in Blink: it respects CSS
-	// overflow like other replaced elements
-	// (LayoutSVGRoot::ComputeOverflowClipAxes,
-	// core/layout/svg/layout_svg_root.cc:550-575 @ Chromium
-	// 5992657f556bcd9d207a4aca187488462f027cab) and the UA sheet gives
-	// svg:not(:root) overflow:hidden (core/css/svg.css:48-54 @
-	// 5992657f556b). louis14 has no such UA rule, so for an inline <svg>
-	// with no overflow-clip-margin `paintSVGRoot` installs that default
-	// clip itself, pixel-snapped like the SVG content origin. When
-	// `overflow-clip-margin` is set, the SVG must go through the standard
-	// CSS-overflow paint path — that is the only path that consults the
-	// margin. We trigger that path here by forcing clipX/clipY true when
-	// the SVG carries the property.
+	// An outermost inline <svg> respects CSS overflow like other replaced
+	// elements (Element::IsReplacedElementRespectingCSSOverflow,
+	// core/dom/element.cc:13749-13762 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so layout's clip axes
+	// come from its overflow (LayoutSVGRoot::ComputeOverflowClipAxes,
+	// core/layout/svg/layout_svg_root.cc:541-565), which svg.css makes
+	// hidden by default.
 	isSVGRootNode := box.Node != nil && box.Node.TagName == "svg"
-	if isSVGRootNode {
-		if _, ok := s.GetOverflowClipMargin(); ok {
-			clipX = true
-			clipY = true
-		}
-	}
 
 	// No multicol-container clip special case. Blink's UpdateFromStyle
 	// computes HasNonVisibleOverflow purely from (!IsOverflowVisibleAlongBothAxes()
@@ -928,22 +916,21 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		// no axis is scroll/auto/hidden). Blink's LayoutBox::OverflowClipRect
 		// honors overflow_clip_margin only on the non-scroll clip path.
 		//
-		// SVG roots count as clip (not scroll) for this purpose: per Blink's
-		// `LayoutSVGRoot::ComputeOverflowClipAxes`, an SVG root is always
-		// clipped on both axes (UA behavior, not the cascaded `overflow`
-		// value), so overflow-clip-margin set on the SVG applies. The
-		// outer clip path is enabled only when the SVG actually has
-		// `overflow-clip-margin` set — see the `isSVGRootNode` block
-		// above for the rationale.
+		// A replaced element has a used overflow of clip for every value but
+		// visible, so it applies the margin only when neither axis is
+		// visible (LayoutObject::ShouldApplyOverflowClipMargin, core/layout/
+		// layout_object.h:588-617). (box.IsScrollContainer is already false
+		// for it.)
 		isScrollContainer := box.IsScrollContainer()
+		isOverflowClip := overflowX == css.OverflowClip || overflowY == css.OverflowClip
 		if isSVGRootNode {
-			isScrollContainer = false
+			isOverflowClip = overflowX != css.OverflowVisible && overflowY != css.OverflowVisible
 		}
 		applyMargin := false
 		marginBox := css.OverflowClipMarginPaddingBox
 		var marginLength float64
 		hasPaintContain := s.ShouldApplyPaintContainment()
-		if !isScrollContainer && (overflowX == css.OverflowClip || overflowY == css.OverflowClip || hasPaintContain || isSVGRootNode) {
+		if !isScrollContainer && (isOverflowClip || hasPaintContain) {
 			if m, ok := s.GetOverflowClipMargin(); ok {
 				applyMargin = true
 				marginBox = m.Box

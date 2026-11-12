@@ -1,10 +1,7 @@
 package render
 
 import (
-	"mazarin/textshape"
-
 	"louis14/pkg/geometry"
-	"louis14/pkg/graphics"
 	"louis14/pkg/layout"
 	"louis14/pkg/layout/svg"
 )
@@ -78,35 +75,6 @@ func (r *Renderer) paintSVGRoot(layer *PaintLayer) {
 	// Push a scope so the translation + viewBox transform pop cleanly.
 	r.dc.Push()
 	defer r.dc.Pop()
-
-	// Viewport clip. When layer.HasClip is set (overflow-x/overflow-y
-	// clip on some axis, or overflow-clip-margin; HasClipMargin implies
-	// HasClip, both are set in the same `if clipX || clipY` block in
-	// paint_layer.go), the CSS-overflow paint path in `paintLayer` has
-	// already installed the pixel-snapped per-axis clip, extending any
-	// unclipped axis; a second clip here would override those per-axis
-	// semantics.
-	//
-	// Otherwise this fallback stands in for Blink's default inline-svg
-	// clip: the UA sheet gives svg:not(:root) overflow:hidden and
-	// overflow-clip-margin:content-box (core/css/svg.css:48-54 @ 5992657f556b),
-	// which UpdateOverflowClip turns into ToSnappedClipRect of the content
-	// box for a replaced element
-	// (core/paint/paint_property_tree_builder.cc:3409-3419, helper
-	// :2822-2824 @ 5992657f556b). louis14 has no such UA rule, so the
-	// painter installs it. The content box is snapped on its own, as
-	// Blink snaps the clip rect, not derived from the snapped origin: the
-	// two differ when border or padding is fractional.
-	// The UA rule is svg:not(:root), so a document-element root has none.
-	if !layer.HasClip && !isDocumentElement {
-		cx, cy, cw, ch := pixelSnap(box.X+box.Border.Left+box.Padding.Left, box.Y+box.Border.Top+box.Padding.Top,
-			root.ContainerSize.Width, root.ContainerSize.Height)
-		r.dc.DrawRectangle(cx, cy, cw, ch)
-		// The overflow clip node is an anti-aliased ClipRectOp
-		// (paint_chunks_to_cc_layer.cc:573-579 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
-	}
 
 	t := deviceFromUser
 	r.dc.MultiplyMatrix(t.A, t.B, t.C, t.D, t.E, t.F)
