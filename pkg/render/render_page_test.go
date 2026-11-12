@@ -16,6 +16,14 @@ type RenderOption func(*renderPageConfig)
 type renderPageConfig struct {
 	imageFetcher       func(uri string) ([]byte, error)
 	externalSVGFetcher func(uri string) ([]byte, error)
+	withEditingState   bool
+}
+
+// WithEditingState passes the document's selection and focused element to
+// the renderer, as the reftest harness does, so ::selection and the caret
+// paint.
+func WithEditingState() RenderOption {
+	return func(c *renderPageConfig) { c.withEditingState = true }
 }
 
 // WithImageFetcher installs the image fetcher on the layout engine and the
@@ -68,6 +76,10 @@ func RenderDocument(t testing.TB, doc *html.Document, w, h int, opts ...RenderOp
 	}
 	if c.externalSVGFetcher != nil {
 		r.SetExternalSVGFetcher(c.externalSVGFetcher)
+	}
+	if c.withEditingState {
+		r.SetSelectionContext(doc.Selection, nil, float64(w), float64(h))
+		r.SetFocusedElement(doc.FocusedElement)
 	}
 	r.Render(boxes)
 	return target, boxes
