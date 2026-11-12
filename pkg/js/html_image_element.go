@@ -123,7 +123,6 @@ func cancelPostedTask(slot **postedTask) {
 	}
 }
 
-
 // startParsedImageLoads starts, in tree order, the request of each parsed
 // connected <img> in the document whose request script has not already
 // replaced: a

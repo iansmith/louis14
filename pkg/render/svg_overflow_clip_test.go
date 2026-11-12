@@ -15,7 +15,7 @@ import "testing"
 // (LOU-878).
 func TestPaint_InlineSVGClipsAlongItsOverflowAxes(t *testing.T) {
 	for _, tt := range []struct {
-		name, style        string
+		name, style          string
 		clipX, clipY, margin bool
 	}{
 		{"UA hidden", "", true, true, true},
