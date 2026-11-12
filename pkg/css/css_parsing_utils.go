@@ -1,6 +1,7 @@
 package css
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -818,6 +819,27 @@ func consumeGridLineNames(s *componentStream, isSubgrid bool) bool {
 	}
 	s.consume()
 	return isSubgrid || len(names) > 0
+}
+
+// isIdentPrefix reports whether s starts with the identifier ident, in any
+// case, followed by the end or whitespace.
+func isIdentPrefix(s, ident string) bool {
+	return len(s) >= len(ident) && strings.EqualFold(s[:len(ident)], ident) &&
+		(len(s) == len(ident) || strings.ContainsRune(" \t\n\r\f", rune(s[len(ident)])))
+}
+
+// emptyGridLineNames matches an empty <line-names> block with the
+// whitespace before it.
+var emptyGridLineNames = regexp.MustCompile(`\s*\[\s*\]`)
+
+// dropEmptyGridLineNames drops the empty <line-names> blocks of a track
+// list: ConsumeGridLineNames returns null for one, so it is no part of the
+// value. A subgrid's <line-name-list> keeps them.
+func dropEmptyGridLineNames(value string) string {
+	if !strings.Contains(value, "[") || isIdentPrefix(strings.TrimSpace(value), "subgrid") {
+		return value
+	}
+	return strings.TrimSpace(emptyGridLineNames.ReplaceAllString(value, ""))
 }
 
 // consumeGridTrackRepeatFunction is ConsumeGridTrackRepeatFunction.

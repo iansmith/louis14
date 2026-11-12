@@ -5353,7 +5353,13 @@ func validateDeclaredLonghand(prop, value string) (string, bool) {
 	case prop == "font-family":
 		return normalizeAndValidateFontFamily(value)
 	case isGridTrackListProperty[prop]:
-		return value, isDeferredOrCSSWideValue(value) || isValidGridTrackListValue(prop, value)
+		if isDeferredOrCSSWideValue(value) {
+			return value, true
+		}
+		if prop != "grid-template-areas" {
+			value = dropEmptyGridLineNames(value)
+		}
+		return value, isValidGridTrackListValue(prop, value)
 	}
 	return value, true
 }
