@@ -3,7 +3,6 @@ package layout
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // A table cell is laid out a second time at its final block size, the sum
@@ -94,16 +93,22 @@ func TestTableCellFinalLayout(t *testing.T) {
 }
 
 // Laying a cell out again at its final size must not repeat work that
-// cannot change: depth-14 nested tables lay out in milliseconds (about 4ms
-// on master), as Blink's layout cache keeps them (BlockNode::Layout's
-// CachedLayoutResult), not in seconds (2s when every level relays its
-// cells). The 500ms bound leaves room for a loaded machine.
-func TestTableCellFinalLayoutNestedTablesStayFast(t *testing.T) {
-	const depth = 14
-	src := `<!DOCTYPE html><body>` + strings.Repeat(`<table><tr><td>a</td><td>`, depth) + "x" + strings.Repeat(`</td></tr></table>`, depth)
-	start := time.Now()
-	layoutRootTestHTML(t, src)
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Errorf("depth-%d nested tables took %v, want under 500ms", depth, elapsed)
+// cannot change, as Blink's layout cache keeps it from doing
+// (BlockNode::Layout's CachedLayoutResult, layout_result_caching.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each level of nested tables
+// adds the same number of layout-algorithm runs. Relaying every level's
+// cells makes the count exponential in the depth (4x per level: 77, 317,
+// 1277 runs at depths 4, 6, 8, against 17, 25, 33). Counting runs, not
+// timing them, keeps the check independent of machine load.
+func TestTableCellFinalLayoutNestedTablesStayLinear(t *testing.T) {
+	runs := func(depth int) int64 {
+		src := `<!DOCTYPE html><body>` + strings.Repeat(`<table><tr><td>a</td><td>`, depth) + "x" + strings.Repeat(`</td></tr></table>`, depth)
+		before := layoutAlgorithmRuns.Load()
+		layoutRootTestHTML(t, src)
+		return layoutAlgorithmRuns.Load() - before
+	}
+	r4, r8, r12 := runs(4), runs(8), runs(12)
+	if r12-r8 != r8-r4 {
+		t.Errorf("layout runs at depths 4, 8, 12 = %d, %d, %d; want equal steps (linear in the depth)", r4, r8, r12)
 	}
 }
