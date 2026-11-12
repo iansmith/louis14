@@ -4953,6 +4953,13 @@ func (d *DeclarationResult) removeKeys(property string, keys []string) {
 // longhands (serializeShorthand).
 func (d *DeclarationResult) Value(property string) (string, bool) {
 	if v, ok := d.Declarations[storageKey(property)]; ok {
+		if _, _, pending := parsePendingSubstitution(v); pending {
+			// A pending-substitution value serializes as empty
+			// (CSSPendingSubstitutionValue::CustomCSSText,
+			// css_pending_substitution_value.cc:16 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			return "", true
+		}
 		return v, true
 	}
 	if _, ok := shorthandLonghands[property]; ok {
