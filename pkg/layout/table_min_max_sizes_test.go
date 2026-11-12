@@ -98,14 +98,14 @@ func inlineBlock(w string) string {
 // 80px; style is appended to the table's style.
 func twoColumnTable(style string) string { return twoColumnTableWithCaption(style, "") }
 
-// twoColumnTableWithCaption is twoColumnTable with caption, the markup of
-// its caption's content, when not empty.
+// twoColumnTableWithCaption is twoColumnTable with a caption #cap whose
+// content is caption, when not empty.
 func twoColumnTableWithCaption(style, caption string) string {
 	td := func(id, w string) string {
 		return `<td id="` + id + `" style="padding:0">` + inlineBlock(w) + `</td>`
 	}
 	if caption != "" {
-		caption = `<caption style="padding:0">` + caption + `</caption>`
+		caption = `<caption id="cap" style="padding:0">` + caption + `</caption>`
 	}
 	return `<table id="t" style="border-spacing:0;` + style + `">` + caption + `<tr>` + td("c0", "20px") + td("c1", "60px") + `</tr></table>`
 }
@@ -169,6 +169,33 @@ func TestTableCaptionMinWidthIsDistributed(t *testing.T) {
 	for _, display := range []string{"table", "inline-table"} {
 		t.Run(display, func(t *testing.T) {
 			checkTwoColumnWidths(t, `<div style="width:400px">`+twoColumnTableWithCaption("display:"+display, caption)+`</div>`, 200, 50, 150)
+		})
+	}
+}
+
+// A caption lays out at the table's final border-box inline size, not the
+// table's container: GenerateFragment gives it an available inline size of
+// container_builder_.InlineSize() (table/table_layout_algorithm.cc:
+// 1230-1243 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and an auto-width
+// caption stretches to it (CreateCaptionConstraintSpace, :61-90).
+func TestTableCaptionLaysOutAtTableInlineSize(t *testing.T) {
+	cases := []struct {
+		name, caption string
+		want          float64
+	}{
+		{"caption wider than the columns", inlineBlock("200px"), 200},
+		{"caption narrower than the columns", inlineBlock("10px"), 80},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := layoutRootTestHTML(t, `<!DOCTYPE html><body style="margin:0"><div style="width:400px">`+twoColumnTableWithCaption("", c.caption)+`</div>`)
+			tb, capBox := findBoxByID(root, "t"), findBoxByID(root, "cap")
+			if tb == nil || capBox == nil {
+				t.Fatal("missing #t/#cap")
+			}
+			if tb.Width != c.want || capBox.Width != c.want {
+				t.Errorf("table/caption widths = %v/%v, want %v", tb.Width, capBox.Width, c.want)
+			}
 		})
 	}
 }
