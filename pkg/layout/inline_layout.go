@@ -1356,19 +1356,40 @@ func addAnyClearanceAfterLine(
 
 // newInlineUnpositionedFloat returns the UnpositionedFloat for a float of
 // this block's inline formatting context, with its origin at the line's
-// BFC block offset originBfcBlockOffset: the content box inline-size is its
-// available and percentage resolution inline-size, with an indefinite
-// available block-size (LineBreaker::HandleFloat, inline/
-// line_breaker.cc:3787-3796 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// BFC block offset originBfcBlockOffset. Its available and percentage
+// sizes are those of the space the block gives its inline content
+// (newLineSpace at the content inline size), as LineBreaker::HandleFloat
+// takes the line's AvailableSize() and PercentageResolutionSize()
+// (inline/line_breaker.cc:3787-3796 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink's
+// ReplacedChildPercentageResolutionSize for a replaced float is not
+// distinguished: louis14's line space has no separate replaced size.
+// sizes is inlineFloatSizes' result.
 func (bla *BlockLayoutAlgorithm) newInlineUnpositionedFloat(
 	node *LayoutInputNode,
 	token *BlockBreakToken,
-	contentInlineSize, originBfcBlockOffset, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize float64,
+	sizes inlineFloatSpaceSizes,
+	originBfcBlockOffset, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize float64,
 ) *UnpositionedFloat {
-	return bla.newUnpositionedFloat(node, token,
-		LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite},
-		LogicalSize{InlineSize: contentInlineSize, BlockSize: 0},
+	return bla.newUnpositionedFloat(node, token, sizes.available, sizes.percentage,
 		bfcInlineOrigin, originBfcBlockOffset, bfcBlockOrigin, bfcContainerInlineSize)
+}
+
+// inlineFloatSpaceSizes are the available and percentage sizes of the space
+// the block gives its inline content, which its inline floats take.
+type inlineFloatSpaceSizes struct {
+	available, percentage LogicalSize
+}
+
+// inlineFloatSizes computes inlineFloatSpaceSizes once for a block's inline
+// floats: newLineSpace at the content inline size (Blink's child available
+// inline size, not a nowrap line's unbounded width).
+func (bla *BlockLayoutAlgorithm) inlineFloatSizes(contentInlineSize float64) inlineFloatSpaceSizes {
+	lineSpace := bla.newLineSpace(contentInlineSize, contentInlineSize, nil)
+	return inlineFloatSpaceSizes{
+		available:  geomLogicalToOld(lineSpace.AvailableSize),
+		percentage: geomLogicalToOld(lineSpace.PercentageResolutionSize),
+	}
 }
 
 // placeInlineFloat positions a float of this block's inline formatting
@@ -1436,6 +1457,7 @@ func (bla *BlockLayoutAlgorithm) resumeInlineFloats(
 		return es
 	}
 	itemsData, _, _ := bla.prepareInlineItems(wdm)
+	var floatSizes *inlineFloatSpaceSizes
 	for _, t := range incoming.ChildBreakTokens {
 		// A float continuation is an inline break token in a parallel
 		// block flow, at the float's item.
@@ -1452,7 +1474,11 @@ func (bla *BlockLayoutAlgorithm) resumeInlineFloats(
 		if es == nil {
 			es = &ExclusionSpace{}
 		}
-		uf := bla.newInlineUnpositionedFloat(tok.Node, tok, contentInlineSize, bfcBlockOffset,
+		if floatSizes == nil {
+			sizes := bla.inlineFloatSizes(contentInlineSize)
+			floatSizes = &sizes
+		}
+		uf := bla.newInlineUnpositionedFloat(tok.Node, tok, *floatSizes, bfcBlockOffset,
 			bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
 		es, _ = bla.placeInlineFloat(itemsData.Items[idx], idx, uf, es, bfcBlockOrigin, bfcInlineOrigin, context)
 	}
@@ -1549,6 +1575,7 @@ func (bla *BlockLayoutAlgorithm) inlineFloats(contentInlineSize, bfcBlockOrigin,
 		return c.floats, c.initialLetterAdjust
 	}
 	c.floats = map[*InlineItem]*pendingFloat{}
+	var floatSizes *inlineFloatSpaceSizes
 	paraLineHeight := 0.0
 	if bla.style != nil {
 		paraLineHeight = bla.style.GetLineHeight()
@@ -1559,7 +1586,11 @@ func (bla *BlockLayoutAlgorithm) inlineFloats(contentInlineSize, bfcBlockOrigin,
 		}
 		il := item.Style.GetInitialLetter()
 		c.initialLetterAdjust = max(c.initialLetterAdjust, initialLetterTextShift(il, paraLineHeight))
-		uf := bla.newInlineUnpositionedFloat(item.LayoutNode, nil, contentInlineSize, 0,
+		if floatSizes == nil {
+			sizes := bla.inlineFloatSizes(contentInlineSize)
+			floatSizes = &sizes
+		}
+		uf := bla.newInlineUnpositionedFloat(item.LayoutNode, nil, *floatSizes, 0,
 			bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize)
 		c.floats[item] = &pendingFloat{
 			item:                item,
