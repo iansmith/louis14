@@ -224,7 +224,7 @@ func AdjustAltTextContainerStyle(s *Style, h *StyleUAShadowHostData) {
 		return
 	}
 	// ShowBorder. Blink scales the 1px by EffectiveZoom; louis14 has no zoom.
-	for _, side := range []string{"top", "right", "bottom", "left"} {
+	for _, side := range physicalSides {
 		s.Set("border-"+side+"-width", "1px")
 		s.Set("border-"+side+"-style", "solid")
 		s.Set("border-"+side+"-color", "silver")
