@@ -31,3 +31,48 @@ func TestFlexBasisContent_SameAsAutoWithAutoMainSize(t *testing.T) {
 		})
 	}
 }
+
+// A content-based flex basis ignores the item's own main size: Blink's
+// MinMaxSizesFunc(kContent) / BlockSizeFunc(kContent) measure the content
+// (flex/flex_layout_algorithm.cc:960-985 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Each item's content is 50px
+// wide and 20px tall; flex-shrink:0 and a zero min size make the item's main
+// size its flex basis.
+func TestFlexBasisContent_IgnoresOwnMainSize(t *testing.T) {
+	tests := []struct {
+		name string
+		html string
+		main func(b *Box) float64
+		want float64
+	}{
+		{
+			name: "row, flex-basis content, width 100px",
+			html: `<div style="display:flex;width:300px"><div id="t" style="flex-basis:content;width:100px;flex-shrink:0;min-width:0"><div style="width:50px;height:20px"></div></div></div>`,
+			main: func(b *Box) float64 { return b.Width },
+			want: 50,
+		},
+		{
+			name: "column, flex-basis content, height 50px",
+			html: `<div style="display:flex;flex-direction:column"><div id="t" style="flex-basis:content;height:50px;flex-shrink:0;min-height:0"><div style="width:50px;height:20px"></div></div></div>`,
+			main: func(b *Box) float64 { return b.Height },
+			want: 20,
+		},
+		{
+			name: "column, unresolvable flex-basis 30%, height 50px",
+			html: `<div style="display:flex;flex-direction:column"><div id="t" style="flex-basis:30%;height:50px;flex-shrink:0;min-height:0"><div style="width:50px;height:20px"></div></div></div>`,
+			main: func(b *Box) float64 { return b.Height },
+			want: 20,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := findBoxByID(layoutRootTestHTML(t, `<!DOCTYPE html><body style="margin:0">`+tc.html), "t")
+			if b == nil {
+				t.Fatal("no #t box")
+			}
+			if got := tc.main(b); got != tc.want {
+				t.Errorf("item main size = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
