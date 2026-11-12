@@ -2663,7 +2663,7 @@ func (b *LayoutTreeBuilder) applyInitialLetter(flStyle, parentStyle *css.Style) 
 	paraFontPath := resolveFontPath(parentStyle, b.fontConfig)
 	paraAscent := text.FontAscentFromFont(paraFontSize, paraFontPath, nil)
 	paraDescent := text.FontDescentFromFont(paraFontSize, paraFontPath, nil)
-	_, descLeading := calculateLeadingSpace(lineHeight, paraAscent+paraDescent)
+	_, descLeading := calculateLeadingSpace(lineHeight, paraAscent+paraDescent, NewWritingDirectionMode(parentStyle))
 	paraLineDescent := paraDescent + descLeading
 
 	// Block-start margin (horizontal text) = the drop offset, the letter's

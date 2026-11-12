@@ -9,16 +9,23 @@ import (
 )
 
 // calculateLeadingSpace splits the leading between a line-height and a font
-// height: the ascent side gets the floor of half of it, in whole pixels, and
-// the descent side the rest, computed in LayoutUnits. Mirrors
+// height: the line-over side gets the floor of half of it, in whole pixels,
+// and the line-under side the rest, computed in LayoutUnits. Mirrors
 // CalculateLeadingSpace (core/layout/inline/line_utils.cc:36-45 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which
 // InlineBoxState::ComputeTextMetrics adds to the text metrics
-// (inline_box_state.cc:148-155).
-func calculateLeadingSpace(lineHeight, fontHeight float64) (ascentLeading, descentLeading float64) {
+// (inline_box_state.cc:148-155). louis14 measures a line's ascent from its
+// block-start, which is line-over except in the flipped-lines writing mode
+// (WritingDirectionMode.IsFlippedLines); there the floored half goes to the
+// descent (block-end) side.
+func calculateLeadingSpace(lineHeight, fontHeight float64, wdm WritingDirectionMode) (ascentLeading, descentLeading float64) {
 	leading := layoutunit.FromFloat64Round(lineHeight).Sub(layoutunit.FromFloat64Round(fontHeight))
-	ascent := math.Floor(leading.DivInt(2).Float64())
-	return ascent, leading.Float64() - ascent
+	over := math.Floor(leading.DivInt(2).Float64())
+	under := leading.Float64() - over
+	if wdm.IsFlippedLines() {
+		return under, over
+	}
+	return over, under
 }
 
 // usedLineHeight is style's line height for a run at fontSize: the

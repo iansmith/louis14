@@ -2843,7 +2843,7 @@ func createLineBoxEx(
 			desc = alignmentDescentFromFont(sidewaysVLR, fs, fontPath, fonts.Registry)
 		}
 		lineHt := usedLineHeight(style, fs, fonts, centralBaseline, func() string { return resolveFontPath(style, fonts) })
-		ascLeading, descLeading := calculateLeadingSpace(lineHt, asc+desc)
+		ascLeading, descLeading := calculateLeadingSpace(lineHt, asc+desc, wdm)
 		asc += ascLeading
 		desc += descLeading
 		return
@@ -3389,7 +3389,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 		// has no clamp): let strut ascent/descent go negative so a taller atomic
 		// inline (canvas, replaced) wins cleanly via the per-side max() below
 		// instead of leaking residual sub-pixel descent into the line box.
-		ascLeading, descLeading := calculateLeadingSpace(lineHt, strutAscent+strutDescent)
+		ascLeading, descLeading := calculateLeadingSpace(lineHt, strutAscent+strutDescent, wdm)
 		strutAscent += ascLeading
 		strutDescent += descLeading
 		maxAscent = strutAscent
@@ -3443,7 +3443,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// Negative half-leading (when line-height < font-size) is valid
 			// and reduces the inline box's ascent/descent contribution.
 			lineHt := usedLineHeight(rStyle, fontSize, fonts, centralBaseline, func() string { return resolveFontPath(rStyle, fonts) })
-			ascLeading, descLeading := calculateLeadingSpace(lineHt, ascent+descent)
+			ascLeading, descLeading := calculateLeadingSpace(lineHt, ascent+descent, wdm)
 			ascent += ascLeading
 			descent += descLeading
 			// CSS 2.1 §10.8.1: Inside a vertical-align: top/bottom subtree,
@@ -3493,7 +3493,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				lineHt := usedLineHeight(rStyle, fontSize, fonts, centralBaseline, func() string {
 					return resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd)
 				})
-				ascLeading, descLeading := calculateLeadingSpace(lineHt, ascent+descent)
+				ascLeading, descLeading := calculateLeadingSpace(lineHt, ascent+descent, wdm)
 				ascent += ascLeading
 				descent += descLeading
 			}
@@ -3531,7 +3531,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
 			}
 			lineHt := usedLineHeight(rStyle, fontSize, fonts, centralBaseline, func() string { return resolveFontPath(rStyle, fonts) })
-			ascLeading, descLeading := calculateLeadingSpace(lineHt, ascent+descent)
+			ascLeading, descLeading := calculateLeadingSpace(lineHt, ascent+descent, wdm)
 			ascent += ascLeading
 			descent += descLeading
 			if ascent > maxAscent {
