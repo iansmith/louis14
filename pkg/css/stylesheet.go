@@ -2,6 +2,7 @@ package css
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -99,12 +100,14 @@ const (
 
 // Rule represents a CSS rule (selector + declarations)
 type Rule struct {
-	Selector       Selector
-	Declarations   map[string]string // property -> value
-	Important      map[string]bool   // tracks which properties are !important
-	MediaQuery     *MediaQuery       // Phase 22: Optional media query wrapper
-	ContainerQuery *ContainerQuery   // Optional @container query wrapper
-	LayerName      string            // @layer name (empty = unlayered)
+	Selector Selector
+	// *DeclarationResult is the rule's declaration block: Declarations,
+	// Important and Order. A selector list's rules share one block, as
+	// Blink's one rule for the list does.
+	*DeclarationResult
+	MediaQuery     *MediaQuery     // Phase 22: Optional media query wrapper
+	ContainerQuery *ContainerQuery // Optional @container query wrapper
+	LayerName      string          // @layer name (empty = unlayered)
 
 	// ImportMediaQueries carries the comma-separated media-query-list from a
 	// conditional `@import url(...) <media-query-list>;` that brought this
@@ -338,7 +341,7 @@ type Stylesheet struct {
 	DefaultNamespace string
 }
 
-// stripCSSComments removes all /* ... */ comments from CSS source, while
+// StripComments removes all /* ... */ comments from CSS source, while
 // preserving string literals (comments inside strings are not stripped).
 //
 // Each comment is replaced with a single space so that adjacent tokens
@@ -355,7 +358,7 @@ type Stylesheet struct {
 // Mirrors Blink's CSSTokenizer::ConsumeToken behavior at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which never bridges between CDO
 // and CDC — they are emitted as solo tokens regardless of context.
-func stripCSSComments(css string) string {
+func StripComments(css string) string {
 	var b strings.Builder
 	b.Grow(len(css))
 	i := 0
@@ -804,7 +807,7 @@ func ParseStylesheet(css string, ctx *ParserContext) (*Stylesheet, error) {
 	}
 
 	// Strip comments before parsing
-	css = stripCSSComments(css)
+	css = StripComments(css)
 
 	// CSS Syntax §5.4.1 `parse-a-stylesheet` discards CDO and CDC tokens at
 	// the top level — this is how the legacy `<style><!-- ... --></style>`
@@ -1207,9 +1210,8 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		}
 		selector := parseSelector(sel)
 		rules = append(rules, Rule{
-			Selector:     selector,
-			Declarations: declResult.Declarations,
-			Important:    declResult.Important,
+			Selector:          selector,
+			DeclarationResult: declResult,
 		})
 	}
 
@@ -1283,9 +1285,8 @@ func parseRule(ruleStr string) (Rule, error) {
 	declResult := parseDeclarations(declStr)
 
 	return Rule{
-		Selector:     selector,
-		Declarations: declResult.Declarations,
-		Important:    declResult.Important,
+		Selector:          selector,
+		DeclarationResult: declResult,
 	}, nil
 }
 
@@ -2943,17 +2944,11 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 		// priority strip before the token-stream check at SHA
 		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f). variable-supports-046
 		// (`--a: var(--b) !important`) requires this.
-		if bang := lastTopLevelBang(value); bang >= 0 {
-			flag := strings.TrimSpace(value[bang+1:])
-			if !strings.EqualFold(flag, "important") {
-				return false, false
-			}
-			value = strings.TrimSpace(value[:bang])
-			// Double-!important is malformed (variable-supports-049,
-			// `var(--b) !important !important`).
-			if lastTopLevelBang(value) >= 0 {
-				return false, false
-			}
+		// Double-!important is malformed (variable-supports-049,
+		// `var(--b) !important !important`).
+		var ok bool
+		if value, _, ok = SplitPriority(value); !ok {
+			return false, false
 		}
 		if value == "" {
 			// CSS Custom Properties §3: an empty declaration value is legal
@@ -2990,22 +2985,11 @@ func consumeSupportsDecl(inner string) (result bool, ok bool) {
 	// CSSParserImpl::ConsumeDeclarationValue priority handling at SHA
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. Required by at-supports-044
 	// (`(--foo: whatever !bogus)` must evaluate false).
-	if bang := lastTopLevelBang(value); bang >= 0 {
-		flag := strings.TrimSpace(value[bang+1:])
-		if !strings.EqualFold(flag, "important") {
-			return false, false
-		}
-		bare := strings.TrimSpace(value[:bang])
-		if bare == "" {
-			return false, false
-		}
-		// A second top-level `!` after stripping `!important` is a malformed
-		// duplicate priority annotation — reject (variable-supports-017,
-		// `var(--a) !important !important`).
-		if lastTopLevelBang(bare) >= 0 {
-			return false, false
-		}
-		value = bare
+	// A second priority annotation is malformed too (variable-supports-017,
+	// `var(--a) !important !important`).
+	value, _, ok = SplitPriority(value)
+	if !ok || value == "" {
+		return false, false
 	}
 
 	// Validate the value is a syntactically well-formed <declaration-value>:
@@ -3142,6 +3126,35 @@ func isKnownCSSValueFunction(name string) bool {
 		return true
 	}
 	return false
+}
+
+// SplitDeclarations splits a declaration list at its top-level `;`s,
+// leaving those inside strings, functions and blocks (a data: URL's
+// `;utf8,`) alone.
+func SplitDeclarations(list string) []string {
+	return splitDeclarationParts(list)
+}
+
+// SplitPriority splits a declaration's value from its priority annotation:
+// the value, whether it was `!important` (`!` and `important`, ASCII
+// case-insensitive, whitespace allowed between), and false when the
+// declaration is invalid — any other top-level `!`, or a second annotation
+// (`!important !important`). A `!` inside a function or block belongs to
+// the value (CSSParserImpl::ConsumeImportantAnnotationIfPresent @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func SplitPriority(value string) (string, bool, bool) {
+	bang := lastTopLevelBang(value)
+	if bang < 0 {
+		return value, false, true
+	}
+	if !strings.EqualFold(strings.TrimSpace(value[bang+1:]), "important") {
+		return "", false, false
+	}
+	value = strings.TrimSpace(value[:bang])
+	if lastTopLevelBang(value) >= 0 {
+		return "", false, false
+	}
+	return value, true, true
 }
 
 // lastTopLevelBang returns the index of the last `!` token at the top level
@@ -4832,10 +4845,143 @@ func isHexDigit(c byte) bool {
 	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
-// DeclarationResult holds parsed declarations and their important flags
+// DeclarationResult is a declaration block: each property's value, the
+// properties declared !important, and the properties in source order (a
+// property declared twice at its last position), the order the cascade
+// applies them in (applyDeclarationPass). Set and Remove keep the three in
+// step; they are the only writers (CSSPropertyValueSet's ordered vector @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 type DeclarationResult struct {
 	Declarations map[string]string
 	Important    map[string]bool
+	Order        []string
+}
+
+// newDeclarationResult returns an empty declaration block.
+func newDeclarationResult() *DeclarationResult {
+	return &DeclarationResult{Declarations: make(map[string]string), Important: make(map[string]bool)}
+}
+
+// Set declares property with value and priority, as the block's last
+// declaration.
+func (d *DeclarationResult) Set(property, value string, important bool) {
+	d.Remove(property)
+	d.Declarations[property] = value
+	if important {
+		d.Important[property] = true
+	}
+	d.Order = append(d.Order, property)
+}
+
+// SetDeclaration parses value as exactly property's value (comments
+// stripped) and sets what a declaration of it stores — a logical longhand
+// under its storage key, a shorthand as all its longhands, those its value
+// omits at their initial value — as the block's last declarations, not
+// important, replacing what property set before
+// (MutableCSSPropertyValueSet::ParseAndSetProperty; CSSParser::ParseValue,
+// core/css/parser/css_parser.cc:179-230 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It reports false, changing
+// nothing, when value is not one valid value of property: a `;` in it would
+// start another declaration, so it rejects the value.
+func (d *DeclarationResult) SetDeclaration(property, value string) bool {
+	value = StripComments(value)
+	// One value: no `;` starting another declaration, and no priority
+	// (that comes only through setProperty's third argument).
+	if len(SplitDeclarations(value)) != 1 {
+		return false
+	}
+	if _, important, ok := SplitPriority(value); !ok || important {
+		return false
+	}
+	parsed := parseDeclarations(property + ": " + value)
+	keys := declarationKeys(property)
+	if len(parsed.Order) == 0 {
+		return false
+	}
+	for _, p := range parsed.Order {
+		if !slices.Contains(keys, p) && p != property {
+			return false
+		}
+	}
+	d.removeKeys(property, keys)
+	if v, whole := parsed.Declarations[property]; whole {
+		// Stored whole (a longhand, or a var() shorthand awaiting
+		// substitution): its longhands are pending, not initial.
+		d.Set(property, v, false)
+		return true
+	}
+	for _, p := range keys {
+		v, set := parsed.Declarations[p]
+		if !set {
+			v = "initial"
+		}
+		d.Set(p, v, false)
+	}
+	return true
+}
+
+// declarationKeys is what a declaration of property can store, in
+// longhand order: a shorthand's longhands (shorthandLonghands, Blink's
+// shorthandForProperty @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) or the
+// property itself, a logical longhand under its storage key.
+func declarationKeys(property string) []string {
+	longhands := shorthandLonghands[property]
+	if longhands == nil {
+		longhands = append([]string{property}, storedWholeShorthandLonghands[property]...)
+	}
+	keys := make([]string, len(longhands))
+	for i, lh := range longhands {
+		keys[i] = storageKey(lh)
+	}
+	return keys
+}
+
+// RemoveDeclaration drops what a declaration of property sets: property
+// itself (a var() shorthand stored whole), and its declarationKeys.
+func (d *DeclarationResult) RemoveDeclaration(property string) {
+	d.removeKeys(property, declarationKeys(property))
+}
+
+func (d *DeclarationResult) removeKeys(property string, keys []string) {
+	d.RemoveFunc(func(p string) bool {
+		return p == property || slices.Contains(keys, p)
+	})
+}
+
+// Value returns property's declared value: under its own name, a logical
+// longhand's under its storage key, or a shorthand's serialized from its
+// longhands (serializeShorthand).
+func (d *DeclarationResult) Value(property string) (string, bool) {
+	if v, ok := d.Declarations[storageKey(property)]; ok {
+		return v, true
+	}
+	if _, ok := shorthandLonghands[property]; ok {
+		return d.serializeShorthand(property), true
+	}
+	return "", false
+}
+
+// RemoveFunc drops the declarations of the properties drop selects, in one
+// pass over Order.
+func (d *DeclarationResult) RemoveFunc(drop func(property string) bool) {
+	d.Order = slices.DeleteFunc(d.Order, func(p string) bool {
+		if !drop(p) {
+			return false
+		}
+		delete(d.Declarations, p)
+		delete(d.Important, p)
+		return true
+	})
+}
+
+// Remove drops property's declaration.
+func (d *DeclarationResult) Remove(property string) {
+	if _, ok := d.Declarations[property]; !ok {
+		return
+	}
+	delete(d.Declarations, property)
+	delete(d.Important, property)
+	d.Order = slices.DeleteFunc(d.Order, func(p string) bool { return p == property })
 }
 
 // parseDeclarations parses CSS declarations into a map.
@@ -4845,12 +4991,9 @@ type DeclarationResult struct {
 // This implements CSS Animations §4.1, which treats !important inside
 // @keyframes as invalid. Blink: CSSParserImpl::ConsumeKeyframeStyleRule @
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult {
+func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult {
 	skipImportant := len(dropImportant) > 0 && dropImportant[0]
-	result := DeclarationResult{
-		Declarations: make(map[string]string),
-		Important:    make(map[string]bool),
-	}
+	result := newDeclarationResult()
 
 	parts := splitDeclarationParts(declStr)
 
@@ -4926,34 +5069,23 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		// token. `rawValue` differs from `value` only in unescaped sequences
 		// (escapes can't appear inside the !important suffix), so the same
 		// suffix-locator works for both.
-		isImportant := false
-		if bangIdx := lastTopLevelBang(value); bangIdx >= 0 {
-			afterBang := strings.TrimSpace(value[bangIdx+1:])
-			if strings.EqualFold(afterBang, "important") {
-				value = strings.TrimSpace(value[:bangIdx])
-				isImportant = true
-				// After stripping one `!important`, any remaining top-level
-				// `!` is a malformed second priority annotation — reject the
-				// entire declaration (e.g. `var(--b) !important !important`).
-				if lastTopLevelBang(value) >= 0 {
-					continue
-				}
-			} else {
-				// Invalid use of ! at top level (e.g., "red ! error") —
-				// reject entire declaration.
-				continue
-			}
+		value, isImportant, ok := SplitPriority(value)
+		if !ok {
+			continue
 		}
-		if rawBangIdx := lastTopLevelBang(rawValue); rawBangIdx >= 0 {
-			afterRawBang := strings.TrimSpace(rawValue[rawBangIdx+1:])
-			if strings.EqualFold(afterRawBang, "important") {
-				rawValue = strings.TrimSpace(rawValue[:rawBangIdx])
-			}
+		if v, _, ok := SplitPriority(rawValue); ok {
+			rawValue = v
 		}
 
 		// CSS Animations §4.1: !important inside @keyframes is invalid — drop
 		// the declaration entirely so it cannot overwrite a prior normal value.
 		if isImportant && skipImportant {
+			continue
+		}
+		// A priority with no value before it (`margin-left: !important`) is
+		// an empty declaration, invalid for a non-custom property
+		// (CSSPropertyParser::ParseValue consumes nothing).
+		if value == "" && !strings.HasPrefix(rawProperty, "--") {
 			continue
 		}
 
@@ -5130,12 +5262,14 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 		// The `all` shorthand cannot be expanded at parse time because its
 		// resolution depends on cascade-time context (the property snapshot for
 		// `revert`, inheritance for `inherit`, and the per-element set of
-		// declared longhands that must be reset). Store it verbatim so the
-		// cascade-time expandShorthand call applies it after every other
-		// declaration in the rule. Mirrors Blink's all.cc which never participates
-		// in StyleBuilder expansion the way other shorthands do; it's handled by
-		// the cascade's CSSProperty(kAll)::ApplyValue at SHA
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+		// declared longhands that must be reset). Store it verbatim; the
+		// cascade-time expandShorthand call applies it before the rule's other
+		// declarations, which by then are only the ones after it (below).
+		// Blink expands it at parse time like any shorthand given a CSS-wide
+		// keyword (CSSPropertyParser::ParseCSSWideKeyword,
+		// css_property_parser.cc:447-469 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 defers it for the
+		// cascade-time context above.
 		if property == "all" {
 			// Within one declaration block, !important declarations beat
 			// non-important ones regardless of source order (CSS Cascade 4
@@ -5144,10 +5278,15 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			if !isImportant && result.Important["all"] {
 				continue
 			}
-			result.Declarations["all"] = value
-			if isImportant {
-				result.Important["all"] = true
-			}
+			// `all` applies at its source position: it replaces the earlier
+			// declarations in this block of the longhands it covers, unless
+			// they are !important and it is not. The cascade applies a
+			// rule's `all` before its other declarations, so only the later
+			// ones remain to override it.
+			result.RemoveFunc(func(k string) bool {
+				return allShorthandCovers(k) && (isImportant || !result.Important[k])
+			})
+			result.Set("all", value, isImportant)
 			continue
 		}
 
@@ -5170,10 +5309,7 @@ func parseDeclarations(declStr string, dropImportant ...bool) DeclarationResult 
 			if !isImportant && result.Important[k] {
 				continue
 			}
-			result.Declarations[k] = v
-			if isImportant {
-				result.Important[k] = true
-			}
+			result.Set(k, v, isImportant)
 		}
 	}
 

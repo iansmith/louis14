@@ -2,6 +2,7 @@ package js
 
 import (
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -259,18 +260,25 @@ func registerDocumentNodeMethods(ctx *domContext, docObj *goja.Object, doc *html
 		}
 		return newElement(call.Arguments[0].String())
 	})
-	// createElementNS(namespaceURI, qualifiedName). Parsed elements carry
-	// a namespace (html.Node.NamespaceURI), but this binding still ignores
-	// its namespace argument, so the element reports the XHTML namespace;
-	// element identity in the renderer is by lowercase tag name (matching
-	// the tokenizer). The argument is accepted for compatibility with WPT
-	// tests that build SVG nodes via
-	// document.createElementNS('http://www.w3.org/2000/svg', 'rect').
+	// createElementNS(namespaceURI, qualifiedName): the element takes the
+	// namespace (Document::createElementNS, core/dom/document.cc @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a script-built SVG
+	// element is styled as a parsed one is. Its local name is the qualified
+	// name after any prefix; element identity in the renderer is by
+	// lowercase tag name (matching the tokenizer).
 	docObj.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
 		if len(call.Arguments) < 2 {
 			panic(vm.NewTypeError("Failed to execute 'createElementNS' on 'Document': 2 arguments required"))
 		}
-		return newElement(call.Arguments[1].String())
+		qname := call.Arguments[1].String()
+		if i := strings.IndexByte(qname, ':'); i >= 0 {
+			qname = qname[i+1:]
+		}
+		el := newElementNode(strings.ToLower(qname))
+		if ns := call.Arguments[0]; !goja.IsNull(ns) && !goja.IsUndefined(ns) {
+			el.SetNamespaceURI(ns.String())
+		}
+		return ctx.elementProxy(el)
 	})
 	docObj.Set("createTextNode", func(call goja.FunctionCall) goja.Value {
 		text := ""
@@ -1337,7 +1345,14 @@ func setTextContent(node *html.Node, text string) {
 // SetPropertyInternal, core/css/abstract_property_set_css_style_declaration.cc:
 // 254-282 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Only display is
 // validated here; other properties are stored as written (LOU-684).
+// A value carrying a priority annotation (`red !important`) is invalid: the
+// priority comes only through setProperty's third argument.
 func cssomValueAccepted(property, value string) bool {
+	// A comment is not syntax: `5px /* !important */` is 5px.
+	value = css.StripComments(value)
+	if _, important, ok := css.SplitPriority(value); !ok || important {
+		return false
+	}
 	return property != "display" || css.IsValidDisplayValue(value)
 }
 
@@ -1371,12 +1386,23 @@ func (s *styleAccessor) Get(key string) goja.Value {
 			}
 			prop := call.Arguments[0].String()
 			val := call.Arguments[1].String()
-			styles := parseInlineStyle(s.getStyleAttr())
+			// CSSOM §6.7.3 step 5: the priority is "important" (ASCII
+			// case-insensitive) or empty; anything else ignores the call.
+			important := false
+			if len(call.Arguments) > 2 && !goja.IsUndefined(call.Arguments[2]) {
+				switch prio := call.Arguments[2].String(); {
+				case strings.EqualFold(prio, "important"):
+					important = true
+				case prio != "":
+					return goja.Undefined()
+				}
+			}
+			styles := parseDeclarationList(s.getStyleAttr())
 			// CSSOM §6.7.3 step 4: an empty value means removeProperty.
 			if strings.TrimSpace(val) == "" {
-				delete(styles, prop)
+				styles = styles.remove(prop)
 			} else if cssomValueAccepted(prop, val) {
-				styles[prop] = val
+				styles = styles.set(prop, val, important)
 			} else {
 				return goja.Undefined()
 			}
@@ -1389,10 +1415,9 @@ func (s *styleAccessor) Get(key string) goja.Value {
 				return s.vm.ToValue("")
 			}
 			prop := call.Arguments[0].String()
-			styles := parseInlineStyle(s.getStyleAttr())
-			old := styles[prop]
-			delete(styles, prop)
-			s.setStyleAttr(serializeInlineStyle(styles))
+			styles := parseDeclarationList(s.getStyleAttr())
+			old := styles.get(prop).value
+			s.setStyleAttr(serializeInlineStyle(styles.remove(prop)))
 			return s.vm.ToValue(old)
 		})
 	case "getPropertyValue":
@@ -1400,12 +1425,16 @@ func (s *styleAccessor) Get(key string) goja.Value {
 			if len(call.Arguments) == 0 {
 				return s.vm.ToValue("")
 			}
-			styles := parseInlineStyle(s.getStyleAttr())
-			return s.vm.ToValue(styles[call.Arguments[0].String()])
+			return s.vm.ToValue(parseDeclarationList(s.getStyleAttr()).get(call.Arguments[0].String()).value)
 		})
 	case "getPropertyPriority":
-		// Inline-style !important tracking isn't modeled; always "".
+		// "important" for an !important declaration, else ""
+		// (AbstractPropertySetCSSStyleDeclaration::getPropertyPriority @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		return s.vm.ToValue(func(call goja.FunctionCall) goja.Value {
+			if len(call.Arguments) > 0 && parseDeclarationList(s.getStyleAttr()).get(call.Arguments[0].String()).important {
+				return s.vm.ToValue("important")
+			}
 			return s.vm.ToValue("")
 		})
 	case "cssText":
@@ -1414,12 +1443,7 @@ func (s *styleAccessor) Get(key string) goja.Value {
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		return s.vm.ToValue(cssTextForDeclarations(parseDeclarationList(s.getStyleAttr())))
 	}
-	cssProp := camelToKebab(key)
-	styles := parseInlineStyle(s.getStyleAttr())
-	if val, ok := styles[cssProp]; ok {
-		return s.vm.ToValue(val)
-	}
-	return s.vm.ToValue("")
+	return s.vm.ToValue(parseDeclarationList(s.getStyleAttr()).get(camelToKebab(key)).value)
 }
 
 func (s *styleAccessor) Set(key string, val goja.Value) bool {
@@ -1432,13 +1456,13 @@ func (s *styleAccessor) Set(key string, val goja.Value) bool {
 		return true
 	}
 	cssProp := camelToKebab(key)
-	styles := parseInlineStyle(s.getStyleAttr())
+	styles := parseDeclarationList(s.getStyleAttr())
 	// CSSOM: assigning the empty string removes the declaration
 	// (CSSStyleDeclaration attribute setter; `el.style.counterSet = ""`).
 	if v := val.String(); strings.TrimSpace(v) == "" {
-		delete(styles, cssProp)
+		styles = styles.remove(cssProp)
 	} else if cssomValueAccepted(cssProp, v) {
-		styles[cssProp] = v
+		styles = styles.set(cssProp, v, false)
 	} else {
 		return true
 	}
@@ -1451,18 +1475,15 @@ func (s *styleAccessor) Has(key string) bool {
 }
 
 func (s *styleAccessor) Delete(key string) bool {
-	cssProp := camelToKebab(key)
-	styles := parseInlineStyle(s.getStyleAttr())
-	delete(styles, cssProp)
-	s.setStyleAttr(serializeInlineStyle(styles))
+	s.setStyleAttr(serializeInlineStyle(parseDeclarationList(s.getStyleAttr()).remove(camelToKebab(key))))
 	return true
 }
 
 func (s *styleAccessor) Keys() []string {
-	styles := parseInlineStyle(s.getStyleAttr())
+	styles := parseDeclarationList(s.getStyleAttr())
 	keys := make([]string, 0, len(styles))
-	for k := range styles {
-		keys = append(keys, k)
+	for _, d := range styles {
+		keys = append(keys, d.name)
 	}
 	return keys
 }
@@ -1481,57 +1502,97 @@ func (s *styleAccessor) setStyleAttr(val string) {
 	s.node.Attributes["style"] = val
 }
 
-// cssDeclaration is one name: value pair of a declaration block.
+// cssDeclaration is one declaration of a declaration block: its name,
+// value and priority.
 type cssDeclaration struct {
 	name, value string
+	important   bool
 }
 
+// cssDeclarations is a declaration block in source order, one declaration
+// per name.
+type cssDeclarations []cssDeclaration
+
 // parseDeclarationList splits a CSS declaration list into its
-// declarations in source order, skipping ones without a colon.
-func parseDeclarationList(s string) []cssDeclaration {
-	var decls []cssDeclaration
-	for _, decl := range strings.Split(s, ";") {
+// declarations in source order, the priority split off each value
+// (css.SplitPriority), comments stripped. A declaration without a colon or
+// with a malformed priority is skipped; a later one replaces an earlier one
+// of the same name, unless that one is important and it is not (as the
+// cascade orders a block, CSS Cascade 4 §6.4).
+func parseDeclarationList(s string) cssDeclarations {
+	var decls cssDeclarations
+	for _, decl := range css.SplitDeclarations(css.StripComments(s)) {
 		idx := strings.IndexByte(decl, ':')
 		if idx < 0 {
 			continue
 		}
-		decls = append(decls, cssDeclaration{
-			name:  strings.TrimSpace(decl[:idx]),
-			value: strings.TrimSpace(decl[idx+1:]),
-		})
+		value, important, ok := css.SplitPriority(strings.TrimSpace(decl[idx+1:]))
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(decl[:idx])
+		if decls.get(name).important && !important {
+			continue
+		}
+		decls = decls.set(name, value, important)
 	}
 	return decls
 }
 
+// get returns the declaration named name, the zero declaration when absent.
+func (d cssDeclarations) get(name string) cssDeclaration {
+	for _, decl := range d {
+		if decl.name == name {
+			return decl
+		}
+	}
+	return cssDeclaration{}
+}
+
+// set replaces the declaration named name in place, or appends it.
+func (d cssDeclarations) set(name, value string, important bool) cssDeclarations {
+	for i := range d {
+		if d[i].name == name {
+			d[i].value, d[i].important = value, important
+			return d
+		}
+	}
+	return append(d, cssDeclaration{name, value, important})
+}
+
+// remove drops the declaration named name.
+func (d cssDeclarations) remove(name string) cssDeclarations {
+	return slices.DeleteFunc(d, func(decl cssDeclaration) bool { return decl.name == name })
+}
+
+// text is a declaration's serialisation: "name: value", with " !important"
+// for an important one (CSSPropertyValueSet::AsText,
+// core/css/css_property_value_set.cc:699 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (d cssDeclaration) text() string {
+	if d.important {
+		return d.name + ": " + d.value + " !important"
+	}
+	return d.name + ": " + d.value
+}
+
 // cssTextForDeclarations serialises a declaration block the way
-// CSSPropertyValueSet::AsText does (core/css/css_property_value_set.cc:699 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): "name: value;" per
-// declaration, separated by a space.
-func cssTextForDeclarations(decls []cssDeclaration) string {
+// CSSPropertyValueSet::AsText does: "name: value;" per declaration,
+// separated by a space.
+func cssTextForDeclarations(decls cssDeclarations) string {
 	parts := make([]string, len(decls))
 	for i, d := range decls {
-		parts[i] = d.name + ": " + d.value + ";"
+		parts[i] = d.text() + ";"
 	}
 	return strings.Join(parts, " ")
 }
 
-// parseInlineStyle parses a CSS inline style string into a map.
-func parseInlineStyle(s string) map[string]string {
-	result := make(map[string]string)
-	for _, d := range parseDeclarationList(s) {
-		result[d.name] = d.value
-	}
-	return result
-}
-
-// serializeInlineStyle converts a map back to a CSS inline style string.
-func serializeInlineStyle(m map[string]string) string {
-	if len(m) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(m))
-	for k, v := range m {
-		parts = append(parts, k+": "+v)
+// serializeInlineStyle writes a declaration block back to a style
+// attribute.
+func serializeInlineStyle(decls cssDeclarations) string {
+	parts := make([]string, len(decls))
+	for i, d := range decls {
+		parts[i] = d.text()
 	}
 	return strings.Join(parts, "; ")
 }
@@ -1575,9 +1636,12 @@ func mergeInlineStyle(node *html.Node, values map[string]string) {
 	if node.Attributes == nil {
 		node.Attributes = make(map[string]string)
 	}
-	inline := parseInlineStyle(node.Attributes["style"])
+	inline := parseDeclarationList(node.Attributes["style"])
 	for prop, v := range values {
-		inline[prop] = v
+		// An inline !important declaration outranks the animation.
+		if !inline.get(prop).important {
+			inline = inline.set(prop, v, false)
+		}
 	}
 	node.Attributes["style"] = serializeInlineStyle(inline)
 }

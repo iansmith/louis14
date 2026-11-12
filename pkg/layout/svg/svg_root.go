@@ -417,14 +417,10 @@ func buildSVGTreeWithResources(elt ElementAdapter, lengthCtx SVGLengthContext, s
 	}
 	// Delegate the rest to the original dispatch. For container kinds
 	// we recurse with the resource-aware variant so a paint server
-	// declared inside a `<g>` is still registered. SVGShape leaves
+	// declared inside a `<g>` is still registered. Leaves (newSVGLeaf)
 	// don't recurse (they have no SVG-element children).
-	if svgShapeTags[tag] {
-		shape := NewSVGShape(elt, lengthCtx)
-		if shape != nil && styleResolver != nil {
-			shape.Style = styleResolver(elt)
-		}
-		return shape
+	if leaf, ok := newSVGLeaf(elt, lengthCtx, styleResolver); ok {
+		return leaf
 	}
 	switch tag {
 	case "text":
@@ -509,7 +505,7 @@ func tryBuildSVGText(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolv
 // there. `<text>` falling back to the generic SVGContainer path
 // instead of becoming an SVGText preserves the pre-existing (and
 // still-correct) container-level filter dispatch
-// (trySVGContainerFilterDispatch in pkg/render/svg_filter_container_painter.go),
+// (trySVGFilterDispatch in pkg/render/svg_filter_container_painter.go),
 // which runs even for an empty/childless container — exactly what a
 // filtered `<text>` degrades to under SVGContainer, and exactly the
 // case svg-visibility-hidden-element-with-filter-003.html exercises
@@ -531,7 +527,7 @@ func svgTextHasUnsupportedFilter(style *css.Style) bool {
 // constructor based on its tag name. Phase 2 recognizes the seven
 // shape tags (<rect>, <circle>, <ellipse>, <line>, <polyline>,
 // <polygon>, <path>) and routes them to SVGShape. LOU-345 adds
-// <text>, routed to SVGText. All other tags fall through to
+// <text>, routed to SVGText; LOU-797 routes <image> to SVGImage. All other tags fall through to
 // SVGContainer, the recursive structural shell from Phase 1 — Phase 3
 // promotes <g> to SVGTransformableContainer and nested <svg> to
 // SVGViewportContainer; Phase 6 routes
@@ -547,15 +543,11 @@ func BuildSVGTree(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver 
 		return nil
 	}
 	tag := elt.TagName()
-	if svgShapeTags[tag] {
-		// Shape leaves do not have SVG-element children (text content
-		// inside a <rect> is ignored per SVG 1.1 §5.6). Skip the
-		// recursive child walk.
-		shape := NewSVGShape(elt, lengthCtx)
-		if shape != nil && styleResolver != nil {
-			shape.Style = styleResolver(elt)
-		}
-		return shape
+	if leaf, ok := newSVGLeaf(elt, lengthCtx, styleResolver); ok {
+		// Leaves do not have SVG-element children (text content inside a
+		// <rect> is ignored per SVG 1.1 §5.6). Skip the recursive child
+		// walk.
+		return leaf
 	}
 	switch tag {
 	case "text":

@@ -107,3 +107,41 @@ func TestBackgroundGeometry_TransformedBoxImageNotDoubleOffset(t *testing.T) {
 	wantRGB(t, img, 110, 40, 255, 165, 0, "rotated: orange half now on the left")
 	wantRGB(t, img, 130, 40, 0, 0, 255, "rotated: blue half now on the right")
 }
+
+// backgroundDivPage is a 50px div styled with decl, in a 100px viewport.
+func backgroundDivPage(t *testing.T, decl string) *image.RGBA {
+	t.Helper()
+	return RenderPage(t, `<!DOCTYPE html><style>body{margin:0}div{width:50px;height:50px;`+decl+`}</style><div></div>`, 100, 100)
+}
+
+// LOU-803: a background-size component of 0 is a zero length, not auto. A
+// zero tile dimension gives an empty tile (CalculateFillTileSize's
+// kSizeLength branch keeps it, background_image_geometry.cc:406-482), and
+// an empty tile paints no image (box_painter_base.cc:1281), so only the
+// background colour shows: vars-background-shorthand-001's fourth box.
+// "0" and "0 auto" cover the one- and two-value parses.
+func TestBackgroundSizeZeroPaintsNoImage(t *testing.T) {
+	for _, size := range []string{"0 0", "0", "0px 20px", "20px 0%", "0 auto"} {
+		img := backgroundDivPage(t, "background:green linear-gradient(red, red) center / "+size)
+		wantRGB(t, img, 25, 25, 0, 128, 0, "background-size: "+size+": no gradient tile")
+	}
+}
+
+// A background-size length is resolved against the element's style: its
+// viewport for vw and vh and its font for em, in the shorthand and the
+// longhand alike, so 10vw in a 100px-wide viewport is a 10px tile, not an
+// empty one, and 0.5em of a 20px font is 10px, not 8px of the initial 16px.
+func TestBackgroundSizeResolvedAgainstElementStyle(t *testing.T) {
+	for _, decl := range []string{
+		"background: green linear-gradient(red,red) 0 0 / 10vw 20px no-repeat",
+		"background: green linear-gradient(red,red) 0 0 no-repeat; background-size: 10vw 20px",
+		"background: linear-gradient(red,red) 0 0 / 10vw 20px no-repeat, green linear-gradient(blue,blue) 40px 40px / 5vh 5vh no-repeat",
+		"font-size: 20px; background: green linear-gradient(red,red) 0 0 / 0.5em 1em no-repeat",
+	} {
+		img := backgroundDivPage(t, decl)
+		wantRGB(t, img, 9, 5, 255, 0, 0, decl+": the 10px-wide tile at the origin")
+		wantRGB(t, img, 20, 5, 0, 128, 0, decl+": nothing beyond the 10px tile")
+	}
+	img := backgroundDivPage(t, "background: linear-gradient(red,red) 0 0 / 10vw 20px no-repeat, green linear-gradient(blue,blue) 40px 40px / 5vh 5vh no-repeat")
+	wantRGB(t, img, 42, 42, 0, 0, 255, "the second layer's 5vh tile")
+}

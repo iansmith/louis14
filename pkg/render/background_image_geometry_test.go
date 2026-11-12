@@ -38,7 +38,7 @@ func TestCalculateFillTileSize_CoverZeroWidthArea(t *testing.T) {
 // background-size-043/044): `200px auto` resolves the auto height as 100%
 // of the positioning area. CalculateFillTileSize :464-473.
 func TestCalculateFillTileSize_AutoWithoutRatioIsHundredPercent(t *testing.T) {
-	fl := &css.FillLayer{Size: css.BackgroundSize{Width: 200}}
+	fl := &css.FillLayer{Size: css.BackgroundSize{Width: 200, HasWidth: true}}
 	got := calcTile(t, fl, layout.NaturalSizingInfoNone(), sz(400, 300))
 	if got != sz(200, 300) {
 		t.Errorf("tile = %v, want 200x300", got)

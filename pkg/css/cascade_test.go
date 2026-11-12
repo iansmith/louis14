@@ -453,6 +453,39 @@ func TestSVGWidthHeightAttrsMapToCSS(t *testing.T) {
 	}
 }
 
+// An <image>'s x, y, width and height map to CSS only for an SVG <image>
+// (svg_image_element.cc:41-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// an HTML-namespace <image> keeps them as attributes.
+func TestSVGImageGeometryAttrsMapToCSS(t *testing.T) {
+	doc, err := html.Parse(`<image x="5" y="5" width="40" height="20"><svg><image x="-5" y="-6" width="40" height="20"/></svg>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen int
+	for node, style := range ApplyStylesToDocument(doc, 800, 600) {
+		if node.TagName != "image" {
+			continue
+		}
+		seen++
+		var got [4]string
+		mapped := false
+		for i, p := range [...]string{"x", "y", "width", "height"} {
+			v, ok := style.Get(p)
+			got[i], mapped = v, mapped || ok
+		}
+		if node.NamespaceURI() == html.SVGNamespaceURI {
+			if got != [4]string{"-5px", "-6px", "40px", "20px"} {
+				t.Errorf("SVG <image>: x, y, width, height = %q, want -5px -6px 40px 20px", got)
+			}
+		} else if mapped {
+			t.Errorf("HTML <image>: x, y, width, height = %q mapped to CSS, want none", got)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d <image> elements, want 2", seen)
+	}
+}
+
 // TestSVGLengthAttrToCSS covers the bare-number conversion and the rejection of
 // values that are not valid CSS lengths. strconv.ParseFloat parses "Inf"/
 // "Infinity", so without the math.IsInf guard width="Infinity" would become the
@@ -464,30 +497,34 @@ func TestSVGWidthHeightAttrsMapToCSS(t *testing.T) {
 // svg-intrinsic-size-005 and its reference).
 func TestSVGLengthAttrToCSS(t *testing.T) {
 	cases := []struct {
-		in   string
-		want string
-		ok   bool
+		in         string
+		want       string
+		ok         bool
+		negativeOK bool // an <image>'s x or y
 	}{
-		{"0", "0px", true},
-		{"120", "120px", true},
-		{"  55  ", "55px", true},
-		{"-5", "", false},
-		{"Infinity", "", false},
-		{"+Inf", "", false},
-		{"-Inf", "", false},
-		{"NaN", "", false},
-		{"1e400", "", false}, // overflows to +Inf via ErrRange
-		{"abc", "", false},
-		{"50%", "50%", true},
-		{"100px", "100px", true},
-		{"10em", "10em", true},
-		{"-5%", "", false},
-		{"%", "", false},
+		{"0", "0px", true, false},
+		{"120", "120px", true, false},
+		{"  55  ", "55px", true, false},
+		{"-5", "", false, false},
+		{"Infinity", "", false, false},
+		{"+Inf", "", false, false},
+		{"-Inf", "", false, false},
+		{"NaN", "", false, false},
+		{"1e400", "", false, false}, // overflows to +Inf via ErrRange
+		{"abc", "", false, false},
+		{"50%", "50%", true, false},
+		{"100px", "100px", true, false},
+		{"10em", "10em", true, false},
+		{"-5%", "", false, false},
+		{"%", "", false, false},
+		{"-5", "-5px", true, true},
+		{"-5%", "-5%", true, true},
+		{"-Inf", "", false, true},
 	}
 	for _, c := range cases {
-		got, ok := svgLengthAttrToCSS(c.in)
+		got, ok := svgLengthAttrToCSS(c.in, c.negativeOK)
 		if got != c.want || ok != c.ok {
-			t.Errorf("svgLengthAttrToCSS(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.ok)
+			t.Errorf("svgLengthAttrToCSS(%q, %v) = (%q, %v), want (%q, %v)", c.in, c.negativeOK, got, ok, c.want, c.ok)
 		}
 	}
 }

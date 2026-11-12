@@ -2,7 +2,6 @@ package css
 
 import (
 	"fmt"
-	"maps"
 	"math"
 	"slices"
 	"sort"
@@ -63,13 +62,11 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		style.Set("margin-left", "8px")
 	}
 
-	// Default margin for block elements: use logical markers so that
-	// resolveLogicalBoxProperties maps to the correct physical side in
-	// vertical/sideways writing modes (HTML spec §15.3.3).
+	// Default margin for block elements: logical margin-block, which
+	// resolveDirectionAwareProperties maps to the physical side for the
+	// writing-mode (HTML spec §15.3.3).
 	if node.TagName == "p" || node.TagName == "dl" ||
 		node.TagName == "hr" {
-		style.Set("margin-top", "1em")
-		style.Set("margin-bottom", "1em")
 		style.Set("_margin-block-start", "1em")
 		style.Set("_margin-block-end", "1em")
 	}
@@ -77,33 +74,21 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	// Headings: logical block margins per HTML spec.
 	switch node.TagName {
 	case "h1":
-		style.Set("margin-top", "0.67em")
-		style.Set("margin-bottom", "0.67em")
 		style.Set("_margin-block-start", "0.67em")
 		style.Set("_margin-block-end", "0.67em")
 	case "h2":
-		style.Set("margin-top", "0.83em")
-		style.Set("margin-bottom", "0.83em")
 		style.Set("_margin-block-start", "0.83em")
 		style.Set("_margin-block-end", "0.83em")
 	case "h3":
-		style.Set("margin-top", "1em")
-		style.Set("margin-bottom", "1em")
 		style.Set("_margin-block-start", "1em")
 		style.Set("_margin-block-end", "1em")
 	case "h4":
-		style.Set("margin-top", "1.33em")
-		style.Set("margin-bottom", "1.33em")
 		style.Set("_margin-block-start", "1.33em")
 		style.Set("_margin-block-end", "1.33em")
 	case "h5":
-		style.Set("margin-top", "1.67em")
-		style.Set("margin-bottom", "1.67em")
 		style.Set("_margin-block-start", "1.67em")
 		style.Set("_margin-block-end", "1.67em")
 	case "h6":
-		style.Set("margin-top", "2.33em")
-		style.Set("margin-bottom", "2.33em")
 		style.Set("_margin-block-start", "2.33em")
 		style.Set("_margin-block-end", "2.33em")
 	}
@@ -111,8 +96,6 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 	// Lists and blockquotes: logical block margins.
 	if node.TagName == "ul" || node.TagName == "ol" || node.TagName == "menu" ||
 		node.TagName == "dir" || node.TagName == "blockquote" || node.TagName == "figure" {
-		style.Set("margin-top", "1em")
-		style.Set("margin-bottom", "1em")
 		style.Set("_margin-block-start", "1em")
 		style.Set("_margin-block-end", "1em")
 	}
@@ -764,21 +747,10 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			currentLayerPriority = rulePriority
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		if allVal, hasAll := rule.Declarations["all"]; hasAll {
-			if !importantProps["all"] {
-				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
-			}
-		}
-		for property, value := range rule.Declarations {
-			if property == "all" {
-				continue
-			}
-			// Skip if already set by an important rule
-			if importantProps[property] {
-				continue
-			}
+		applyDeclarationPass(finalStyle, rule.DeclarationResult, false, importantProps, nil, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
-		}
+			finalStyle.setCascadePosition(property, cascadeRankAuthorNormal)
+		})
 	}
 	// Final layer's revert-layer entries — resolve against the snapshot of
 	// the last layer iterated. resolveCSSWideKeywords below still handles
@@ -841,21 +813,10 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 			currentImportantLayerPri = rulePri
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		if rule.Important["all"] {
-			if allVal, hasAll := rule.Declarations["all"]; hasAll {
-				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
-				importantProps["all"] = true
-			}
-		}
-		for property, value := range rule.Declarations {
-			if property == "all" {
-				continue
-			}
-			if rule.Important[property] {
-				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
-				importantProps[property] = true
-			}
-		}
+		applyDeclarationPass(finalStyle, rule.DeclarationResult, true, importantProps, nil, func(property, value string) {
+			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
+			finalStyle.setCascadePosition(property, cascadeRankAuthorImportant)
+		})
 	}
 	flushImportantLayer()
 
@@ -868,15 +829,16 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// inline styles then rolls back to that pre-inline state, restoring
 	// the unlayered/layered author value the stylesheets produced
 	// (revert-layer-009).
-	// Note: inline !important would override stylesheet !important, but we don't track that yet
+	//
+	// An inline normal declaration stays below an author !important one; an
+	// inline !important declaration sorts above it, and joins importantProps
+	// so the animation origin cannot override it either (CascadePriority
+	// with is_inline_style, StyleCascade @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; CSS Cascade 5 §6.4).
 	if styleAttr, ok := node.GetAttribute("style"); ok {
-		inlineStyle := ParseInlineStyle(styleAttr, ctx)
+		inline := parseInlineDeclarations(styleAttr, ctx)
 		preInlineSnap := snapshotForAllRevert(finalStyle)
-		for property, value := range inlineStyle.Properties {
-			if !importantProps[property] {
-				finalStyle.Set(property, value)
-			}
-		}
+		applyInlineDeclarations(finalStyle, inline, importantProps, finalStyle.setCascadePosition)
 		resolveRevertLayerOnly(finalStyle, revertSnap, preInlineSnap)
 	}
 
@@ -958,6 +920,8 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// ApplyInheritedProperties in applyStylesToNode) — so the key set IS the
 	// declared set. Literal `inherit` values re-inherit and are excluded.
 	recordCascadedProps(finalStyle)
+	finalStyle.cascadeImportant = importantProps
+	finalStyle.revertSnapshot = revertSnap
 
 	return finalStyle
 }
@@ -1553,7 +1517,9 @@ func resolvePseudoInheritKeyword(finalStyle *Style, parentStyles []*Style) {
 	}
 	parent := parentStyles[0]
 	for property, value := range finalStyle.Properties {
-		if strings.TrimSpace(value) != "inherit" {
+		// A logical longhand inherits through its physical one
+		// (resolveDirectionAwareProperties).
+		if strings.TrimSpace(value) != "inherit" || logicalLonghandStorageKeys[property] != "" {
 			continue
 		}
 		if parentVal, ok := parent.Get(property); ok {
@@ -1737,6 +1703,34 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	if isHighlight {
 		highlightAuthorProps = make(map[string]bool)
 	}
+	// pseudoAllowed filters a declaration to the pseudo-element's applicable
+	// properties; recordPseudoAuthor records an applied one as author-set.
+	// `all` resets every property, the highlight color pair included, so it
+	// counts as authoring that pair too — otherwise
+	// applySelectionCascade/applyHighlightPairedColorCascade sees neither
+	// side as author-set and reapplies the UA pair default over it.
+	pseudoAllowed := func(property string) bool {
+		return !(isMarker && !markerAllowedProperty(property)) &&
+			!(isSelection && !selectionAllowedProperty(property)) &&
+			!(isTargetText && !targetTextAllowedProperty(property)) &&
+			!(isCustomHighlight && !highlightAllowedProperty(property))
+	}
+	recordPseudoAuthor := func(property string) {
+		if property == "all" {
+			if isHighlight {
+				highlightAuthorProps["color"] = true
+				highlightAuthorProps["background-color"] = true
+			}
+			return
+		}
+		if isMarker {
+			markerAuthorProps[property] = true
+		}
+		if isHighlight {
+			highlightAuthorProps[property] = true
+			recordHighlightShorthandLonghands(highlightAuthorProps, property)
+		}
+	}
 
 	// Capture the pre-author baseline for `revert` resolution (mirrors
 	// ComputeStyle). For pseudo-elements there's no UA + presentational pass
@@ -1768,50 +1762,11 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			currentLayerPriority = rulePriority
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		if allVal, hasAll := rule.Declarations["all"]; hasAll {
-			if !importantProps["all"] && !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) && !(isCustomHighlight && !highlightAllowedProperty("all")) {
-				applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
-				// `all` resets EVERY property (including color/background-
-				// color) to its all-declared value, so it counts as
-				// authoring the highlight color pair too — otherwise
-				// applySelectionCascade/applyHighlightPairedColorCascade
-				// sees neither side as author-set and reapplies the UA
-				// pair default over whatever `all` just set.
-				if isHighlight {
-					highlightAuthorProps["color"] = true
-					highlightAuthorProps["background-color"] = true
-				}
-			}
-		}
-		for property, value := range rule.Declarations {
-			if property == "all" {
-				continue
-			}
-			// Skip if already set by an important rule
-			if importantProps[property] {
-				continue
-			}
-			if isMarker && !markerAllowedProperty(property) {
-				continue
-			}
-			if isSelection && !selectionAllowedProperty(property) {
-				continue
-			}
-			if isTargetText && !targetTextAllowedProperty(property) {
-				continue
-			}
-			if isCustomHighlight && !highlightAllowedProperty(property) {
-				continue
-			}
+		applyDeclarationPass(finalStyle, rule.DeclarationResult, false, importantProps, pseudoAllowed, func(property, value string) {
 			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
-			if isMarker {
-				markerAuthorProps[property] = true
-			}
-			if isHighlight {
-				highlightAuthorProps[property] = true
-				recordHighlightShorthandLonghands(highlightAuthorProps, property)
-			}
-		}
+			finalStyle.setCascadePosition(property, cascadeRankAuthorNormal)
+			recordPseudoAuthor(property)
+		})
 	}
 	if currentLayerPriority != -1 {
 		resolveRevertLayerOnly(finalStyle, pseudoOriginSnap, pseudoLayerSnap)
@@ -1854,48 +1809,11 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 			pseudoCurrentImportantPri = rulePri
 		}
 		visitedOnly := selectorMatchesVisited(rule.Selector)
-		if rule.Important["all"] {
-			if allVal, hasAll := rule.Declarations["all"]; hasAll {
-				if !(isMarker && !markerAllowedProperty("all")) && !(isSelection && !selectionAllowedProperty("all")) && !(isTargetText && !targetTextAllowedProperty("all")) && !(isCustomHighlight && !highlightAllowedProperty("all")) {
-					applyDeclarationWithVisitedFilter(finalStyle, "all", allVal, visitedOnly)
-					importantProps["all"] = true
-					// See the normal-priority `all` handling above for why
-					// this must also mark the highlight color pair authored.
-					if isHighlight {
-						highlightAuthorProps["color"] = true
-						highlightAuthorProps["background-color"] = true
-					}
-				}
-			}
-		}
-		for property, value := range rule.Declarations {
-			if property == "all" {
-				continue
-			}
-			if rule.Important[property] {
-				if isMarker && !markerAllowedProperty(property) {
-					continue
-				}
-				if isSelection && !selectionAllowedProperty(property) {
-					continue
-				}
-				if isTargetText && !targetTextAllowedProperty(property) {
-					continue
-				}
-				if isCustomHighlight && !highlightAllowedProperty(property) {
-					continue
-				}
-				applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
-				importantProps[property] = true
-				if isMarker {
-					markerAuthorProps[property] = true
-				}
-				if isHighlight {
-					highlightAuthorProps[property] = true
-					recordHighlightShorthandLonghands(highlightAuthorProps, property)
-				}
-			}
-		}
+		applyDeclarationPass(finalStyle, rule.DeclarationResult, true, importantProps, pseudoAllowed, func(property, value string) {
+			applyDeclarationWithVisitedFilter(finalStyle, property, value, visitedOnly)
+			finalStyle.setCascadePosition(property, cascadeRankAuthorImportant)
+			recordPseudoAuthor(property)
+		})
 	}
 	pseudoFlushImportant()
 
@@ -2012,6 +1930,11 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 	// animation's `inherit` is computed against the same inheritance parent
 	// as above.
 	resolvePseudoInheritKeyword(finalStyle, inheritParents)
+	// Logical longhands onto their physical sides, as for an element, once
+	// the animations have applied theirs.
+	if resolveDirectionAwareProperties(finalStyle) {
+		resolvePseudoInheritKeyword(finalStyle, inheritParents)
+	}
 	// sibling-index() / sibling-count() resolve against the originating
 	// element, before the font step (resolveTreeCountingFunctions).
 	resolveTreeCountingFunctions(node, finalStyle)
@@ -2622,16 +2545,16 @@ func resolveInheritValues(node *html.Node, style *Style, styles map[*html.Node]*
 }
 
 // resolveInheritKeywords replaces each `inherit` value with the parent's
-// computed value (or drops it when the parent has none). A logical border
-// marker (`_border-inline-start-width`, ...) is skipped: like Blink's
-// StyleCascade, which maps a logical property to its physical surrogate with
-// the element's own writing-mode/direction before applying `inherit`, the
-// keyword must inherit the parent's PHYSICAL value. resolveLogicalBoxProperties
-// carries the marker's `inherit` onto the physical property, and
-// applyStylesToNode then runs this again to resolve it.
+// computed value (or drops it when the parent has none). A logical
+// longhand's storage key is skipped: like Blink's StyleCascade, which maps a
+// logical property to its physical surrogate with the element's own
+// writing-mode/direction before applying `inherit`, the keyword must inherit
+// the parent's PHYSICAL value. resolveDirectionAwareProperties carries the
+// `inherit` onto the physical property, and applyStylesToNode then runs this
+// again to resolve it.
 func resolveInheritKeywords(node *html.Node, style *Style, styles map[*html.Node]*Style) {
 	for property := range style.Properties {
-		if property == "color" || strings.HasPrefix(property, "_border-") {
+		if property == "color" || logicalLonghandStorageKeys[property] != "" {
 			continue // color: resolveColorProperty; markers: see above
 		}
 		value, _ := style.Get(property)
@@ -2827,10 +2750,6 @@ func ApplyInheritedProperties(node *html.Node, style *Style, styles map[*html.No
 			if parentVal, ok := parentStyle.Get(prop); ok {
 				style.Set(prop, parentVal)
 				// Track that writing-mode was inherited, not explicitly set.
-				// This allows resolveLogicalSizeProperties to skip the
-				// vertical-mode resolution for inherited values, since the
-				// layout engine's transformToVerticalRL handles positioning
-				// as a post-pass and expects children to use horizontal dimensions.
 				if prop == "writing-mode" {
 					style.Set("_writing-mode-inherited", "true")
 				}
@@ -2904,256 +2823,157 @@ func (s *Style) InheritAppliedTextDecorationsFrom(parent *Style) {
 	}
 }
 
-// resolveLogicalSizeProperties remaps logical size properties (inline-size,
-// block-size, and their min/max variants) to the correct physical properties
-// based on the element's computed writing-mode.
-//
-// During shorthand expansion, inline-size is mapped to width (the default for
-// horizontal-tb). For vertical writing modes (vertical-rl, vertical-lr,
-// sideways-rl, sideways-lr), the inline axis is vertical, so inline-size must
-// map to height instead. This function fixes the mapping after the writing-mode
-// has been fully resolved (including inheritance).
-func resolveLogicalSizeProperties(style *Style) {
-	wm, _ := style.Get("writing-mode")
-	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||
-		wm == "sideways-rl" || wm == "sideways-lr"
-	if !isVertical {
-		return // horizontal-tb: default mapping is correct
-	}
-	// Remap for both explicitly-set and inherited writing-mode — logical
-	// axes are always computed from the element's used writing-mode.
+// Cascade ranks of the author-level origins, in increasing priority (CSS
+// Cascade 5 §6.4: author normal < style attribute normal < animations <
+// author important < style attribute important; CascadePriority with
+// is_inline_style, and CascadeOrigin's kAuthor < kAnimation < kAuthor
+// important, cascade_origin.h:15-27 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). 0 is below them all (the UA
+// and presentational attributes).
+const (
+	cascadeRankAuthorNormal int8 = iota + 1
+	cascadeRankInlineNormal
+	cascadeRankAnimation
+	cascadeRankAuthorImportant
+	cascadeRankInlineImportant
+)
 
-	// For vertical writing modes:
-	//   inline-size -> height (not width)
-	//   block-size  -> width  (not height)
-	// The expandShorthand stored the logical values under _inline-size / _block-size
-	// markers and mapped them to width/height assuming horizontal-tb. We now need
-	// to swap them.
-
-	inlineVal, hasInline := style.Get("_inline-size")
-	blockVal, hasBlock := style.Get("_block-size")
-
-	if hasInline && hasBlock {
-		// Both set: swap width <-> height
-		style.Set("height", inlineVal)
-		style.Set("width", blockVal)
-	} else if hasInline {
-		// Only inline-size was set: move from width to height.
-		// Clear width if it was set only by inline-size (check if there's
-		// an independent width declaration by comparing values).
-		style.Set("height", inlineVal)
-		if curW, ok := style.Get("width"); ok && curW == inlineVal {
-			delete(style.Properties, "width")
-		}
-	} else if hasBlock {
-		// Only block-size was set: move from height to width.
-		style.Set("width", blockVal)
-		if curH, ok := style.Get("height"); ok && curH == blockVal {
-			delete(style.Properties, "height")
-		}
-	}
-
-	// Same for min-inline-size / min-block-size
-	minInlineVal, hasMinInline := style.Get("_min-inline-size")
-	minBlockVal, hasMinBlock := style.Get("_min-block-size")
-
-	if hasMinInline && hasMinBlock {
-		style.Set("min-height", minInlineVal)
-		style.Set("min-width", minBlockVal)
-	} else if hasMinInline {
-		style.Set("min-height", minInlineVal)
-		if curMW, ok := style.Get("min-width"); ok && curMW == minInlineVal {
-			delete(style.Properties, "min-width")
-		}
-	} else if hasMinBlock {
-		style.Set("min-width", minBlockVal)
-		if curMH, ok := style.Get("min-height"); ok && curMH == minBlockVal {
-			delete(style.Properties, "min-height")
-		}
-	}
-
-	// Same for max-inline-size / max-block-size
-	maxInlineVal, hasMaxInline := style.Get("_max-inline-size")
-	maxBlockVal, hasMaxBlock := style.Get("_max-block-size")
-
-	if hasMaxInline && hasMaxBlock {
-		style.Set("max-height", maxInlineVal)
-		style.Set("max-width", maxBlockVal)
-	} else if hasMaxInline {
-		style.Set("max-height", maxInlineVal)
-		if curMW, ok := style.Get("max-width"); ok && curMW == maxInlineVal {
-			delete(style.Properties, "max-width")
-		}
-	} else if hasMaxBlock {
-		style.Set("max-width", maxBlockVal)
-		if curMH, ok := style.Get("max-height"); ok && curMH == maxBlockVal {
-			delete(style.Properties, "max-height")
-		}
-	}
+// cascadePosition orders two declarations of the cascade: by rank, then by
+// the order they were applied in (later wins).
+type cascadePosition struct {
+	rank int8
+	seq  int32
 }
 
-// resolveLogicalBoxProperties resolves logical margin/padding/border properties
-// (e.g. border-inline-start, margin-block-end) to physical properties based on
-// the element's computed writing-mode. Must be called after inheritance.
-//
-// Mapping for horizontal-tb (default):
-//
-//	inline-start=left, inline-end=right, block-start=top, block-end=bottom
-//
-// For vertical-rl / vertical-lr:
-//
-//	inline-start=top, inline-end=bottom, block-start=right(rl)/left(lr), block-end=left(rl)/right(lr)
-//
-// It reports whether a border marker carried `inherit` onto a physical
-// property, which applyStylesToNode then resolves (resolveInheritKeywords).
-func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
-	wm, _ := style.Get("writing-mode")
-	isVertical := wm == "vertical-rl" || wm == "vertical-lr" ||
-		wm == "sideways-rl" || wm == "sideways-lr"
-	// CSS Logical Properties Level 1: logical properties resolve based on
-	// the element's computed writing-mode, regardless of whether writing-mode
-	// was inherited or explicitly set. Previously we forced HTB mapping for
-	// inherited writing-mode, but that incorrectly maps UA logical properties
-	// (e.g. padding-inline-start on <ul>) to the wrong physical side in
-	// vertical writing modes.
+func (p cascadePosition) after(q cascadePosition) bool {
+	return p.rank > q.rank || (p.rank == q.rank && p.seq > q.seq)
+}
 
-	dir, _ := style.Get("direction")
-	isRTL := dir == "rtl"
-
-	// Check if any logical markers exist; if not, nothing to resolve
-	hasMarkers := false
-	for key := range style.Properties {
-		if len(key) > 0 && key[0] == '_' {
-			hasMarkers = true
-			break
-		}
+// setCascadePosition records the cascade position property was set at, for the
+// properties resolveDirectionAwareProperties compares: the logical
+// longhands' storage keys and the physical longhands they map onto. A var()
+// shorthand's pending longhands are positioned like any longhand.
+func (s *Style) setCascadePosition(property string, rank int8) {
+	if !tracksCascadePosition(property) {
+		return
 	}
-	if !hasMarkers {
-		return false
+	if s.cascadePositions == nil {
+		s.cascadePositions = make(map[string]cascadePosition)
 	}
+	s.cascadeSeq++
+	s.cascadePositions[property] = cascadePosition{rank, s.cascadeSeq}
+}
 
-	// Determine the correct physical mapping for each logical direction.
-	// CSS Logical Properties: https://www.w3.org/TR/css-logical-1/#box
-	//
-	// horizontal-tb + LTR: inline-start=left, inline-end=right, block-start=top, block-end=bottom
-	// horizontal-tb + RTL: inline-start=right, inline-end=left, block-start=top, block-end=bottom
-	// vertical-rl + LTR: inline-start=top, inline-end=bottom, block-start=right, block-end=left
-	// vertical-rl + RTL: inline-start=bottom, inline-end=top, block-start=right, block-end=left
-	// vertical-lr + LTR: inline-start=top, inline-end=bottom, block-start=left, block-end=right
-	// vertical-lr + RTL: inline-start=bottom, inline-end=top, block-start=left, block-end=right
-	// sideways-lr + LTR: inline-start=bottom, inline-end=top, block-start=left, block-end=right
-	// sideways-lr + RTL: inline-start=top, inline-end=bottom, block-start=left, block-end=right
+// tracksCascadePosition reports whether resolveDirectionAwareProperties
+// compares property's cascade position: a logical longhand's storage key or
+// a physical longhand one maps onto.
+func tracksCascadePosition(property string) bool {
+	return logicalLonghandStorageKeys[property] != "" || directionAwareTargets[property]
+}
 
-	var inlineStartSide, inlineEndSide, blockStartSide, blockEndSide string
-
-	switch {
-	case wm == "sideways-lr" && !isRTL:
-		inlineStartSide = "bottom"
-		inlineEndSide = "top"
-		blockStartSide = "left"
-		blockEndSide = "right"
-	case wm == "sideways-lr" && isRTL:
-		inlineStartSide = "top"
-		inlineEndSide = "bottom"
-		blockStartSide = "left"
-		blockEndSide = "right"
-	case isVertical && !isRTL:
-		inlineStartSide = "top"
-		inlineEndSide = "bottom"
-		if wm == "vertical-rl" || wm == "sideways-rl" {
-			blockStartSide = "right"
-			blockEndSide = "left"
-		} else {
-			blockStartSide = "left"
-			blockEndSide = "right"
-		}
-	case isVertical && isRTL:
-		inlineStartSide = "bottom"
-		inlineEndSide = "top"
-		if wm == "vertical-rl" || wm == "sideways-rl" {
-			blockStartSide = "right"
-			blockEndSide = "left"
-		} else {
-			blockStartSide = "left"
-			blockEndSide = "right"
-		}
-	case !isVertical && isRTL:
-		// horizontal-tb + RTL
-		inlineStartSide = "right"
-		inlineEndSide = "left"
-		blockStartSide = "top"
-		blockEndSide = "bottom"
-	default:
-		// horizontal-tb + LTR (default)
-		inlineStartSide = "left"
-		inlineEndSide = "right"
-		blockStartSide = "top"
-		blockEndSide = "bottom"
-	}
-
-	// The expandShorthand always maps to horizontal-tb LTR physical properties:
-	//   inline-start -> left, inline-end -> right
-	//   block-start -> top, block-end -> bottom
-	type logicalMapping struct {
-		markerPrefix string // e.g., "_margin-inline-start"
-		wrongSide    string // what expandShorthand used (e.g., "left")
-		correctSide  string // what it should be (e.g., "top")
-	}
-
-	mappings := []logicalMapping{
-		{"_margin-inline-start", "left", inlineStartSide},
-		{"_margin-inline-end", "right", inlineEndSide},
-		{"_margin-block-start", "top", blockStartSide},
-		{"_margin-block-end", "bottom", blockEndSide},
-		{"_padding-inline-start", "left", inlineStartSide},
-		{"_padding-inline-end", "right", inlineEndSide},
-		{"_padding-block-start", "top", blockStartSide},
-		{"_padding-block-end", "bottom", blockEndSide},
-	}
-
-	for _, m := range mappings {
-		if val, ok := style.Get(m.markerPrefix); ok {
-			propType := strings.TrimPrefix(m.markerPrefix, "_")
-			propType = propType[:strings.Index(propType, "-")]
-			wrongProp := propType + "-" + m.wrongSide
-			correctProp := propType + "-" + m.correctSide
-
-			// Only set the resolved physical property if it wasn't explicitly
-			// set by a higher-cascade-priority source (e.g., author stylesheet
-			// setting padding-top should not be overridden by UA's logical
-			// padding-inline-start resolving to the same physical side).
-			if _, alreadySet := style.Get(correctProp); !alreadySet {
-				style.Set(correctProp, val)
-			}
-			if m.wrongSide != m.correctSide {
-				if curVal, curOk := style.Get(wrongProp); curOk && curVal == val {
-					delete(style.Properties, wrongProp)
-				}
-			}
-			delete(style.Properties, m.markerPrefix)
-		}
-	}
-
-	// Border properties: same pattern but with -width/-style/-color suffixes
-	borderMappings := []logicalMapping{
-		{"_border-inline-start", "left", inlineStartSide},
-		{"_border-inline-end", "right", inlineEndSide},
-		{"_border-block-start", "top", blockStartSide},
-		{"_border-block-end", "bottom", blockEndSide},
-	}
-
-	for _, m := range borderMappings {
+// directionAwareTargets are the physical longhands a logical longhand maps
+// onto: the margin, padding, inset and border sides, and the sizes.
+var directionAwareTargets = func() map[string]bool {
+	m := make(map[string]bool)
+	for _, side := range []string{"top", "right", "bottom", "left"} {
+		m["margin-"+side], m["padding-"+side], m[side] = true, true, true
 		for _, suffix := range []string{"-width", "-style", "-color"} {
-			marker := m.markerPrefix + suffix
-			if val, ok := style.Get(marker); ok {
-				correctProp := "border-" + m.correctSide + suffix
+			m["border-"+side+suffix] = true
+		}
+	}
+	for _, p := range []string{"", "min-", "max-"} {
+		m[p+"width"], m[p+"height"] = true, true
+	}
+	return m
+}()
 
-				if _, alreadySet := style.Get(correctProp); !alreadySet {
-					style.Set(correctProp, val)
-					carriedInherit = carriedInherit || val == "inherit"
-				}
-				delete(style.Properties, marker)
+// physicalSidesFor returns the physical sides the flow-relative ones are on
+// for a writing-mode and direction (CSS Logical Properties 1 §4).
+func physicalSidesFor(wm string, rtl bool) (inlineStart, inlineEnd, blockStart, blockEnd string) {
+	switch wm {
+	case "vertical-rl", "sideways-rl":
+		inlineStart, inlineEnd, blockStart, blockEnd = "top", "bottom", "right", "left"
+	case "vertical-lr":
+		inlineStart, inlineEnd, blockStart, blockEnd = "top", "bottom", "left", "right"
+	case "sideways-lr":
+		inlineStart, inlineEnd, blockStart, blockEnd = "bottom", "top", "left", "right"
+	default:
+		inlineStart, inlineEnd, blockStart, blockEnd = "left", "right", "top", "bottom"
+	}
+	if rtl {
+		inlineStart, inlineEnd = inlineEnd, inlineStart
+	}
+	return
+}
+
+// physicalLonghandFor maps a logical longhand onto its physical longhand for
+// a writing-mode and direction (CSSProperty::ResolveDirectionAwareProperty @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func physicalLonghandFor(logical, wm string, rtl bool) string {
+	horizontal := wm == "" || wm == "horizontal-tb"
+	for _, size := range []string{"inline-size", "block-size"} {
+		if prefix, ok := strings.CutSuffix(logical, size); ok {
+			if (size == "inline-size") == horizontal {
+				return prefix + "width"
 			}
+			return prefix + "height"
+		}
+	}
+	is, ie, bs, be := physicalSidesFor(wm, rtl)
+	for _, edge := range []struct{ name, side string }{
+		{"-inline-start", is}, {"-inline-end", ie}, {"-block-start", bs}, {"-block-end", be},
+	} {
+		family, suffix, ok := strings.Cut(logical, edge.name)
+		if !ok {
+			continue
+		}
+		if family == "inset" {
+			return edge.side
+		}
+		return family + "-" + edge.side + suffix
+	}
+	return ""
+}
+
+// resolveDirectionAwareProperties maps each logical longhand onto its
+// physical longhand for the element's computed writing-mode and direction,
+// where it wins when the physical longhand is unset or was set earlier in
+// cascade order, as if the logical declaration had been applied to the
+// physical longhand where it cascaded (StyleCascade resolving
+// direction-aware properties @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// `initial` and `unset` (these longhands are not inherited) give the
+// physical longhand its initial value; `inherit` is carried onto it, and
+// the result reports that, for applyStylesToNode to resolve
+// (resolveInheritKeywords). The storage keys are dropped.
+func resolveDirectionAwareProperties(style *Style) (carriedInherit bool) {
+	var wm, dir string
+	for key := range style.Properties {
+		if logicalLonghandStorageKeys[key] == "" {
+			continue
+		}
+		if wm == "" {
+			wm, _ = style.Get("writing-mode")
+			dir, _ = style.Get("direction")
+			if wm == "" {
+				wm = "horizontal-tb"
+			}
+		}
+		value := style.Properties[key]
+		delete(style.Properties, key)
+		physical := physicalLonghandFor(logicalLonghandStorageKeys[key], wm, dir == "rtl")
+		if _, set := style.Properties[physical]; set && !style.cascadePositions[key].after(style.cascadePositions[physical]) {
+			continue
+		}
+		switch kw, _ := cssWideKeyword(value); kw {
+		case "initial", "unset":
+			if init, ok := nonDefaultInitialValues[physical]; ok {
+				style.Set(physical, init)
+			} else {
+				delete(style.Properties, physical)
+			}
+		default:
+			style.Set(physical, value)
+			carriedInherit = carriedInherit || kw == "inherit"
 		}
 	}
 	return carriedInherit
@@ -3162,13 +2982,22 @@ func resolveLogicalBoxProperties(style *Style) (carriedInherit bool) {
 // varDeferredShorthands lists the shorthands whose var() values
 // expandShorthand cannot expand at parse time, since custom properties
 // resolve in the cascade. Each longhand gets a pending-substitution value
-// instead (pendingSubstitutionValue).
+// instead (pendingSubstitutionValue). isVarDeferredShorthand is the same
+// list as a set.
 var varDeferredShorthands = []string{
 	"margin", "padding", "border", "border-top", "border-right",
 	"border-bottom", "border-left", "border-width", "border-style",
 	"border-color", "font", "flex", "flex-flow", "list-style", "gap", "grid-gap",
 	"grid-area", "grid-row", "grid-column", "background",
 }
+
+var isVarDeferredShorthand = func() map[string]bool {
+	m := make(map[string]bool, len(varDeferredShorthands))
+	for _, p := range varDeferredShorthands {
+		m[p] = true
+	}
+	return m
+}()
 
 // pendingSubstitutionPrefix starts a longhand value that is a pending
 // substitution of its shorthand's var() value. U+0000 cannot begin a
@@ -3278,14 +3107,15 @@ func expandPendingSubstitution(lookup *Style, shorthand, value string) map[strin
 	expandShorthand(tmp, shorthand, resolved)
 	out := make(map[string]string)
 	for _, lh := range shorthandLonghands[shorthand] {
-		v, ok := tmp.Properties[lh]
+		key := storageKey(lh)
+		v, ok := tmp.Properties[key]
 		if !ok {
 			continue
 		}
 		if v, ok = validateDeclaredLonghand(lh, v); !ok {
 			return nil
 		}
-		out[lh] = v
+		out[key] = v
 	}
 	if len(out) == 0 {
 		return nil
@@ -3415,23 +3245,10 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		style.fontSelector = fs
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
-		// Resolve logical size properties (inline-size, block-size) based on the
-		// element's computed writing-mode. Must happen after inheritance so that
-		// inherited writing-mode is available.
-		resolveLogicalSizeProperties(style)
-		// Resolve logical box properties (margin/padding/border-inline/block),
-		// then any `inherit` a logical declaration carried onto its physical
-		// side (resolveInheritKeywords).
-		if resolveLogicalBoxProperties(style) {
-			resolveInheritKeywords(node, style, styles)
-		}
+		resolveComputedTimeDeclarations(node, style, styles)
 		// Apply container query rules after base style (needs ancestor styles resolved)
-		// A matching @container rule is applied after inheritance, so the
-		// pending substitutions and CSS-wide keywords it sets resolve here.
-		if touched := applyContainerQueryRules(node, stylesheets, styles, style); len(touched) > 0 {
-			// Inheritance already gave style its parent's custom properties.
-			resolvePendingSubstitutions(style, nil)
-			resolveLateCSSWideKeywords(node, style, styles, touched)
+		if applyContainerQueryRules(node, stylesheets, styles, style) {
+			resolveLateDeclarations(node, style, styles)
 		}
 		// The element's font properties are final here (@container rules
 		// included, which Blink applies inside the same cascade), so build its font
@@ -3551,65 +3368,121 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 	}
 }
 
-// applyContainerQueryRules evaluates @container rules for a node by checking
-// ancestor containers' computed sizes, and returns the properties the
-// matching rules changed (nil when none matched). Called after base style
-// computation.
-func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style) map[string]bool {
-	var before map[string]string
-	for _, stylesheet := range stylesheets {
-		for _, rule := range stylesheet.Rules {
-			if rule.ContainerQuery == nil {
-				continue
+// applyDeclarationPass applies the declarations of one importance from a
+// declaration block (a rule's, a style attribute's, an @container rule's):
+// `all` first, since parseDeclarations keeps only the declarations after it,
+// then the rest. The normal pass leaves the properties importantProps holds;
+// the important pass adds what it sets to importantProps, an `all` every
+// longhand it covers. allowed, when non-nil, filters the properties (a
+// pseudo-element's applicable set); apply applies one declaration. The
+// declarations go in source order (block.Order).
+func applyDeclarationPass(style *Style, block *DeclarationResult, important bool, importantProps map[string]bool, allowed func(string) bool, apply func(property, value string)) {
+	decls, declImportant := block.Declarations, block.Important
+	takes := func(p string) bool {
+		return declImportant[p] == important && (allowed == nil || allowed(p))
+	}
+	if v, ok := decls["all"]; ok && takes("all") {
+		switch {
+		case important:
+			apply("all", v)
+			importantProps["all"] = true
+			for p := range cssLonghandProperties {
+				if allShorthandCovers(p) {
+					importantProps[p] = true
+				}
 			}
-			// Skip pseudo-element rules
-			if rule.Selector.PseudoElement != "" {
-				continue
+			for p := range logicalLonghandStorageKeys {
+				importantProps[p] = true
 			}
-			// Check if selector matches this node
-			if !MatchesSelector(node, rule.Selector) {
-				continue
+		case !importantProps["all"]:
+			// `all` sets every longhand it covers; restore the important ones.
+			kept := make(map[string]*string, len(importantProps))
+			for p := range importantProps {
+				if v, ok := style.Properties[p]; ok {
+					kept[p] = &v
+				} else {
+					kept[p] = nil
+				}
 			}
-			// Evaluate the container query against ancestors
-			if !evaluateContainerQuery(node, rule.ContainerQuery, styles) {
-				continue
-			}
-			if before == nil {
-				before = maps.Clone(style.Properties)
-			}
-			for property, value := range rule.Declarations {
-				expandShorthand(style, property, value)
+			apply("all", v)
+			for p, v := range kept {
+				if v != nil {
+					style.Properties[p] = *v
+				} else {
+					delete(style.Properties, p)
+				}
 			}
 		}
 	}
-	if before == nil {
-		return nil
-	}
-	// The properties the rules changed.
-	touched := make(map[string]bool)
-	for p, v := range style.Properties {
-		if old, ok := before[p]; !ok || old != v {
-			touched[p] = true
+	for _, p := range block.Order {
+		if p == "all" || !takes(p) || (!important && importantProps[p]) {
+			continue
+		}
+		apply(p, decls[p])
+		if important {
+			importantProps[p] = true
 		}
 	}
-	return touched
 }
 
-// resolveLateCSSWideKeywords resolves the CSS-wide keywords props hold after
-// inheritance has run (an @container rule's declarations): `inherit`, and
-// `unset` on an inherited property, take the parent's computed value;
-// `initial`, and `unset` on any other property, the initial value (CSS
-// Cascade 4 §7.3).
-func resolveLateCSSWideKeywords(node *html.Node, style *Style, styles map[*html.Node]*Style, props map[string]bool) {
-	for p := range props {
-		switch kw, _ := cssWideKeyword(style.Properties[p]); kw {
-		case "inherit":
-			style.Properties[p] = kw // normalized for resolveInheritKeywords
-		case "initial", "unset":
-			applyInitialOrUnset(style, p, kw)
+// applyContainerQueryRules applies the @container rules matching node, whose
+// queries are evaluated against ancestor containers' computed sizes, after
+// the element's cascade and inheritance, and reports whether any matched.
+// Like the main cascade it runs a normal pass, which leaves the properties
+// the cascade set with !important, then an important pass, each applying a
+// rule's `all` before its other declarations.
+func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style) bool {
+	var matched []Rule
+	for _, stylesheet := range stylesheets {
+		for _, rule := range stylesheet.Rules {
+			// @container rules for the element itself, not a pseudo-element.
+			if rule.ContainerQuery == nil || rule.Selector.PseudoElement != "" {
+				continue
+			}
+			if MatchesSelector(node, rule.Selector) && evaluateContainerQuery(node, rule.ContainerQuery, styles) {
+				matched = append(matched, rule)
+			}
 		}
 	}
-	resolveInheritKeywords(node, style, styles)
+	if len(matched) == 0 {
+		return false
+	}
+	for _, pass := range []bool{false, true} {
+		for _, rule := range matched {
+			rank := cascadeRankAuthorNormal
+			if pass {
+				rank = cascadeRankAuthorImportant
+			}
+			applyDeclarationPass(style, rule.DeclarationResult, pass, style.cascadeImportant, nil, func(property, value string) {
+				expandShorthand(style, property, value)
+				style.setCascadePosition(property, rank)
+			})
+		}
+	}
+	return true
+}
+
+// resolveLateDeclarations resolves what declarations applied after the
+// cascade and inheritance (applyContainerQueryRules) leave: pending
+// substitutions (against the parent's custom properties, as in the main
+// cascade), CSS-wide keywords (revert and revert-layer against the
+// cascade's UA + presentational-attribute snapshot; @container rules carry
+// no layer), then logical properties onto their physical side.
+func resolveLateDeclarations(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+	resolvePendingSubstitutions(style, styles[node.Parent])
+	resolveCSSWideKeywords(style, style.revertSnapshot, nil)
+	resolveInheritValues(node, style, styles)
+	resolveComputedTimeDeclarations(node, style, styles)
+}
+
+// resolveComputedTimeDeclarations resolves what waits for the element's
+// inherited values: logical size and box properties onto their physical
+// side for the computed writing-mode and direction, and any `inherit` a
+// logical declaration carried onto a physical property.
+func resolveComputedTimeDeclarations(node *html.Node, style *Style, styles map[*html.Node]*Style) {
+	if resolveDirectionAwareProperties(style) {
+		resolveInheritKeywords(node, style, styles)
+	}
 }
 
 // evaluateContainerQuery walks up the DOM to find a matching container and evaluates size conditions.
@@ -4110,43 +3983,57 @@ func applySVGPresentationalAttributes(node *html.Node, style *Style) {
 	// Unlike the paint attributes above these are meaningful ONLY on <svg> —
 	// width/height on <img>/<td>/<div> carry legacy HTML semantics that are not
 	// CSS lengths — so gate on the tag.
-	if node.TagName == "svg" {
-		for _, attr := range [...]string{"width", "height"} {
-			val, ok := node.GetAttribute(attr)
-			if !ok {
-				continue
-			}
-			cssLen, ok := svgLengthAttrToCSS(val)
-			if !ok {
-				continue
-			}
-			if _, exists := style.Get(attr); !exists {
-				style.Set(attr, cssLen)
-			}
+	//
+	// An <image>'s x, y, width and height map to the CSS x, y, width and
+	// height properties (SVGImageElement binds its x_/y_/width_/height_
+	// SVGAnimatedLengths to CSSPropertyID::kX/kY/kWidth/kHeight,
+	// svg_image_element.cc:41-64 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+	// which LayoutSVGImage::UpdateBoundingBox reads; x and y may be negative.
+	// Both are SVG elements: an HTML-namespace <image> keeps its
+	// attributes.
+	var geometryAttrs []string
+	switch {
+	case node.NamespaceURI() != html.SVGNamespaceURI:
+	case node.TagName == "svg":
+		geometryAttrs = []string{"width", "height"}
+	case node.TagName == "image":
+		geometryAttrs = []string{"x", "y", "width", "height"}
+	}
+	for _, attr := range geometryAttrs {
+		val, ok := node.GetAttribute(attr)
+		if !ok {
+			continue
+		}
+		cssLen, ok := svgLengthAttrToCSS(val, attr == "x" || attr == "y")
+		if !ok {
+			continue
+		}
+		if _, exists := style.Get(attr); !exists {
+			style.Set(attr, cssLen)
 		}
 	}
 }
 
-// svgLengthAttrToCSS converts an SVG width/height presentation-attribute value
-// to a CSS length string: an SVG <length> or <percentage>, a bare number being
+// svgLengthAttrToCSS converts an SVG geometry presentation-attribute value
+// (width/height; x/y with negativeOK) to a CSS length string: an SVG <length> or <percentage>, a bare number being
 // a user unit, equivalent to CSS px (so "0" -> "0px", "120" -> "120px",
 // "100%" -> "100%"). Mirrors SVGSVGElement::CollectStyleForPresentationAttribute
 // mapping the attribute's SVGLength to the CSS width/height
-// (svg_svg_element.cc:189-205 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Negative,
-// non-finite, or non-numeric values are rejected (a negative or infinite
+// (svg_svg_element.cc:189-205 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Negative
+// values (unless negativeOK), non-finite or non-numeric ones are rejected (a negative or infinite
 // width/height is an SVG error → the box falls back to its default sizing).
 // strconv.ParseFloat accepts "Inf"/"Infinity" and "NaN", so explicit
 // math.IsInf / math.IsNaN guards keep them from becoming "+Infpx" / "NaNpx".
-func svgLengthAttrToCSS(val string) (string, bool) {
+func svgLengthAttrToCSS(val string, negativeOK bool) (string, bool) {
 	s := strings.TrimSpace(val)
 	if n, err := strconv.ParseFloat(s, 64); err == nil {
-		if n < 0 || math.IsInf(n, 0) || math.IsNaN(n) {
+		if (n < 0 && !negativeOK) || math.IsInf(n, 0) || math.IsNaN(n) {
 			return "", false
 		}
 		return strconv.FormatFloat(n, 'f', -1, 64) + "px", true
 	}
 	lower := strings.ToLower(s)
-	if strings.HasPrefix(s, "-") || strings.Contains(lower, "inf") || strings.Contains(lower, "nan") {
+	if (strings.HasPrefix(s, "-") && !negativeOK) || strings.Contains(lower, "inf") || strings.Contains(lower, "nan") {
 		return "", false
 	}
 	if v, ok := validateCSSLength(s); ok {

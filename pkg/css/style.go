@@ -149,6 +149,18 @@ type Style struct {
 	// Shared by reference across Clone(); never mutated post-cascade.
 	CascadedProps map[string]bool
 
+	// cascadeImportant is the set of properties the element's cascade set
+	// with !important, and revertSnapshot its UA + presentational-attribute
+	// snapshot, for the declarations applied after the cascade (@container
+	// rules; applyContainerQueryRules).
+	cascadeImportant map[string]bool
+	revertSnapshot   allShorthandRevertSnapshot
+	// cascadePositions is the cascade position each direction-aware
+	// property was last set at, and cascadeSeq the order counter it draws
+	// from (setCascadePosition), for resolveDirectionAwareProperties.
+	cascadePositions map[string]cascadePosition
+	cascadeSeq       int32
+
 	// FontFeatureValues is the document-wide @font-feature-values rule list,
 	// snapshot at cascade time. CSS Fonts 4 §11.4: named alternates in
 	// `font-variant-alternates: stylistic(name) | styleset(name) | …` resolve
@@ -2352,6 +2364,16 @@ func (s *Style) EvalMathWithBase(val string, percentBase float64) (float64, bool
 	return EvalMathFunction(val, s.cssToLengthConversionDataWithPercentBase(percentBase, false))
 }
 
+// ResolveLengthPercentage resolves property as a <length-percentage> through
+// this style's conversion data, its percentages (bare, or in calc() / min()
+// / max() / clamp()) of percentBase, a zero base giving 0: Length::Evaluate
+// with the use-time percentage base (length.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). False when unset, auto or
+// invalid.
+func (s *Style) ResolveLengthPercentage(property string, percentBase float64) (float64, bool) {
+	return s.resolveLengthOrPercent(property, percentBase, true)
+}
+
 // resolveLengthOrPercent resolves property as a <length-percentage> through
 // this style's conversion data, taking percentages (bare, or in calc() /
 // min() / max() / clamp() alike) of reference; false when unset, auto or
@@ -2433,89 +2455,46 @@ func (s *Style) HasExplicitZIndex() bool {
 	return false
 }
 
-// stripImportantSuffix returns (value-without-!important, true) if value has a
-// trailing "!important" token; otherwise returns (value, false). Used by
-// shorthand expanders so the parser can ignore the priority suffix in the
-// value-token stream. The actual cascade-priority bookkeeping is handled by
-// the per-rule importantProps tracking in cascade.go and by the rule parser's
-// Rule.Important map (cascade.go:466). For inline styles we currently treat
-// !important as best-effort: the suffix is stripped so the longhand value
-// parses correctly, but the priority is not yet tracked separately from the
-// inline ordering. This matches the pre-Phase-1 behavior for shorthand
-// properties (e.g. `text-decoration: underline !important`).
-func stripImportantSuffix(value string) (string, bool) {
-	v := strings.TrimSpace(value)
-	if len(v) < len("!important") {
-		return value, false
-	}
-	// Case-insensitive trailing match.
-	tail := v[len(v)-len("!important"):]
-	if strings.EqualFold(tail, "!important") {
-		return strings.TrimSpace(v[:len(v)-len("!important")]), true
-	}
-	return value, false
-}
-
 // ParseInlineStyle parses a `style=""` attribute's contents. ctx carries
 // the owning document's BaseDir; every url() token in the value is rewritten
 // to its absolute form against ctx before being stored in Style.Properties.
 // Pass nil for "no base URL" (test fixtures that don't exercise URL composition).
 func ParseInlineStyle(styleAttr string, ctx *ParserContext) *Style {
 	style := NewStyle()
-	// Resolve every `url(...)` token against ctx.BaseDir up front — matches
-	// the Blink invariant that every url() consumed during parse goes
-	// through CSSParserContext::CompleteURL. See ParseStylesheet for the
-	// rationale on rewriting at the source-text level.
-	styleAttr = ctx.RewriteURLs(styleAttr)
-	// Use the same paren/quote-aware splitter the stylesheet parser uses.
-	// A naive strings.Split(";") mangles values like
-	// `filter: url("data:image/svg+xml;utf8,...")` at the `;` inside the
-	// data-URL MIME prefix.
-	declarations := splitDeclarationParts(styleAttr)
-	for _, decl := range declarations {
-		decl = strings.TrimSpace(decl)
-		if decl == "" {
-			continue
-		}
-		parts := strings.SplitN(decl, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		property := strings.TrimSpace(strings.ToLower(parts[0]))
-		value := strings.TrimSpace(parts[1])
-
-		// Strip the !important suffix before parsing. Inline-style priority is
-		// not tracked separately from inline-normal in cascade.go today (the
-		// note at cascade.go:494 acknowledges this), so the suffix must be
-		// removed from the value or it leaks into longhand parsers. Mirrors
-		// the rule-parser path at stylesheet.go:1917-1929 which has always
-		// stripped !important.
-		if stripped, _ := stripImportantSuffix(value); stripped != value {
-			value = stripped
-		}
-
-		// CSS Custom Properties §2 / §3: validate name + value (mirrors the
-		// rule-parser gate in parseDeclarations).
-		if strings.HasPrefix(property, "--") {
-			if !isValidCustomPropertyName(property) || !isValidCustomPropertyValue(value) {
-				continue
-			}
-		}
-
-		// ParseBackgroundSize gate (see parseDeclarations).
-		if property == "background-size" && !isValidBackgroundSizeValue(value) {
-			continue
-		}
-
-		// Display::ParseSingleValue gate (see parseDeclarations).
-		if property == "display" && !IsValidDisplayValue(value) {
-			continue
-		}
-
-		// Phase 2: Expand shorthand properties
-		expandShorthand(style, property, value)
-	}
+	applyInlineDeclarations(style, parseInlineDeclarations(styleAttr, ctx), make(map[string]bool), nil)
 	return style
+}
+
+// applyInlineDeclarations applies a style attribute's declarations to style:
+// the normal pass, which leaves importantProps, then the important pass,
+// which adds to it. record, when non-nil, is told each property applied and
+// its cascade rank.
+func applyInlineDeclarations(style *Style, decls *DeclarationResult, importantProps map[string]bool, record func(property string, rank int8)) {
+	for _, important := range []bool{false, true} {
+		rank := cascadeRankInlineNormal
+		if important {
+			rank = cascadeRankInlineImportant
+		}
+		applyDeclarationPass(style, decls, important, importantProps, nil, func(property, value string) {
+			expandShorthand(style, property, value)
+			if record != nil {
+				record(property, rank)
+			}
+		})
+	}
+}
+
+// parseInlineDeclarations parses a style attribute as the declaration list
+// a rule's block is (parseDeclarations: validation, in-block !important),
+// once its url() tokens are resolved against ctx — one declaration-list
+// parser for both, as Blink's (CSSParser::ParseInlineStyleDeclaration @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func parseInlineDeclarations(styleAttr string, ctx *ParserContext) *DeclarationResult {
+	// Resolve every url() token against ctx.BaseDir up front, as
+	// ParseStylesheet does (CSSParserContext::CompleteURL).
+	// Comments go first, as for a stylesheet, so a `!` or `;` in one is
+	// not syntax.
+	return parseDeclarations(ctx.RewriteURLs(StripComments(styleAttr)))
 }
 
 // normalizeVendorPrefixedValue resolves common vendor-prefixed length/width keywords
@@ -2551,9 +2530,9 @@ func expandShorthand(style *Style, property, value string) {
 	// (var() will be resolved later when the property is read).
 	// Case-insensitive per CSS Syntax §4.3.10.
 	if containsVarFunction(value) {
-		if slices.Contains(varDeferredShorthands, property) {
+		if isVarDeferredShorthand[property] {
 			for _, lh := range shorthandLonghands[property] {
-				style.Set(lh, pendingSubstitutionValue(property, value))
+				style.Set(storageKey(lh), pendingSubstitutionValue(property, value))
 			}
 			return
 		}
@@ -2808,85 +2787,29 @@ func expandShorthand(style *Style, property, value string) {
 		style.Set("overflow", value)
 		style.Set("overflow-x", x)
 		style.Set("overflow-y", y)
-	// CSS Logical Properties — resolve to physical properties
-	// Assumes horizontal-tb writing mode (default) with LTR direction
-	case "margin-inline-start":
-		// Store under marker; resolved by resolveLogicalBoxProperties based on writing-mode
-		style.Set("margin-left", value)
-		style.Set("_margin-inline-start", value)
-	case "margin-inline-end":
-		style.Set("margin-right", value)
-		style.Set("_margin-inline-end", value)
-	case "margin-block-start":
-		style.Set("margin-top", value)
-		style.Set("_margin-block-start", value)
-	case "margin-block-end":
-		style.Set("margin-bottom", value)
-		style.Set("_margin-block-end", value)
-	case "margin-inline":
+	// CSS Logical Properties: a logical longhand is stored only under its
+	// internal key (logicalLonghandStorageKeys) and cascades as itself;
+	// resolveDirectionAwareProperties maps it onto its physical longhand for
+	// the element's writing-mode and direction at computed time.
+	case "margin-inline-start", "margin-inline-end", "margin-block-start", "margin-block-end",
+		"padding-inline-start", "padding-inline-end", "padding-block-start", "padding-block-end",
+		"inset-inline-start", "inset-inline-end", "inset-block-start", "inset-block-end",
+		"border-inline-start-width", "border-inline-end-width", "border-block-start-width", "border-block-end-width",
+		"border-inline-start-style", "border-inline-end-style", "border-block-start-style", "border-block-end-style",
+		"border-inline-start-color", "border-inline-end-color", "border-block-start-color", "border-block-end-color":
+		style.Set("_"+property, value)
+	case "margin-inline", "margin-block", "padding-inline", "padding-block", "inset-inline", "inset-block":
+		// <start> [<end>]: one value sets both.
 		parts := strings.Fields(value)
-		if len(parts) == 1 {
-			style.Set("margin-left", parts[0])
-			style.Set("margin-right", parts[0])
-			style.Set("_margin-inline-start", parts[0])
-			style.Set("_margin-inline-end", parts[0])
-		} else if len(parts) >= 2 {
-			style.Set("margin-left", parts[0])
-			style.Set("margin-right", parts[1])
-			style.Set("_margin-inline-start", parts[0])
-			style.Set("_margin-inline-end", parts[1])
+		if len(parts) == 0 {
+			return
 		}
-	case "margin-block":
-		parts := strings.Fields(value)
-		if len(parts) == 1 {
-			style.Set("margin-top", parts[0])
-			style.Set("margin-bottom", parts[0])
-			style.Set("_margin-block-start", parts[0])
-			style.Set("_margin-block-end", parts[0])
-		} else if len(parts) >= 2 {
-			style.Set("margin-top", parts[0])
-			style.Set("margin-bottom", parts[1])
-			style.Set("_margin-block-start", parts[0])
-			style.Set("_margin-block-end", parts[1])
+		end := parts[0]
+		if len(parts) >= 2 {
+			end = parts[1]
 		}
-	case "padding-inline-start":
-		style.Set("padding-left", value)
-		style.Set("_padding-inline-start", value)
-	case "padding-inline-end":
-		style.Set("padding-right", value)
-		style.Set("_padding-inline-end", value)
-	case "padding-block-start":
-		style.Set("padding-top", value)
-		style.Set("_padding-block-start", value)
-	case "padding-block-end":
-		style.Set("padding-bottom", value)
-		style.Set("_padding-block-end", value)
-	case "padding-inline":
-		parts := strings.Fields(value)
-		if len(parts) == 1 {
-			style.Set("padding-left", parts[0])
-			style.Set("padding-right", parts[0])
-			style.Set("_padding-inline-start", parts[0])
-			style.Set("_padding-inline-end", parts[0])
-		} else if len(parts) >= 2 {
-			style.Set("padding-left", parts[0])
-			style.Set("padding-right", parts[1])
-			style.Set("_padding-inline-start", parts[0])
-			style.Set("_padding-inline-end", parts[1])
-		}
-	case "padding-block":
-		parts := strings.Fields(value)
-		if len(parts) == 1 {
-			style.Set("padding-top", parts[0])
-			style.Set("padding-bottom", parts[0])
-			style.Set("_padding-block-start", parts[0])
-			style.Set("_padding-block-end", parts[0])
-		} else if len(parts) >= 2 {
-			style.Set("padding-top", parts[0])
-			style.Set("padding-bottom", parts[1])
-			style.Set("_padding-block-start", parts[0])
-			style.Set("_padding-block-end", parts[1])
-		}
+		style.Set("_"+property+"-start", parts[0])
+		style.Set("_"+property+"-end", end)
 	case "border-inline":
 		storeBorderLogicalMarker(style, "_border-inline-start", value)
 		storeBorderLogicalMarker(style, "_border-inline-end", value)
@@ -2901,60 +2824,6 @@ func expandShorthand(style *Style, property, value string) {
 		storeBorderLogicalMarker(style, "_border-block-start", value)
 	case "border-block-end":
 		storeBorderLogicalMarker(style, "_border-block-end", value)
-	case "border-inline-start-width":
-		style.Set("_border-inline-start-width", value)
-	case "border-inline-end-width":
-		style.Set("_border-inline-end-width", value)
-	case "border-block-start-width":
-		style.Set("_border-block-start-width", value)
-	case "border-block-end-width":
-		style.Set("_border-block-end-width", value)
-	case "border-inline-start-style":
-		style.Set("_border-inline-start-style", value)
-	case "border-inline-end-style":
-		style.Set("_border-inline-end-style", value)
-	case "border-block-start-style":
-		style.Set("_border-block-start-style", value)
-	case "border-block-end-style":
-		style.Set("_border-block-end-style", value)
-	case "border-inline-start-color":
-		style.Set("_border-inline-start-color", value)
-	case "border-inline-end-color":
-		style.Set("_border-inline-end-color", value)
-	case "border-block-start-color":
-		style.Set("_border-block-start-color", value)
-	case "border-block-end-color":
-		style.Set("_border-block-end-color", value)
-	case "inset-inline-start":
-		style.Set("left", value)
-		style.Set("_inset-inline-start", value)
-	case "inset-inline-end":
-		style.Set("right", value)
-		style.Set("_inset-inline-end", value)
-	case "inset-block-start":
-		style.Set("top", value)
-		style.Set("_inset-block-start", value)
-	case "inset-block-end":
-		style.Set("bottom", value)
-		style.Set("_inset-block-end", value)
-	case "inset-inline":
-		parts := strings.Fields(value)
-		if len(parts) == 1 {
-			style.Set("left", parts[0])
-			style.Set("right", parts[0])
-		} else if len(parts) >= 2 {
-			style.Set("left", parts[0])
-			style.Set("right", parts[1])
-		}
-	case "inset-block":
-		parts := strings.Fields(value)
-		if len(parts) == 1 {
-			style.Set("top", parts[0])
-			style.Set("bottom", parts[0])
-		} else if len(parts) >= 2 {
-			style.Set("top", parts[0])
-			style.Set("bottom", parts[1])
-		}
 	case "inset":
 		parts := strings.Fields(value)
 		switch len(parts) {
@@ -2979,26 +2848,8 @@ func expandShorthand(style *Style, property, value string) {
 			style.Set("bottom", parts[2])
 			style.Set("left", parts[3])
 		}
-	case "inline-size":
-		// Default mapping: inline-size → width for horizontal-tb.
-		// For vertical writing modes, resolveLogicalSizeProperties re-maps to height.
-		style.Set("width", normalizeVendorPrefixedValue(value))
-		style.Set("_inline-size", normalizeVendorPrefixedValue(value))
-	case "block-size":
-		style.Set("height", normalizeVendorPrefixedValue(value))
-		style.Set("_block-size", normalizeVendorPrefixedValue(value))
-	case "min-inline-size":
-		style.Set("min-width", normalizeVendorPrefixedValue(value))
-		style.Set("_min-inline-size", normalizeVendorPrefixedValue(value))
-	case "min-block-size":
-		style.Set("min-height", normalizeVendorPrefixedValue(value))
-		style.Set("_min-block-size", normalizeVendorPrefixedValue(value))
-	case "max-inline-size":
-		style.Set("max-width", normalizeVendorPrefixedValue(value))
-		style.Set("_max-inline-size", normalizeVendorPrefixedValue(value))
-	case "max-block-size":
-		style.Set("max-height", normalizeVendorPrefixedValue(value))
-		style.Set("_max-block-size", normalizeVendorPrefixedValue(value))
+	case "inline-size", "block-size", "min-inline-size", "min-block-size", "max-inline-size", "max-block-size":
+		style.Set("_"+property, normalizeVendorPrefixedValue(value))
 	case "outline":
 		expandOutlineShorthand(style, value)
 	case "column-rule":
@@ -3180,9 +3031,7 @@ func expandShorthand(style *Style, property, value string) {
 		// CSS Cascade 3 §8 / CSS Cascade 4 §6.3: the `all` shorthand resets
 		// every longhand CSS property to the supplied CSS-wide keyword, with
 		// three exclusions: `direction`, `unicode-bidi`, and custom properties
-		// (--*). Mirrors Blink's all.cc expansion at SHA
-		// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates the longhand
-		// table via CSSPropertyIDIterator with these same exclusions.
+		// (--*). See expandAllShorthand for the Blink citations.
 		expandAllShorthand(style, value)
 	case "border-top-width", "border-right-width", "border-bottom-width", "border-left-width":
 		// CSS Backgrounds 3 §5.1: the border-*-width longhands accept line-width
@@ -3207,24 +3056,22 @@ func expandShorthand(style *Style, property, value string) {
 // values are the CSS-wide keywords: initial, inherit, unset, revert,
 // revert-layer.
 //
-// Implementation strategy per keyword:
-//   - initial: delete each longhand from the style map so the property's
-//     getter fallback returns its initial value.
-//   - inherit: store the literal "inherit" string for each longhand so the
-//     post-cascade resolveInheritValues pass copies the parent's value.
-//   - unset: behaves as `inherit` for inherited properties, as `initial`
-//     otherwise. The inherited set is louis14's existing inheritableProperties
-//     map (the source-of-truth for inheritability used by ApplyInheritedProperties).
-//   - revert / revert-layer: store the literal "revert" string. ComputeStyle
-//     takes a UA+presentational-attribute snapshot before stylesheet rules run;
-//     a post-cascade pass restores those snapshot values for any property whose
-//     final value is "revert" (and deletes the property otherwise). This gives
-//     `revert` its spec semantics of rolling back to the prior cascade origin,
-//     which for author-origin declarations is the UA result.
+// Each covered longhand is set to the keyword through expandShorthand, as a
+// CSS-wide keyword on any shorthand is (setLonghandsToCSSWideKeyword), so a
+// logical longhand also writes its storage key. The cascade's CSS-wide
+// keyword passes then resolve the keyword per longhand: resolveCSSWideKeywords
+// (initial, unset, revert against the UA + presentational-attribute snapshot,
+// revert-layer against the layer's) and resolveInheritValues (inherit).
 //
-// Mirrors Blink's properties/shorthands/all.cc at SHA
-// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which iterates CSSPropertyIDIterator
-// over every longhand and skips kDirection, kUnicodeBidi, and custom properties.
+// Mirrors Blink, which expands `all` like any shorthand given a CSS-wide
+// keyword (CSSPropertyParser::ParseCSSWideKeyword ->
+// AddExpandedPropertyForValue, css_property_parser.cc:447-469,
+// css_parsing_utils.cc:4347-4358) over the longhands css_properties.json5
+// generates for it (:8800), every longhand but the affected_by_all: false
+// direction (:1393) and unicode-bidi (:6686), all @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Custom properties are not
+// longhands. A var() shorthand stored under its own name follows its
+// longhands: rolled back by revert and revert-layer, dropped otherwise.
 func expandAllShorthand(style *Style, value string) {
 	keyword, ok := cssWideKeyword(value)
 	if !ok {
@@ -3233,54 +3080,47 @@ func expandAllShorthand(style *Style, value string) {
 		// dropped. Mirrors Blink's CSSPropertyParser::ParseSingleValue check.
 		return
 	}
-	for _, prop := range cssLonghandProperties {
-		// Exclusions per CSS Cascade 3 §8:
-		//   - direction, unicode-bidi (their initial values are based on
-		//     the document language and unicode-bidi context, not on CSS).
-		//   - custom properties (--*) — filtered structurally elsewhere
-		//     since the longhand list never contains them.
-		if prop == "direction" || prop == "unicode-bidi" {
-			continue
-		}
-		switch keyword {
-		case "initial":
-			if init, ok := nonDefaultInitialValues[prop]; ok {
-				// Some longhands have a CSS-spec initial value that differs
-				// from louis14's getter fallback (e.g. `display` initial is
-				// `inline` per CSS Display §2, but GetDisplay returns
-				// DisplayBlock when the property is absent). Setting the
-				// canonical initial keeps `all: initial` spec-conformant
-				// rather than relying on the absence-of-property fallback.
-				style.Set(prop, init)
-			} else {
-				delete(style.Properties, prop)
-			}
-		case "inherit":
-			style.Set(prop, "inherit")
-		case "unset":
-			if inheritableProperties[prop] {
-				style.Set(prop, "inherit")
-			} else if init, ok := nonDefaultInitialValues[prop]; ok {
-				style.Set(prop, init)
-			} else {
-				delete(style.Properties, prop)
-			}
-		case "revert":
-			// Post-cascade resolveCSSWideKeywords replaces this sentinel with
-			// the UA + presentational-attribute snapshot value (or deletes
-			// the property if there was none). Mirrors CSS Cascade 4 §6.1.2.
-			style.Set(prop, "revert")
-		case "revert-layer":
-			// CSS Cascade 5 §6.1.3: `revert-layer` is distinct from `revert`
-			// — it rolls back to the start of the current cascade layer, not
-			// to the previous origin. Preserve the sentinel literally so the
-			// per-layer resolveRevertLayerOnly pass in ComputeStyle uses the
-			// correct snapshot. Collapsing it to "revert" here (the previous
-			// bug) made `all: revert-layer` equivalent to `all: revert` and
-			// broke revert-layer-003.
-			style.Set(prop, "revert-layer")
+	// Each longhand takes the keyword through expandShorthand, so a logical
+	// longhand writes it under its storage key too, and the CSS-wide keyword
+	// passes resolve it there (revert against that key's snapshot).
+	for prop := range cssLonghandProperties {
+		switch {
+		case !allShorthandCovers(prop):
+		case storageKey(prop) != prop:
+			expandShorthand(style, prop, keyword)
+		default:
+			style.Set(prop, keyword)
 		}
 	}
+	// A var() shorthand stored under its own name: its longhands now carry
+	// the keyword. revert and revert-layer roll the shorthand back with them
+	// (to a lower layer's declaration, say); any other keyword drops it.
+	for _, prop := range varDeferredShorthands {
+		if _, ok := style.Properties[prop]; !ok {
+			continue
+		}
+		if keyword == "revert" || keyword == "revert-layer" {
+			style.Set(prop, keyword)
+		} else {
+			delete(style.Properties, prop)
+		}
+	}
+}
+
+// allShorthandCovers reports whether `all` sets prop: every longhand but
+// direction and unicode-bidi, whose initial values come from the document
+// language and bidi context, not CSS (CSS Cascade 4 §6.3). A logical
+// longhand's internal storage key counts as the longhand, and a var()
+// shorthand stored under its own name as its longhands, all of which `all`
+// sets.
+func allShorthandCovers(prop string) bool {
+	if lh, ok := logicalLonghandStorageKeys[prop]; ok {
+		prop = lh
+	}
+	if isVarDeferredShorthand[prop] {
+		return true
+	}
+	return cssLonghandProperties[prop] && prop != "direction" && prop != "unicode-bidi"
 }
 
 // nonDefaultInitialValues maps CSS longhand properties whose `initial` /
@@ -3520,6 +3360,13 @@ func applyInitialOrUnset(s *Style, prop, kw string) {
 func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSnapshot) {
 	for prop, val := range s.Properties {
 		isCustom := strings.HasPrefix(prop, "--")
+		// A logical longhand's initial / unset applies to the physical
+		// longhand it maps onto (resolveDirectionAwareProperties).
+		if logicalLonghandStorageKeys[prop] != "" {
+			if kw, _ := cssWideKeyword(val); kw == "initial" || kw == "unset" {
+				continue
+			}
+		}
 
 		// For custom properties, check if the value contains a var() that might
 		// substitute to a CSS-wide keyword. Per Blink's CustomProperty::ApplyValue,
@@ -4497,9 +4344,8 @@ func expandFontProperty(style *Style, value string) {
 		style.Set("font-style", parts[i])
 		i++
 	}
-	// Skip optional font-variant
+	// Optional font-variant: font-variant-caps
 	if i < len(parts) && parts[i] == "small-caps" {
-		style.Set("font-variant", parts[i])
 		style.Set("font-variant-caps", parts[i])
 		i++
 	}
@@ -4547,7 +4393,7 @@ type Color struct {
 // to `rgb(10 175 10 / 100%)`.
 func parseSpaceSeparatedColorArgs(inner string) (parts []string, alpha float64) {
 	alpha = 1.0
-	inner = stripCSSComments(inner)
+	inner = StripComments(inner)
 	// Handle the slash separator for alpha
 	if idx := strings.Index(inner, "/"); idx >= 0 {
 		alpha = parseAlpha(inner[idx+1:])
@@ -5633,7 +5479,7 @@ func ParseColor(colorStr string) (Color, bool) {
 		}
 		// Strip comments before splitting so `rgb(10,/* x */175,/* y */10)`
 		// is treated as `rgb(10, 175, 10)`.
-		values = stripCSSComments(values)
+		values = StripComments(values)
 		parts := strings.Split(values, ",")
 		// CSS Color 4 §5.1 legacy comma form: the three RGB components must
 		// be all <number> or all <percentage>; mixing rejects. Modern
@@ -5679,7 +5525,7 @@ func ParseColor(colorStr string) (Color, bool) {
 		}
 		// Strip comments before form-detection so comments-as-separators
 		// don't break the comma/space distinction.
-		inner = stripCSSComments(inner)
+		inner = StripComments(inner)
 		if h, sat, l, a, ok := parseHSLArgs(inner); ok {
 			return hslToColor(h, sat, l, a), true
 		}
@@ -10702,10 +10548,15 @@ func backgroundEdgeOrigin(edge string) BackgroundEdgeOrigin {
 
 // BackgroundSize represents a parsed background-size value
 type BackgroundSize struct {
-	Width   float64 // Computed width in pixels (0 = auto)
-	Height  float64 // Computed height in pixels (0 = auto)
-	Cover   bool
-	Contain bool
+	// Width and Height are a length in pixels, or a percentage stored
+	// negated (resolved at paint), when HasWidth / HasHeight; otherwise
+	// that dimension is auto. A 0 length is not auto: Blink's FillSize
+	// keeps a LengthSize whose auto is distinct (fill_layer.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	Width, Height       float64
+	HasWidth, HasHeight bool
+	Cover               bool
+	Contain             bool
 }
 
 // GetBackgroundSize parses the background-size property.
@@ -10715,33 +10566,7 @@ func (s *Style) GetBackgroundSize() BackgroundSize {
 	if !ok {
 		return BackgroundSize{} // auto auto
 	}
-	val = strings.TrimSpace(val)
-	switch val {
-	case "cover":
-		return BackgroundSize{Cover: true}
-	case "contain":
-		return BackgroundSize{Contain: true}
-	case "auto":
-		return BackgroundSize{}
-	}
-
-	parts := strings.Fields(val)
-	var size BackgroundSize
-	if len(parts) >= 1 && parts[0] != "auto" {
-		if w, ok := s.GetLengthForVal(parts[0]); ok {
-			size.Width = w
-		} else if pct, ok := ParsePercentage(parts[0]); ok {
-			// Store as negative to signal percentage (resolved at render time)
-			size.Width = -pct
-		}
-	}
-	if len(parts) >= 2 && parts[1] != "auto" {
-		if h, ok := s.GetLengthForVal(parts[1]); ok {
-			size.Height = h
-		} else if pct, ok := ParsePercentage(parts[1]); ok {
-			size.Height = -pct
-		}
-	}
+	size, _ := parseSizeValue(val, s.GetLengthForVal)
 	return size
 }
 
@@ -10878,8 +10703,9 @@ func parseRepeatValue(val string) (BackgroundRepeat, bool) {
 	return ExpandRepeatShorthand(val), true
 }
 
-// parseSizeValue parses a single background-size value.
-func parseSizeValue(val string) (BackgroundSize, bool) {
+// parseSizeValue parses a single background-size value, length resolving
+// a length component; set is false for auto (or an empty value).
+func parseSizeValue(val string, length func(string) (float64, bool)) (size BackgroundSize, set bool) {
 	val = strings.TrimSpace(val)
 	switch val {
 	case "cover":
@@ -10889,28 +10715,30 @@ func parseSizeValue(val string) (BackgroundSize, bool) {
 	case "auto", "":
 		return BackgroundSize{}, false
 	}
+	return parseBackgroundSizeComponents(val, length)
+}
+
+// parseBackgroundSizeComponents parses a one- or two-value length/percentage
+// background-size, length resolving a length component; a missing second
+// value or `auto` leaves that dimension auto. set reports whether any
+// component is a length or percentage. A percentage is stored negated.
+func parseBackgroundSizeComponents(val string, length func(string) (float64, bool)) (size BackgroundSize, set bool) {
 	parts := strings.Fields(val)
-	var size BackgroundSize
-	set := false
-	if len(parts) >= 1 && parts[0] != "auto" {
-		if w, ok := ParseLength(parts[0]); ok {
-			size.Width = w
-			set = true
-		} else if pct, ok := ParsePercentage(parts[0]); ok {
-			size.Width = -pct
-			set = true
+	component := func(i int) (v float64, ok bool) {
+		if i >= len(parts) || parts[i] == "auto" {
+			return 0, false
 		}
-	}
-	if len(parts) >= 2 && parts[1] != "auto" {
-		if h, ok := ParseLength(parts[1]); ok {
-			size.Height = h
-			set = true
-		} else if pct, ok := ParsePercentage(parts[1]); ok {
-			size.Height = -pct
-			set = true
+		if l, ok := length(parts[i]); ok {
+			return l, true
 		}
+		if pct, ok := ParsePercentage(parts[i]); ok {
+			return -pct, true
+		}
+		return 0, false
 	}
-	return size, set
+	size.Width, size.HasWidth = component(0)
+	size.Height, size.HasHeight = component(1)
+	return size, size.HasWidth || size.HasHeight
 }
 
 // parseClipValue parses a single background-clip value.
@@ -11019,7 +10847,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 
 		// Size
 		if i < len(sizeParts) {
-			if sz, ok := parseSizeValue(sizeParts[i]); ok {
+			if sz, ok := parseSizeValue(sizeParts[i], s.GetLengthForVal); ok {
 				layer.Size = sz
 				layer.SizeSet = true
 			}
@@ -12658,247 +12486,6 @@ func (s *Style) GetScrollbarWidth() string {
 		return "auto"
 	}
 	return v
-}
-
-// ResolveLogicalProperties remaps CSS logical properties (border-inline-start,
-// margin-block-end, etc.) to their physical counterparts based on the element's
-// computed writing-mode and direction. This must be called after the full CSS
-// cascade and dir attribute application.
-//
-// The expandShorthand function in the cascade already maps logical properties
-// to physical, but it assumes horizontal-tb + ltr. This function fixes up
-// the mapping for non-default writing modes by using the -x-logical-* marker
-// properties that expandShorthand stores.
-func ResolveLogicalProperties(node *html.Node, style *Style) {
-	if node.Type != html.ElementNode {
-		return
-	}
-	wm, _ := style.Get("writing-mode")
-	dir := style.GetDirection()
-
-	// Only need to fix up if writing-mode is vertical/sideways or direction is rtl
-	isVertical := wm == "vertical-rl" || wm == "vertical-lr"
-	isSideways := wm == "sideways-lr" || wm == "sideways-rl"
-	isRTL := dir == DirectionRTL
-
-	if !isVertical && !isSideways && !isRTL {
-		return // horizontal-tb + ltr: default mapping is correct
-	}
-
-	// Determine the physical side mapping for each logical direction.
-	// Default (horizontal-tb + ltr) already applied by expandShorthand:
-	//   inline-start → left,  inline-end → right
-	//   block-start  → top,   block-end  → bottom
-	//
-	// We need to determine the CORRECT mapping and re-apply.
-	var inlineStart, inlineEnd, blockStart, blockEnd string
-	if isVertical {
-		// vertical-rl or vertical-lr: inline axis is vertical (top-to-bottom)
-		if isRTL {
-			inlineStart = "bottom"
-			inlineEnd = "top"
-		} else {
-			inlineStart = "top"
-			inlineEnd = "bottom"
-		}
-		if wm == "vertical-rl" {
-			blockStart = "right"
-			blockEnd = "left"
-		} else { // vertical-lr
-			blockStart = "left"
-			blockEnd = "right"
-		}
-	} else if isSideways {
-		if wm == "sideways-lr" {
-			// sideways-lr: inline direction is bottom-to-top, block is left-to-right
-			if isRTL {
-				inlineStart = "top"
-				inlineEnd = "bottom"
-			} else {
-				inlineStart = "bottom"
-				inlineEnd = "top"
-			}
-			blockStart = "left"
-			blockEnd = "right"
-		} else { // sideways-rl
-			// sideways-rl: inline direction is top-to-bottom, block is right-to-left
-			if isRTL {
-				inlineStart = "bottom"
-				inlineEnd = "top"
-			} else {
-				inlineStart = "top"
-				inlineEnd = "bottom"
-			}
-			blockStart = "right"
-			blockEnd = "left"
-		}
-	} else {
-		// horizontal-tb + rtl
-		inlineStart = "right"
-		inlineEnd = "left"
-		blockStart = "top"
-		blockEnd = "bottom"
-	}
-
-	// Mapping from logical direction to physical side
-	logicalToPhysical := map[string]string{
-		"inline-start": inlineStart,
-		"inline-end":   inlineEnd,
-		"block-start":  blockStart,
-		"block-end":    blockEnd,
-	}
-
-	// Default mapping (htb+ltr) used by expandShorthand
-	defaultMapping := map[string]string{
-		"inline-start": "left",
-		"inline-end":   "right",
-		"block-start":  "top",
-		"block-end":    "bottom",
-	}
-
-	// Remap border logical properties
-	for _, logicalDir := range []string{"inline-start", "inline-end", "block-start", "block-end"} {
-		physSide := logicalToPhysical[logicalDir]
-		defaultSide := defaultMapping[logicalDir]
-
-		// Skip if the correct mapping is the same as the default
-		if physSide == defaultSide {
-			continue
-		}
-
-		// border-* shorthand (e.g. border-inline-start: 5px green solid)
-		if val, ok := style.Get("_border-" + logicalDir); ok {
-			// Clear the wrongly-set default physical properties
-			delete(style.Properties, "border-"+defaultSide+"-width")
-			delete(style.Properties, "border-"+defaultSide+"-style")
-			delete(style.Properties, "border-"+defaultSide+"-color")
-			// Set the correct physical properties
-			expandBorderSideProperty(style, "border-"+physSide, val)
-		}
-
-		// border-*-width
-		if val, ok := style.Get("_border-" + logicalDir + "-width"); ok {
-			delete(style.Properties, "border-"+defaultSide+"-width")
-			style.Set("border-"+physSide+"-width", val)
-		}
-		// border-*-style
-		if val, ok := style.Get("_border-" + logicalDir + "-style"); ok {
-			delete(style.Properties, "border-"+defaultSide+"-style")
-			style.Set("border-"+physSide+"-style", val)
-		}
-		// border-*-color
-		if val, ok := style.Get("_border-" + logicalDir + "-color"); ok {
-			delete(style.Properties, "border-"+defaultSide+"-color")
-			style.Set("border-"+physSide+"-color", val)
-		}
-	}
-
-	// Remap margin logical properties
-	for _, logicalDir := range []string{"inline-start", "inline-end", "block-start", "block-end"} {
-		physSide := logicalToPhysical[logicalDir]
-		defaultSide := defaultMapping[logicalDir]
-		if physSide == defaultSide {
-			continue
-		}
-		if val, ok := style.Get("_margin-" + logicalDir); ok {
-			delete(style.Properties, "margin-"+defaultSide)
-			if _, exists := style.Properties["margin-"+physSide]; !exists {
-				style.Set("margin-"+physSide, val)
-			}
-		}
-	}
-
-	// Remap padding logical properties
-	for _, logicalDir := range []string{"inline-start", "inline-end", "block-start", "block-end"} {
-		physSide := logicalToPhysical[logicalDir]
-		defaultSide := defaultMapping[logicalDir]
-		if physSide == defaultSide {
-			continue
-		}
-		if val, ok := style.Get("_padding-" + logicalDir); ok {
-			delete(style.Properties, "padding-"+defaultSide)
-			// Don't overwrite an existing physical property from the author CSS.
-			// The logical property may come from a lower-priority source (e.g. UA
-			// stylesheet's padding-inline-start on <ul>) while the physical property
-			// was explicitly set by the author (e.g. padding-top: 1em).
-			if _, exists := style.Properties["padding-"+physSide]; !exists {
-				style.Set("padding-"+physSide, val)
-			}
-		}
-	}
-
-	// Remap inset logical properties
-	for _, logicalDir := range []string{"inline-start", "inline-end", "block-start", "block-end"} {
-		physSide := logicalToPhysical[logicalDir]
-		defaultSide := defaultMapping[logicalDir]
-		if physSide == defaultSide {
-			continue
-		}
-		if val, ok := style.Get("_inset-" + logicalDir); ok {
-			delete(style.Properties, defaultSide)
-			style.Set(physSide, val)
-		}
-	}
-
-	// Remap inline-size / block-size for both explicit and inherited
-	// writing-mode — louis14 lays out natively in logical space. sideways-*
-	// are vertical writing modes too (Blink IsHorizontalWritingMode,
-	// platform/text/writing_mode.h:56-58 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	if val, ok := style.Get("_inline-size"); ok {
-		if isVertical || isSideways {
-			style.Set("height", val)
-		} else {
-			style.Set("width", val) // htb+rtl: width is still inline size
-		}
-	}
-	if val, ok := style.Get("_block-size"); ok {
-		if isVertical || isSideways {
-			style.Set("width", val)
-		} else {
-			style.Set("height", val)
-		}
-	}
-	if val, ok := style.Get("_min-inline-size"); ok {
-		if isVertical || isSideways {
-			style.Set("min-height", val)
-		} else {
-			style.Set("min-width", val)
-		}
-	}
-	if val, ok := style.Get("_min-block-size"); ok {
-		if isVertical || isSideways {
-			style.Set("min-width", val)
-		} else {
-			style.Set("min-height", val)
-		}
-	}
-	if val, ok := style.Get("_max-inline-size"); ok {
-		if isVertical || isSideways {
-			style.Set("max-height", val)
-		} else {
-			style.Set("max-width", val)
-		}
-	}
-	if val, ok := style.Get("_max-block-size"); ok {
-		if isVertical || isSideways {
-			style.Set("max-width", val)
-		} else {
-			style.Set("max-height", val)
-		}
-	}
-}
-
-// ResolveLogicalPropertiesInTree walks the DOM tree and resolves logical properties.
-func ResolveLogicalPropertiesInTree(node *html.Node, styles map[*html.Node]*Style) {
-	if node.Type == html.ElementNode {
-		if style, ok := styles[node]; ok {
-			ResolveLogicalProperties(node, style)
-		}
-	}
-	for _, child := range node.Children {
-		ResolveLogicalPropertiesInTree(child, styles)
-	}
 }
 
 // ----- will-change canonical value model -------------------------------------

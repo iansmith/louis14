@@ -65,6 +65,15 @@ func TestComputeReplacedSizeInInitialFragmentGeometry_LOU504(t *testing.T) {
 			html:  `<div style="width:200px"><svg id="t" viewBox="0 0 2 1" style="display:block;margin:0 10px"></svg></div>`,
 			width: 180, height: 90,
 		},
+		{
+			// LOU-817: a min block length resolves its percentage against 0
+			// when the percentage block-size is indefinite, keeping the
+			// calc's fixed part (ResolveBlockLengthInternal, length_utils.cc:
+			// 207-213 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			name:  "min-height calc with % against an indefinite block-size keeps its length",
+			html:  `<canvas id="t" width="10" height="10" style="width:20px;min-height:calc(40px + 50%)"></canvas>`,
+			width: 20, height: 40,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

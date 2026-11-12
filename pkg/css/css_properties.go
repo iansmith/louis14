@@ -28,7 +28,7 @@ type cssProperty struct {
 // When adding support for a CSS property, add its entry here: the `all`
 // shorthand, inheritance (ApplyInheritedProperties, pseudo-element styles,
 // `unset`) and CSS-wide keywords on shorthands all read this table.
-var cssProperties = []cssProperty{
+var cssProperties = append([]cssProperty{
 	// Longhands (and louis14 single-value properties).
 	{"display", false, nil},                      // :3439
 	{"position", false, nil},                     // :5232
@@ -40,6 +40,8 @@ var cssProperties = []cssProperty{
 	{"bottom", false, nil},                       // :2878
 	{"left", false, nil},                         // :4158
 	{"width", false, nil},                        // :8095
+	{"contain-intrinsic-width", false, nil},      // :3179
+	{"contain-intrinsic-height", false, nil},     // :3194
 	{"min-width", false, nil},                    // :4567
 	{"max-width", false, nil},                    // :4519
 	{"height", false, nil},                       // :3925
@@ -54,7 +56,7 @@ var cssProperties = []cssProperty{
 	{"padding-bottom", false, nil},               // :5027
 	{"padding-left", false, nil},                 // :5050
 	{"box-sizing", false, nil},                   // :2929
-	{"overflow", false, nil},                     // :9817 Blink shorthand; louis14 stores one value
+	{"overflow", false, nil},                     // :9817 Blink shorthand; louis14 stores one value and also expands (storedWholeShorthandLonghands)
 	{"overflow-x", false, nil},                   // :4913
 	{"overflow-y", false, nil},                   // :4938
 	{"aspect-ratio", false, nil},                 // :2100
@@ -284,6 +286,7 @@ var cssProperties = []cssProperty{
 	{"flex", false, []string{"flex-grow", "flex-shrink", "flex-basis"}},                                                                          // :9628
 	{"flex-flow", false, []string{"flex-direction", "flex-wrap"}},                                                                                // :9637
 	{"list-style", false, []string{"list-style-position", "list-style-image", "list-style-type"}},                                                // :9765
+	{"contain-intrinsic-size", false, []string{"contain-intrinsic-width", "contain-intrinsic-height"}},                                           // :9355
 	{"gap", false, []string{"row-gap", "column-gap"}},                                                                                            // :9705
 	{"grid-gap", false, []string{"row-gap", "column-gap"}},                                                                                       // gap's alias
 	{"place-items", false, []string{"align-items", "justify-items"}},                                                                             // :9694
@@ -304,7 +307,7 @@ var cssProperties = []cssProperty{
 	{"animation", false, []string{"animation-duration", "animation-timing-function", "animation-delay", "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state", "animation-name", "animation-timeline", "animation-range-start", "animation-range-end"}}, // :9036
 	{"text-emphasis", false, []string{"text-emphasis-style", "text-emphasis-color"}},                                                            // :10137
 	{"text-decoration", false, []string{"text-decoration-line", "text-decoration-thickness", "text-decoration-style", "text-decoration-color"}}, // :10023
-}
+}, logicalLonghands...)
 
 // inheritableProperties is the set of inherited properties: Blink's
 // CSSProperty::IsInherited (`inherited: true` in css_properties.json5).
@@ -314,6 +317,70 @@ var inheritableProperties = func() map[string]bool {
 		if p.inherited {
 			m[p.name] = true
 		}
+	}
+	return m
+}()
+
+// storedWholeShorthandLonghands are the longhands of a Blink shorthand
+// louis14 stores under its own name too (cssProperties: "stores one value")
+// and also expands: overflow keeps its declared value as GetOverflow's
+// fallback beside overflow-x and overflow-y (css_properties.json5:9817 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+var storedWholeShorthandLonghands = map[string][]string{
+	"overflow": {"overflow-x", "overflow-y"},
+}
+
+// storageKey is the key a longhand's declaration is stored under: a
+// logical longhand's internal storage key, else its own name.
+func storageKey(longhand string) string {
+	if logicalLonghandStorageKeys["_"+longhand] != "" {
+		return "_" + longhand
+	}
+	return longhand
+}
+
+// logicalLonghands are the flow-relative longhands (CSS Logical Properties
+// 1), each stored under an internal _-prefixed key until
+// resolveDirectionAwareProperties maps it onto its physical longhand.
+var logicalLonghands = []cssProperty{
+	{"inline-size", false, nil},               // :8194
+	{"block-size", false, nil},                // :8209
+	{"min-inline-size", false, nil},           // :8224
+	{"min-block-size", false, nil},            // :8237
+	{"max-inline-size", false, nil},           // :8251
+	{"max-block-size", false, nil},            // :8265
+	{"margin-inline-start", false, nil},       // :8279
+	{"margin-inline-end", false, nil},         // :8295
+	{"margin-block-start", false, nil},        // :8312
+	{"margin-block-end", false, nil},          // :8328
+	{"padding-inline-start", false, nil},      // :8344
+	{"padding-inline-end", false, nil},        // :8356
+	{"padding-block-start", false, nil},       // :8368
+	{"padding-block-end", false, nil},         // :8380
+	{"border-inline-start-width", false, nil}, // :8392
+	{"border-inline-start-style", false, nil}, // :8404
+	{"border-inline-start-color", false, nil}, // :8416
+	{"border-inline-end-width", false, nil},   // :8427
+	{"border-inline-end-style", false, nil},   // :8439
+	{"border-inline-end-color", false, nil},   // :8451
+	{"border-block-start-width", false, nil},  // :8462
+	{"border-block-start-style", false, nil},  // :8474
+	{"border-block-start-color", false, nil},  // :8486
+	{"border-block-end-width", false, nil},    // :8497
+	{"border-block-end-style", false, nil},    // :8509
+	{"border-block-end-color", false, nil},    // :8521
+	{"inset-inline-start", false, nil},        // :8532
+	{"inset-inline-end", false, nil},          // :8546
+	{"inset-block-start", false, nil},         // :8560
+	{"inset-block-end", false, nil},           // :8574
+}
+
+// logicalLonghandStorageKeys maps the internal key each logical longhand is
+// stored under to the longhand.
+var logicalLonghandStorageKeys = func() map[string]string {
+	m := make(map[string]string, len(logicalLonghands))
+	for _, p := range logicalLonghands {
+		m["_"+p.name] = p.name
 	}
 	return m
 }()
@@ -331,13 +398,14 @@ var shorthandLonghands = func() map[string][]string {
 }()
 
 // cssLonghandProperties is every non-shorthand property, the set the `all`
-// shorthand expands to (Blink's all.cc iterates the longhands of
-// CSSPropertyIDIterator).
-var cssLonghandProperties = func() []string {
-	var out []string
+// shorthand expands to less direction and unicode-bidi (allShorthandCovers;
+// the longhands css_properties.json5 generates for `all`, :8800 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+var cssLonghandProperties = func() map[string]bool {
+	out := make(map[string]bool)
 	for _, p := range cssProperties {
 		if p.longhands == nil {
-			out = append(out, p.name)
+			out[p.name] = true
 		}
 	}
 	return out

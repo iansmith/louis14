@@ -77,9 +77,9 @@ func TestStripCSSComments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := stripCSSComments(tt.input)
+			got := StripComments(tt.input)
 			if got != tt.expected {
-				t.Errorf("stripCSSComments(%q)\n  got:  %q\n  want: %q", tt.input, got, tt.expected)
+				t.Errorf("StripComments(%q)\n  got:  %q\n  want: %q", tt.input, got, tt.expected)
 			}
 		})
 	}

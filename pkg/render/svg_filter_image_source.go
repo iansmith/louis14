@@ -75,28 +75,13 @@ func (p *svgFilterPrimitiveAdapter) ResolveImageSource(filterRegion, subregion i
 	return src, target, parNone
 }
 
-// readImageHref reads the `href` attribute (preferring the plain form
-// over the legacy `xlink:href`, per SVG 2 §6.4) from the feImage
-// element. Returns "" when neither attribute is set.
+// readImageHref returns the feImage element's href (svg.ElementHref: href
+// when specified, even empty, else xlink:href), "" when it has none.
 func (p *svgFilterPrimitiveAdapter) readImageHref() string {
 	if p.elt == nil {
 		return ""
 	}
-	// HTML tokenizer lowercases attribute names, and namespace
-	// prefixes are stripped by externalSVGElement.Attribute and the
-	// in-page svgElementAdapter via the underlying html.Node attribute
-	// table. Try both spellings (SVG 2 `href`; SVG 1.1 `xlink:href`).
-	if v, ok := p.elt.Attribute("href"); ok {
-		if s := strings.TrimSpace(v); s != "" {
-			return s
-		}
-	}
-	if v, ok := p.elt.Attribute("xlink:href"); ok {
-		if s := strings.TrimSpace(v); s != "" {
-			return s
-		}
-	}
-	return ""
+	return svg.ElementHref(p.elt)
 }
 
 // resolveImageHref dispatches an href to one of three resolvers:
