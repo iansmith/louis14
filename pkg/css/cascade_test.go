@@ -486,6 +486,41 @@ func TestSVGImageGeometryAttrsMapToCSS(t *testing.T) {
 	}
 }
 
+// TestSVGRectGeometryAttrsMapToCSS checks a <rect>'s x, y, width and height
+// attributes map to the CSS properties of those names, as SVGRectElement
+// binds its SVGAnimatedLengths to CSSPropertyID::kX/kY/kWidth/kHeight
+// (core/svg/svg_rect_element.cc:32-56 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which LayoutSVGRect reads.
+// Author CSS beats the attribute; a negative width is an error and maps
+// nothing (LOU-907).
+func TestSVGRectGeometryAttrsMapToCSS(t *testing.T) {
+	styles := cascadeHTML(t, `<style>#css { width: 200px }</style><svg>
+		<rect id="r" x="-5" y="6" width="40%" height="20"/>
+		<rect id="css" width="40" height="20"/>
+		<rect id="neg" width="-3" height="20"/>
+		<rect id="negh" width="20" height="-3"/></svg>
+		<rect id="html" x="1" y="2" width="40" height="20"></rect>`, nil)
+	for _, tt := range []struct {
+		id   string
+		want [4]string // x, y, width, height
+	}{
+		{"r", [4]string{"-5px", "6px", "40%", "20px"}},
+		{"css", [4]string{"", "", "200px", "20px"}},
+		{"neg", [4]string{"", "", "", "20px"}},
+		{"negh", [4]string{"", "", "20px", ""}},
+		{"html", [4]string{}}, // an HTML-namespace <rect> maps nothing
+	} {
+		s := styleByID(t, styles, tt.id)
+		var got [4]string
+		for i, p := range [...]string{"x", "y", "width", "height"} {
+			got[i], _ = s.Get(p)
+		}
+		if got != tt.want {
+			t.Errorf("#%s x, y, width, height = %q, want %q", tt.id, got, tt.want)
+		}
+	}
+}
+
 // TestSVGLengthAttrToCSS covers the bare-number conversion and the rejection of
 // values that are not valid CSS lengths. strconv.ParseFloat parses "Inf"/
 // "Infinity", so without the math.IsInf guard width="Infinity" would become the

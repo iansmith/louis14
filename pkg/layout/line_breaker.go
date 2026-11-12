@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry"
 	"louis14/pkg/text"
 
 	"mazarin/textshape"
@@ -1723,8 +1724,8 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 			// Propagate percentage resolution block-size from parent so that
 			// percentage-height replaced elements (e.g., img { height: 100% })
 			// can resolve against their containing block's definite height.
-			if lb.space.PercentageResolutionSize.BlockSize.Float64() > 0 {
-				csBuilder.SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
+			if pct := lb.atomicPercentageResolutionSize(item); pct.BlockSize.Float64() > 0 {
+				csBuilder.SetPercentageResolutionSize(geomLogicalToOld(pct))
 			}
 			childMM := ComputeMinMaxSizes(lb.ctx, item.LayoutNode, csBuilder.Build())
 			// ComputeMinMaxSizes returns content-box; convert to border-box
@@ -1756,7 +1757,7 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 			// The parent line's whole percentage resolution size, whatever
 			// its block-size: BlockNode::LayoutAtomicInline
 			// (block_node.cc:1477-1481 @ a9f50e522efa).
-			SetPercentageResolutionSize(geomLogicalToOld(lb.space.PercentageResolutionSize))
+			SetPercentageResolutionSize(geomLogicalToOld(lb.atomicPercentageResolutionSize(item)))
 		childSpace := csb.Build()
 
 		result = layoutElement(lb.ctx, item.LayoutNode, childSpace)
@@ -2675,6 +2676,17 @@ func (lb *LineBreaker) atomicAvailableBlock(orthogonal bool) float64 {
 		availBlock = lb.space.OrthogonalAvailableBlock
 	}
 	return availBlock
+}
+
+// atomicPercentageResolutionSize is the percentage resolution size an
+// atomic inline is laid out with: the line's replaced one for a replaced
+// element (BlockNode::LayoutAtomicInline, block_node.cc:1477-1481 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (lb *LineBreaker) atomicPercentageResolutionSize(item *InlineItem) geometry.LogicalSize {
+	if item.LayoutNode != nil && item.LayoutNode.IsReplaced() {
+		return lb.space.ReplacedChildPercentageResolutionSize()
+	}
+	return lb.space.PercentageResolutionSize
 }
 
 // orthogonalAtomicInlineContribution is an orthogonal atomic inline's

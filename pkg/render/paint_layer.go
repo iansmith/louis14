@@ -825,9 +825,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// Overflow clip (or paint containment clip at padding box).
 	// Per CSS Overflow Level 3, overflow-x and overflow-y are independent:
 	// a box may clip in one axis but not the other.
-	overflowX := s.GetOverflowX()
-	overflowY := s.GetOverflowY()
-
+	//
 	// CSS Overflow 3 §3.3: when the BODY is the viewport-defining element
 	// (root has overflow:visible, no containment, body is first body that
 	// generates a box), the body's `overflow` propagates to the viewport
@@ -851,8 +849,6 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	// viewport's own clip is the paint target's bounds.
 	axes := box.OverflowClipAxes
 	if IsViewportDefiningBody(box) || (box.LayoutNode != nil && box.LayoutNode.IsDocumentElement()) {
-		overflowX = css.OverflowVisible
-		overflowY = css.OverflowVisible
 		axes = layout.NoOverflowClip
 	}
 	clipX := axes&layout.OverflowClipX != 0
@@ -869,27 +865,6 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if forceBorderBoxClip {
 		clipX = true
 		clipY = true
-	}
-
-	// An inline <svg> is clipped by default in Blink: it respects CSS
-	// overflow like other replaced elements
-	// (LayoutSVGRoot::ComputeOverflowClipAxes,
-	// core/layout/svg/layout_svg_root.cc:550-575 @ Chromium
-	// 5992657f556bcd9d207a4aca187488462f027cab) and the UA sheet gives
-	// svg:not(:root) overflow:hidden (core/css/svg.css:48-54 @
-	// 5992657f556b). louis14 has no such UA rule, so for an inline <svg>
-	// with no overflow-clip-margin `paintSVGRoot` installs that default
-	// clip itself, pixel-snapped like the SVG content origin. When
-	// `overflow-clip-margin` is set, the SVG must go through the standard
-	// CSS-overflow paint path — that is the only path that consults the
-	// margin. We trigger that path here by forcing clipX/clipY true when
-	// the SVG carries the property.
-	isSVGRootNode := box.Node != nil && box.Node.TagName == "svg"
-	if isSVGRootNode {
-		if _, ok := s.GetOverflowClipMargin(); ok {
-			clipX = true
-			clipY = true
-		}
 	}
 
 	// No multicol-container clip special case. Blink's UpdateFromStyle
@@ -922,33 +897,18 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		layer.ClipX = clipX
 		layer.ClipY = clipY
 
-		// CSS Overflow 3 §3.2: overflow-clip-margin applies only when the
-		// box is clipped via `overflow: clip` (on at least one axis) or via
-		// paint containment, AND the box is NOT a scroll container (i.e.
-		// no axis is scroll/auto/hidden). Blink's LayoutBox::OverflowClipRect
-		// honors overflow_clip_margin only on the non-scroll clip path.
-		//
-		// SVG roots count as clip (not scroll) for this purpose: per Blink's
-		// `LayoutSVGRoot::ComputeOverflowClipAxes`, an SVG root is always
-		// clipped on both axes (UA behavior, not the cascaded `overflow`
-		// value), so overflow-clip-margin set on the SVG applies. The
-		// outer clip path is enabled only when the SVG actually has
-		// `overflow-clip-margin` set — see the `isSVGRootNode` block
-		// above for the rationale.
-		isScrollContainer := box.IsScrollContainer()
-		if isSVGRootNode {
-			isScrollContainer = false
-		}
-		applyMargin := false
+		// overflow-clip-margin extends the clip only where Blink applies it
+		// (LayoutObject::ShouldApplyOverflowClipMargin, core/layout/
+		// layout_object.h:588-617 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+		// not a scroll container, a margin with an effect, and overflow:clip
+		// on both axes (any non-visible value for a replaced element) or
+		// paint containment.
+		applyMargin := box.ShouldApplyOverflowClipMargin()
 		marginBox := css.OverflowClipMarginPaddingBox
 		var marginLength float64
-		hasPaintContain := s.ShouldApplyPaintContainment()
-		if !isScrollContainer && (overflowX == css.OverflowClip || overflowY == css.OverflowClip || hasPaintContain || isSVGRootNode) {
-			if m, ok := s.GetOverflowClipMargin(); ok {
-				applyMargin = true
-				marginBox = m.Box
-				marginLength = m.Length
-			}
+		if applyMargin {
+			m, _ := s.GetOverflowClipMargin()
+			marginBox, marginLength = m.Box, m.Length
 		}
 
 		var padX, padY, clipW, clipH float64
@@ -2444,24 +2404,14 @@ func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geom
 // (core/layout/layout_box.cc:3668-3688 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b)
 // for a box that applies an overflow-clip-margin: the outsets, [top, right,
 // bottom, left] from the border box, of the margin's reference box inflated
-// by the margin. ok is false when ShouldApplyOverflowClipMargin
-// (core/layout/layout_object.h:588-617 @ a9f50e52) does not hold: a scroll
-// container, no margin with an effect, or not clipped by overflow:clip on
-// both axes (or paint containment) where the box respects overflow. Replaced
-// elements' looser overflow test is not ported.
+// by the margin. ok is false unless the box clips both axes and
+// ShouldApplyOverflowClipMargin (core/layout/layout_object.h:588-617 @
+// a9f50e52) holds.
 func borderOutsetsForClipping(box *layout.Box) (outsets [4]float64, ok bool) {
-	s := box.Style
-	if s == nil || box.IsScrollContainer() || box.OverflowClipAxes != layout.OverflowClipBothAxis {
+	if box.Style == nil || box.OverflowClipAxes != layout.OverflowClipBothAxis || !box.ShouldApplyOverflowClipMargin() {
 		return outsets, false
 	}
-	m, set := s.GetOverflowClipMargin()
-	if !set || (m.Length == 0 && m.Box == css.OverflowClipMarginPaddingBox) {
-		return outsets, false
-	}
-	isOverflowClip := s.GetOverflowX() == css.OverflowClip && s.GetOverflowY() == css.OverflowClip
-	if !isOverflowClip && !s.ShouldApplyPaintContainment() {
-		return outsets, false
-	}
+	m, _ := box.Style.GetOverflowClipMargin()
 	for i, inset := range overflowClipMarginVisualBoxInset(box, m.Box) {
 		outsets[i] = m.Length - inset
 	}

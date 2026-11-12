@@ -42,19 +42,7 @@ func NewSVGImage(elt ElementAdapter, style *css.Style, lengthCtx SVGLengthContex
 	}
 	img := &SVGImage{Element: elt, Style: style, Viewport: lengthCtx.ViewportSize(), Href: ElementHref(elt)}
 	length := func(name string, mode SVGLengthMode) float64 {
-		if style == nil {
-			v, _ := elt.Attribute(name)
-			return lengthCtx.Resolve(v, mode)
-		}
-		// A CSS <length-percentage>, units and math functions included,
-		// its percentages of the SVG viewport (SVGViewportResolver): width
-		// for x and width, height for y and height. Auto is 0.
-		base := img.Viewport.Width
-		if mode == LengthModeHeight {
-			base = img.Viewport.Height
-		}
-		v, _ := style.ResolveLengthPercentage(name, base)
-		return v
+		return geometryLength(elt, style, name, mode, lengthCtx)
 	}
 	img.box = geometry.NewRectF(
 		length("x", LengthModeWidth), length("y", LengthModeHeight),
@@ -107,22 +95,18 @@ func ElementHref(elt ElementAdapter) string {
 // tree builders.
 func newSVGLeaf(elt ElementAdapter, lengthCtx SVGLengthContext, styleResolver StyleResolver) (node SVGNode, ok bool) {
 	tag := elt.TagName()
-	switch {
-	case svgShapeTags[tag]:
-		shape := NewSVGShape(elt, lengthCtx)
-		if shape == nil {
-			return nil, true
-		}
-		if styleResolver != nil {
-			shape.Style = styleResolver(elt)
-		}
-		return shape, true
-	case tag == "image":
-		var style *css.Style
-		if styleResolver != nil {
-			style = styleResolver(elt)
-		}
+	if tag != "image" && !svgShapeTags[tag] {
+		return nil, false
+	}
+	var style *css.Style
+	if styleResolver != nil {
+		style = styleResolver(elt)
+	}
+	if tag == "image" {
 		return NewSVGImage(elt, style, lengthCtx), true
 	}
-	return nil, false
+	if shape := NewSVGShape(elt, style, lengthCtx); shape != nil {
+		return shape, true
+	}
+	return nil, true
 }

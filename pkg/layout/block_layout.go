@@ -21,6 +21,9 @@ type BlockLayoutAlgorithm struct {
 	style *css.Style
 	space ConstraintSpace
 
+	// replacedChildPercentage memoizes replacedChildPercentageBlockSize.
+	replacedChildPercentage *replacedChildPercentage
+
 	// fragmentainerOffsetForChildren is the fragmentainer offset of this
 	// block's content edge — the origin every child block offset, line
 	// offset and float offset is measured from. bla.space.FragmentainerOffset
@@ -147,6 +150,53 @@ func childPercResolutionBlockSize(bla *BlockLayoutAlgorithm, hasExplicitBlock bo
 	// (CalculateChildPercentageSize returns the child available size,
 	// length_utils.cc:1810-1828 @ a9f50e522efa), never a definite 0.
 	return Indefinite
+}
+
+// replacedChildPercentageBlockSize is the block size this block's replaced
+// children resolve percentages against where it differs from the other
+// children's: a table cell with a fixed block size gives its own height,
+// in the measure and the final layout alike, so its replaced descendants
+// keep one size across both; an anonymous block passes on its parent's.
+// Mirrors Blink's CalculateReplacedChildPercentageSize (length_utils.cc:
+// 1830-1867 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); its quirks-mode
+// default is not ported. Computed once per algorithm, as Blink's
+// replaced_child_percentage_size_ is.
+func (bla *BlockLayoutAlgorithm) replacedChildPercentageBlockSize() (float64, bool) {
+	if bla.replacedChildPercentage == nil {
+		v, ok := computeReplacedChildPercentageBlockSize(bla)
+		bla.replacedChildPercentage = &replacedChildPercentage{blockSize: v, ok: ok}
+	}
+	return bla.replacedChildPercentage.blockSize, bla.replacedChildPercentage.ok
+}
+
+// replacedChildPercentage memoizes replacedChildPercentageBlockSize.
+type replacedChildPercentage struct {
+	blockSize float64
+	ok        bool
+}
+
+func computeReplacedChildPercentageBlockSize(bla *BlockLayoutAlgorithm) (float64, bool) {
+	if bla.space.IsAnonymous || (bla.node != nil && bla.node.isAnonymous) {
+		return bla.space.ReplacedChildPercentageResolutionBlockSize, bla.space.HasReplacedChildPercentageResolutionBlockSize
+	}
+	if bla.space.TableSectionData != nil && bla.style.GetDisplay() == css.DisplayTableCell {
+		wdm := bla.space.WritingDirection
+		if _, isFixed := bla.style.GetLength(logicalBlockSizeProperty(wdm)); isFixed {
+			// The cell's own block size, clamped by its min/max block
+			// sizes (ComputeBlockSizeForFragmentInternal, length_utils.cc:
+			// 1851-1858), less its border, scrollbar and padding.
+			geom := ComputeFragmentGeometry(bla.style, wdm)
+			if content, ok := ResolveBlockSize(bla.style, wdm, ConstraintSpace{}, geom); ok {
+				size := content.Float64()
+				if maxSize, hasMax := ResolveMaxBlockSize(bla.style, wdm, ConstraintSpace{}, geom); hasMax {
+					size = min(size, maxSize.Float64())
+				}
+				size = max(size, ResolveMinBlockSize(bla.style, wdm, ConstraintSpace{}, geom).Float64())
+				return max(0, size-geom.BlockScrollbarSum()), true
+			}
+		}
+	}
+	return 0, false
 }
 
 // previouslyConsumedBlockSize is the border-box block-size earlier fragments
@@ -1175,6 +1225,18 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}).
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					SetExclusionSpace(bla.containerBuilder.GetExclusionSpace())
+				// A replaced child resolves against the replaced percentage
+				// size; an anonymous block carries it to its inline content
+				// (CreateConstraintSpaceForChild, block_layout_algorithm.cc:
+				// 3458-3463; PercentageSizeForChild @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				if replacedBlock, ok := bla.replacedChildPercentageBlockSize(); ok {
+					if child.IsReplaced() {
+						b.SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: replacedBlock})
+					} else if child.IsAnonymous() {
+						b.SetReplacedChildPercentageResolutionBlockSize(replacedBlock)
+					}
+				}
 
 				b.SetInlineAutoBehavior(childInlineAutoBehavior)
 
@@ -1828,6 +1890,16 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// so its content never resolves a min/max-content keyword again.
 		finalBlockSize = explicitBlockSize
 		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
+	} else if bla.space.IsFixedBlockSize && (bla.space.IsFixedBlockSizeIndefinite || bla.space.IsBlockSizeOverride) {
+		// A fixed block size that overrides the box's own (a table cell in
+		// its final layout) ends at the available size, unclamped by the
+		// box's min/max block sizes, even when its initial block size was
+		// indefinite: ComputeInitialBlockSizeForFragment returned the
+		// intrinsic size, ComputeBlockSizeForFragment returns the available
+		// size (length_utils.cc:906-916, :929-940 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		finalBlockSize = max(0, bla.space.AvailableSize.BlockSize.Float64()-geom.BlockBorderPadding())
+		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
 	} else {
 		finalBlockSize = intrinsicBlockSize
 		if hasExplicitBlock {
@@ -1935,10 +2007,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// table-cell box reaching block layout without one is a layout root or a
 	// box Blink blockifies, and gets no cell alignment.
 	//
-	// When distribution grows the row past the cell's block-size,
-	// table_layout.go's Phase-3 resize shifts the children again by the
-	// row-growth part; the two shifts sum to Blink's single shift against
-	// the final row block-size.
+	// Table layout lays each cell out again at its final block size
+	// (table_layout.go Phase 3), so this one shift is Blink's.
 	//
 	// The content extent includes the cell's own floats: a cell is a new
 	// formatting context, whose Blink intrinsic block-size encloses its
