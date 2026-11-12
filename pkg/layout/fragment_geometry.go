@@ -80,8 +80,11 @@ func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockEnd() {
 // ComputeFragmentGeometry resolves border and padding from a CSS style
 // into logical edges for the given writing direction.
 // An optional percentageBase (containing block inline-size) can be passed
-// to resolve percentage padding values. If not provided (or zero), percentage
-// padding resolves to zero.
+// to resolve percentage padding values; an indefinite (negative) base
+// resolves them against 0, keeping a calc()'s length, as Blink's
+// ComputePadding clamps MarginPaddingPercentageResolutionSize
+// (length_utils.cc:1527-1541 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// Without one, a percentage or calc() with a percentage is dropped.
 func ComputeFragmentGeometry(style *css.Style, wdm WritingDirectionMode, percentageBase ...float64) FragmentGeometry {
 	if style == nil {
 		return FragmentGeometry{}
@@ -89,8 +92,8 @@ func ComputeFragmentGeometry(style *css.Style, wdm WritingDirectionMode, percent
 
 	physBorder := style.GetBorderWidth()
 	var physPadding css.BoxEdge
-	if len(percentageBase) > 0 && percentageBase[0] > 0 {
-		physPadding = style.GetPaddingForWidth(percentageBase[0])
+	if len(percentageBase) > 0 {
+		physPadding = style.GetPaddingForWidth(max(0, percentageBase[0]))
 	} else {
 		physPadding = style.GetPadding()
 	}

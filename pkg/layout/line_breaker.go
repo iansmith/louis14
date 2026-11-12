@@ -1642,8 +1642,9 @@ func (lb *LineBreaker) handleOpenTag(item *InlineItem, line *LineInfo) {
 	}
 
 	wdm := lb.space.WritingDirection
-	margins := ResolveMargins(item.Style, wdm, lb.percentageMarginBase())
-	geom := ComputeFragmentGeometry(item.Style, wdm)
+	base := lb.percentageMarginBase()
+	margins := ResolveMargins(item.Style, wdm, base)
+	geom := ComputeFragmentGeometry(item.Style, wdm, base)
 
 	// Add inline-start margin + border + padding.
 	startEdge := margins.InlineStart + geom.Border.InlineStart + geom.Padding.InlineStart
@@ -1664,8 +1665,9 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 	}
 
 	wdm := lb.space.WritingDirection
-	margins := ResolveMargins(item.Style, wdm, lb.percentageMarginBase())
-	geom := ComputeFragmentGeometry(item.Style, wdm)
+	base := lb.percentageMarginBase()
+	margins := ResolveMargins(item.Style, wdm, base)
+	geom := ComputeFragmentGeometry(item.Style, wdm, base)
 
 	// Add inline-end border + padding + margin.
 	endEdge := geom.Border.InlineEnd + geom.Padding.InlineEnd + margins.InlineEnd
@@ -2584,18 +2586,21 @@ func (lb *LineBreaker) root() *LineBreaker {
 	return root
 }
 
-// percentageMarginBase is what an inline item's percentage margins resolve
-// against: zero while computing intrinsic sizes, as cyclic percentages do
-// in intrinsic size contributions (CSS Sizing 3 §5.2.1), else the line's
-// available width (LOU-771 for the containing block). A ruby sub-line
+// percentageMarginBase is what an inline item's percentage margins and
+// padding resolve against: Blink's MarginPaddingPercentageResolutionSize,
+// the containing block's inline size (ComputeLineMarginsForSelf /
+// ComputeLinePadding, length_utils.h:544-589 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), not the line's available
+// width, which a float narrows and white-space:nowrap makes unbounded. It
+// is zero while computing intrinsic sizes, as cyclic percentages are in
+// intrinsic size contributions (CSS Sizing 3 §5.2.1). A ruby sub-line
 // breaker shares its parent's constraint space (LineBreaker, inline/
-// line_breaker.cc:3066-3067 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
-// so it takes the root line's width, not its own unbounded one.
+// line_breaker.cc:3066-3067 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (lb *LineBreaker) percentageMarginBase() float64 {
 	if lb.isIntrinsicSizing() {
 		return 0
 	}
-	return lb.root().availableWidth
+	return max(0, lb.space.PercentageResolutionInlineSize)
 }
 
 // atomicAvailableBlock is the available block size an atomic inline is laid
