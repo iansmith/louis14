@@ -492,11 +492,10 @@ func (n *LayoutInputNode) ListMarkerOccupiesWholeLine() bool {
 // Mirrors LayoutBox::HasUnsplittableScrollingOverflow
 // (layout_box.cc:3639-3649 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (n *LayoutInputNode) hasUnsplittableScrollingOverflow() bool {
-	// A fieldset container does not respect CSS overflow
-	// (LayoutFieldset::RespectsCSSOverflow, forms/layout_fieldset.h:61-64 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so it is never a scroll
-	// container; its anonymous content box carries the overflow.
-	return !n.IsFieldsetContainer() && n.style.IsScrollContainer()
+	// A box that does not respect CSS overflow (a fieldset container, a
+	// table row or row group, respectsCSSOverflow) is never a scroll
+	// container: LayoutObject::IsScrollContainer.
+	return isScrollContainerBox(n.style, n.DOMNode)
 }
 
 // IsMonolithic reports whether this node must never be fragmented across
