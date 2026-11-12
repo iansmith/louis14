@@ -3576,46 +3576,65 @@ func countJustifyOpportunities(line *LineInfo, itemsData *InlineItemsData) int {
 
 // computeTextAlignOffset computes the starting inline offset for text-align.
 // CSS Text §7.1: "start" and "end" are direction-relative; "left" and "right"
-// are physical and independent of direction.
+// are physical and independent of direction. Mirrors Blink's
+// LineOffsetForTextAlign (core/layout/length_utils.cc:1607-1653 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), called by
+// InlineLayoutAlgorithm::ApplyTextAlign (inline/inline_layout_algorithm.cc:
+// 938-964): a line wider than its box stays at the start edge in LTR and
+// spills out of the left edge in RTL, whatever its alignment. The RTL case
+// is what makes a `direction:rtl; width:0` inline-block (the WPT outside-
+// marker idiom) hang its content to the left.
 func computeTextAlignOffset(line *LineInfo, availableInline float64, wdm WritingDirectionMode) float64 {
-	slack := availableInline - line.Width
+	space := availableInline - line.Width
+	isLTR := !wdm.IsRTL()
 
-	// The offset is the inline-start position where the (already visually
-	// ordered) line content begins; it then extends toward the inline end.
-	// Alignments that anchor content against the inline END — physical-right
-	// in LTR: text-align:right, LTR end, RTL start, plus center — must return
-	// `slack` (or slack/2) EVEN WHEN NEGATIVE, so content wider than the line
-	// box hangs off the start side rather than clamping to the start edge. This
-	// is what makes a `direction:rtl; width:0` inline-block (the WPT marker-
-	// content outside-marker idiom) hang its overflowing content to the left,
-	// matching Blink. Physical-left/start alignments keep content at offset 0 —
-	// overflow simply extends toward the end (no negative offset needed).
-	switch line.TextAlign {
-	case "center", "-webkit-center":
-		return slack / 2
-	case "right":
-		return slack // physical right
-	case "end":
-		if !wdm.IsRTL() {
-			return slack // LTR end = physical right
+	align := line.TextAlign
+	if align == "justify" {
+		// Inter-word widening (justifyExpansion) fills a justified line that
+		// has room; any other line falls back to start, as ApplyTextAlign
+		// does when it cannot justify. text-align: justify falls back on the
+		// last line; text-align-last: justify expands it (CSS Text 3 §9.7).
+		justified := !(line.IsLastLine || line.HasForcedBreak) || line.TextAlignLastJustify
+		if justified && space > 0 {
+			return 0
 		}
-		return 0 // RTL end = physical left
+		align = "start"
+	}
+	switch align {
 	case "start":
-		if wdm.IsRTL() {
-			return slack // RTL start = physical right
+		if isLTR {
+			align = "left"
+		} else {
+			align = "right"
 		}
-		return 0 // LTR start = physical left
-	case "justify":
-		// text-align: justify falls back to start on the last line.
-		// text-align-last: justify expands the last line (CSS Text 3 §9.7).
-		// Inter-word widening (justifyExpansion) handles non-last lines, so
-		// their start offset is 0; only the RTL last-line fallback anchors right.
-		if (line.IsLastLine || line.HasForcedBreak) && !line.TextAlignLastJustify && wdm.IsRTL() {
-			return slack // RTL start = physical right
+	case "end":
+		if isLTR {
+			align = "right"
+		} else {
+			align = "left"
+		}
+	}
+
+	switch align {
+	case "right", "-webkit-right":
+		// In RTL, trailing spaces appear on the left of the line. Wide LTR
+		// lines spill out of the right side even when right-aligned.
+		if !isLTR || space > 0 {
+			return space
 		}
 		return 0
-	default: // "left", ""
-		return 0
+	case "center", "-webkit-center":
+		if isLTR || space > 0 {
+			return max(space/2, 0)
+		}
+		// In RTL, wide lines spill out to the left, as for right.
+		return space
+	default: // "left", "-webkit-left", ""
+		// Wide RTL lines still spill out to the left.
+		if isLTR {
+			return 0
+		}
+		return min(space, 0)
 	}
 }
 
