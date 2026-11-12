@@ -11,12 +11,15 @@ import (
 // RegisteredEventListener (core/dom/events/registered_event_listener.h @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); passive and signal are not
 // ported. raw is kept so removeEventListener can match by JS identity.
+// attribute marks the entry of an event handler IDL attribute (onload),
+// which Blink also keeps in the listener list.
 type registeredEventListener struct {
-	raw     goja.Value
-	fn      goja.Callable
-	capture bool
-	once    bool
-	removed bool
+	raw       goja.Value
+	fn        goja.Callable
+	capture   bool
+	once      bool
+	removed   bool
+	attribute bool
 }
 
 // Event phases (Event.eventPhase), as in core/dom/events/event.h.
@@ -27,14 +30,16 @@ const (
 )
 
 // eventListenerOptions reads addEventListener / removeEventListener's
-// third argument: a boolean is `capture`; a dictionary gives `capture`
-// and `once` (EventTarget::addEventListener overloads,
+// third argument: an object is an options dictionary giving `capture` and
+// `once` (a Boolean wrapper object too, as WebIDL converts any object in
+// the union to the dictionary); anything else converts to the boolean
+// `capture` (EventTarget::addEventListener overloads,
 // core/dom/events/event_target.cc:528-583).
 func eventListenerOptions(v goja.Value) (capture, once bool) {
 	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
 		return false, false
 	}
-	if obj, ok := v.(*goja.Object); ok && obj.ClassName() != "Boolean" {
+	if obj, ok := v.(*goja.Object); ok {
 		get := func(name string) bool {
 			m := obj.Get(name)
 			return m != nil && m.ToBoolean()
@@ -60,18 +65,51 @@ func (ctx *domContext) addEventListener(target *html.Node, call goja.FunctionCal
 	typ := call.Arguments[0].String()
 	capture, once := eventListenerOptions(call.Argument(2))
 	for _, l := range ctx.eventListeners[target][typ] {
-		if l.capture == capture && l.raw.StrictEquals(raw) {
+		if !l.attribute && l.capture == capture && l.raw.StrictEquals(raw) {
 			return
 		}
 	}
+	ctx.appendListener(target, typ, &registeredEventListener{raw: raw, fn: fn, capture: capture, once: once})
+}
+
+// appendListener adds l to target's typ listeners, recording target's
+// first registration so element load events fire in that order.
+func (ctx *domContext) appendListener(target *html.Node, typ string, l *registeredEventListener) {
 	if ctx.eventListeners == nil {
 		ctx.eventListeners = make(map[*html.Node]map[string][]*registeredEventListener)
 	}
 	if ctx.eventListeners[target] == nil {
 		ctx.eventListeners[target] = make(map[string][]*registeredEventListener)
+		ctx.listenerTargets = append(ctx.listenerTargets, target)
 	}
-	ctx.eventListeners[target][typ] = append(ctx.eventListeners[target][typ],
-		&registeredEventListener{raw: raw, fn: fn, capture: capture, once: once})
+	ctx.eventListeners[target][typ] = append(ctx.eventListeners[target][typ], l)
+}
+
+// setAttributeEventListener sets target's event handler IDL attribute for
+// typ (element.onload = value). A function replaces the handler's entry in
+// place, or is appended as a new entry; anything else removes it. Mirrors
+// EventTarget::SetAttributeEventListener (core/dom/events/
+// event_target.cc:813-827 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (ctx *domContext) setAttributeEventListener(target *html.Node, typ string, value goja.Value) {
+	fn, ok := goja.AssertFunction(value)
+	for _, l := range ctx.eventListeners[target][typ] {
+		if l.attribute {
+			if ok {
+				l.raw, l.fn = value, fn
+			} else {
+				ctx.removeRegisteredListener(target, typ, func(r *registeredEventListener) bool { return r == l })
+			}
+			return
+		}
+	}
+	if ok {
+		ctx.appendListener(target, typ, &registeredEventListener{raw: value, fn: fn, attribute: true})
+	}
+}
+
+// hasEventListeners reports whether target has a typ listener or handler.
+func (ctx *domContext) hasEventListeners(target *html.Node, typ string) bool {
+	return len(ctx.eventListeners[target][typ]) > 0
 }
 
 // removeEventListener removes the registration of call's (type, callback)
@@ -85,7 +123,7 @@ func (ctx *domContext) removeEventListener(target *html.Node, call goja.Function
 	raw := call.Arguments[1]
 	capture, _ := eventListenerOptions(call.Argument(2))
 	ctx.removeRegisteredListener(target, typ, func(l *registeredEventListener) bool {
-		return l.capture == capture && l.raw.StrictEquals(raw)
+		return !l.attribute && l.capture == capture && l.raw.StrictEquals(raw)
 	})
 }
 
@@ -146,15 +184,21 @@ func (ctx *domContext) newDOMEvent(typ string, bubbles bool, target goja.Value) 
 // stopPropagation ends the dispatch after the current node. Mirrors
 // EventDispatcher::Dispatch / DispatchEventAtCapturing /
 // DispatchEventAtBubbling (core/dom/events/event_dispatcher.cc:181-370 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Event handler attributes and
-// the window step of the path are not part of it: louis14's window shares
-// the document's listeners.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Event handler attributes run
+// as entries of their target's list. The window step of the path is not
+// part of it: louis14's window shares the document's listeners.
 func (ctx *domContext) dispatchEvent(target *html.Node, typ string, bubbles bool) {
 	var path []*html.Node
 	for n := target; n != nil; n = n.Parent {
 		path = append(path, n)
 	}
 	ev := ctx.newDOMEvent(typ, bubbles, ctx.eventTargetValue(target))
+	// After dispatch the event has no current target and phase NONE
+	// (EventDispatcher::DispatchEventPostProcess).
+	defer func() {
+		_ = ev.obj.Set("currentTarget", goja.Null())
+		_ = ev.obj.Set("eventPhase", 0)
+	}()
 	for i := len(path) - 1; i >= 0; i-- {
 		phase := eventPhaseCapturing
 		if path[i] == target {

@@ -143,3 +143,20 @@ func TestEventTarget_ElementLoadReachesListeners(t *testing.T) {
 		}
 	})
 }
+
+// TestEventTarget_BooleanObjectOptionsIsADictionary: a Boolean wrapper
+// object as addEventListener's options converts to the options dictionary,
+// not to capture = true (WebIDL union conversion; EventTarget::
+// addEventListener, core/dom/events/event_target.cc:528-583 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). At the target, capture
+// listeners run before the others, so a listener taken as capture would
+// run first.
+func TestEventTarget_BooleanObjectOptionsIsADictionary(t *testing.T) {
+	got := runEventLog(t, `
+		var root = document.documentElement;
+		root.addEventListener("TestRendered", function () { log.push("boolean-object"); }, new Boolean(true));
+		root.addEventListener("TestRendered", function () { log.push("capture"); }, true);`)
+	if want := "capture boolean-object"; got != want {
+		t.Errorf("log = %q, want %q", got, want)
+	}
+}

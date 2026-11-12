@@ -15,14 +15,6 @@ import (
 // Engine executes JavaScript against an HTML document's DOM.
 type Engine struct {
 	vm *goja.Runtime
-	// eventHandlers holds each element's event handler IDL attributes
-	// (element.onload = fn), by node and event type: the analog of Blink's
-	// EventTarget::SetAttributeEventListener.
-	eventHandlers map[*html.Node]map[string]goja.Callable
-	// eventHandlerNodes lists the nodes of eventHandlers in the order
-	// their first handler was set, so dispatch order is deterministic.
-	eventHandlerNodes []*html.Node
-
 	// imageFetcher loads the images script asks for (img.src); nil serves
 	// only data: URLs. See SetImageFetcher.
 	imageFetcher images.ImageFetcher
@@ -71,7 +63,6 @@ func New() *Engine {
 	vm := goja.New()
 	e := &Engine{
 		vm:            vm,
-		eventHandlers: make(map[*html.Node]map[string]goja.Callable),
 		imageLoaders:  make(map[*html.Node]*imageLoader),
 	}
 
@@ -205,15 +196,6 @@ func frameTimeMs(d time.Duration) float64 {
 // paint use (the Document's ResourceFetcher, in Blink).
 func (e *Engine) SetImageFetcher(fetcher images.ImageFetcher) {
 	e.imageFetcher = fetcher
-}
-
-// setEventHandler stores node's event handler IDL attribute for eventType.
-func (e *Engine) setEventHandler(node *html.Node, eventType string, fn goja.Callable) {
-	if e.eventHandlers[node] == nil {
-		e.eventHandlers[node] = make(map[string]goja.Callable)
-		e.eventHandlerNodes = append(e.eventHandlerNodes, node)
-	}
-	e.eventHandlers[node][eventType] = fn
 }
 
 // postedTask is a task posted to the engine's queue; a canceled one is
@@ -384,15 +366,17 @@ func (e *Engine) Execute(doc *html.Document) error {
 		return nil
 	})
 
-	// Fire the other elements' load handlers (e.g. iframe.onload = fn): the
-	// iframe has already loaded (the first layout pass fetched the
-	// content). An <img>'s load comes from its ImageLoader instead. They
-	// fire in the order their handlers were first set.
+	// Dispatch the other elements' load events (an iframe's: it has
+	// already loaded, the first layout pass fetched the content) to their
+	// onload handlers and load listeners, in the order the elements first
+	// got one (HTMLFrameOwnerElement::DispatchLoad → DispatchScopedEvent,
+	// core/html/html_frame_owner_element.cc:606-608 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An <img>'s load comes
+	// from its ImageLoader instead.
 	_ = runTask(func() error {
-		for _, node := range e.eventHandlerNodes {
-			if fn := e.eventHandlers[node]["load"]; fn != nil && node.TagName != "img" {
-				// One broken callback shouldn't stop the others.
-				_, _ = fn(goja.Undefined())
+		for _, node := range append([]*html.Node(nil), ctx.listenerTargets...) {
+			if node != doc.Root && node.TagName != "img" && ctx.hasEventListeners(node, "load") {
+				ctx.dispatchEvent(node, "load", false)
 			}
 		}
 		return nil

@@ -43,6 +43,9 @@ type domContext struct {
 	// static one-shot renderer, so only events the engine dispatches after
 	// script execution (WPT's "TestRendered", the window load) ever fire.
 	eventListeners map[*html.Node]map[string][]*registeredEventListener
+	// listenerTargets lists the nodes of eventListeners in the order of
+	// their first registration.
+	listenerTargets []*html.Node
 
 	// canvasContexts holds each <canvas>'s 2D context
 	// (canvas_rendering_context_2d.go).
@@ -107,10 +110,9 @@ func registerDocument(vm *goja.Runtime, doc *html.Document) *domContext {
 	docObj := vm.NewObject()
 	registerDocumentNodeMethods(ctx, docObj, doc)
 
-	// document.addEventListener / removeEventListener. Only events the
-	// engine dispatches after scripts run (WPT's "TestRendered") ever fire;
-	// other event types are stored but never invoked, which matches the
-	// one-shot rendering model (no user interaction, no async loads).
+	// document.addEventListener / removeEventListener (event_target.go).
+	// Only the events the engine dispatches ever fire: louis14 renders once,
+	// with no user interaction.
 	docObj.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
 		ctx.addEventListener(doc.Root, call)
 		return goja.Undefined()
@@ -1189,14 +1191,11 @@ func (e *elementAccessor) Set(key string, val goja.Value) bool {
 		}
 		return true
 	case "onload", "onerror":
-		// Event handler IDL attributes. The engine dispatches an <img>'s
-		// load / error from its ImageLoader and other elements' load after
-		// the window load event (Engine.Execute).
-		if e.ctx.engine != nil {
-			if fn, ok := goja.AssertFunction(val); ok {
-				e.ctx.engine.setEventHandler(e.node, key[len("on"):], fn)
-			}
-		}
+		// Event handler IDL attributes: entries in the element's listener
+		// list (setAttributeEventListener). The engine dispatches an
+		// <img>'s load / error from its ImageLoader and other elements'
+		// load after the window load event (Engine.Execute).
+		e.ctx.setAttributeEventListener(e.node, key[len("on"):], val)
 		return true
 	}
 	return false
