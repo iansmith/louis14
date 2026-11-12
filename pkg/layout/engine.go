@@ -505,6 +505,8 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		TableCollapsedBorders:         frag.TableCollapsedBorders,
 		TableCollapsedBordersGeometry: frag.TableCollapsedBordersGeometry,
 		PaintGroup:                    frag.PaintGroup,
+		IsHiddenForPaint:              frag.IsHiddenForPaint || (parent != nil && parent.IsHiddenForPaint),
+		IsEllipsis:                    frag.IsEllipsis,
 	}
 
 	// Text fragments carry their rendered text content.

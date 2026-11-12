@@ -7,7 +7,7 @@ import (
 	"louis14/pkg/css"
 )
 
-// TestGlyphForCharacter (LOU-425): glyphForCharacter reports whether a font's
+// TestGlyphForCharacter (LOU-425): GlyphForCharacter reports whether a font's
 // character-to-glyph mapping has a glyph for a character, as Blink's
 // SimpleFontData::GlyphForCharacter does through HarfBuzz
 // (platform/fonts/simple_font_data.cc:252 @
@@ -41,7 +41,7 @@ func TestGlyphForCharacter(t *testing.T) {
 		{"IcTestHalfWidth 水", halfW, kCjkWater, true},
 		{"unopenable font '0'", "/nonexistent/LOU425-missing.ttf", kDigitZero, false},
 	} {
-		if got := glyphForCharacter(tc.path, 20, tc.c) != 0; got != tc.present {
+		if got := GlyphForCharacter(tc.path, 20, tc.c) != 0; got != tc.present {
 			t.Errorf("%s: glyph present = %v, want %v", tc.name, got, tc.present)
 		}
 	}
