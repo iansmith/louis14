@@ -381,6 +381,28 @@ func applyBoxSizingBlock(style *css.Style, geom FragmentGeometry, declared float
 	return declared
 }
 
+// minLengthPercentageBase is the percentage base of a min length: a
+// percentage resolution size that is indefinite resolves the percentage
+// against 0. Mirrors the kMin case of ResolveInlineLengthInternal
+// (length_utils.cc:70-77) and ResolveBlockLengthInternal
+// (length_utils.cc:207-213 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func minLengthPercentageBase(percentageResolutionSize layoutunit.LayoutUnit) layoutunit.LayoutUnit {
+	if percentageResolutionSize.Float64() < 0 {
+		return layoutunit.LayoutUnit{}
+	}
+	return percentageResolutionSize
+}
+
+// isIndefinitePercentageInlineLength reports whether val, a main or max
+// inline length, has a percentage that cannot resolve, the percentage
+// resolution inline-size being indefinite (an intrinsic sizing pass); such a
+// length is indefinite. Mirrors the kMain/kMax case of
+// ResolveInlineLengthInternal (length_utils.cc:70-74 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func isIndefinitePercentageInlineLength(val string, space ConstraintSpace) bool {
+	return space.PercentageResolutionSize.InlineSize.Float64() < 0 && valueHasPercent(val)
+}
+
 // ResolveInlineSize resolves the element's inline-size from CSS.
 // Returns the content inline-size and whether it was explicitly set.
 // If not explicit (auto), the caller should use the available inline-size.
@@ -408,6 +430,9 @@ func ResolveInlineSize(style *css.Style, wdm WritingDirectionMode, space Constra
 
 	val, ok := style.Get(prop)
 	if !ok || val == "" || val == "auto" {
+		return layoutunit.LayoutUnit{}, false
+	}
+	if isIndefinitePercentageInlineLength(val, space) {
 		return layoutunit.LayoutUnit{}, false
 	}
 
@@ -453,19 +478,16 @@ func ResolveMinInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 	if wdm.IsVertical() {
 		prop = "min-height"
 	}
-	// CSS Values 4 §10: math functions with a % term need the
-	// containing block's inline-size as the percent base. GetLength
-	// alone resolves percentages against base=0 and rejects the
-	// expression. Mirrors the ResolveInlineSize calc-with-percent
-	// branch above but for the broader math-function family —
-	// calc(50% - 3px), max(50%, 100px), clamp(0px, 50%, 200px), etc.
-	// Flex item branch is skipped — see ResolveMaxInlineSize.
+	// Percentages resolve against the containing block's inline-size, or
+	// against 0 when it is indefinite (minLengthPercentageBase). CSS Values
+	// 4 §10: a math function with a % term (calc(50% - 3px), max(50%,
+	// 100px), clamp(0px, 50%, 200px), ...) resolves through
+	// ResolveLengthPercentage, which GetLength cannot do. Flex item branch
+	// is skipped — see ResolveMaxInlineSize.
+	base := minLengthPercentageBase(space.PercentageResolutionSize.InlineSize)
 	if val, ok := style.Get(prop); ok && css.IsMathFunctionWithPercent(val) &&
-		!space.IsInsideFlexibleBox &&
-		space.PercentageResolutionSize.InlineSize.Float64() > 0 {
-		if result, calcOK := style.EvalMathWithBase(val,
-			space.PercentageResolutionSize.InlineSize.Float64(),
-		); calcOK {
+		!space.IsInsideFlexibleBox {
+		if result, calcOK := style.ResolveLengthPercentage(prop, base.Float64()); calcOK {
 			return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result))
 		}
 	}
@@ -473,8 +495,7 @@ func ResolveMinInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 		return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, v))
 	}
 	if pct, ok := style.GetPercentage(prop); ok {
-		result := layoutunit.ResolvePercent(
-			space.PercentageResolutionSize.InlineSize, pct).Float64()
+		result := layoutunit.ResolvePercent(base, pct).Float64()
 		return layoutunit.FromFloat64Round(applyBoxSizingInline(style, geom, result))
 	}
 	return layoutunit.LayoutUnit{}
@@ -495,6 +516,9 @@ func ResolveMaxInlineSize(style *css.Style, wdm WritingDirectionMode, space Cons
 	}
 	val, ok := style.Get(prop)
 	if !ok || val == "none" || val == "" {
+		return layoutunit.LayoutUnit{}, false
+	}
+	if isIndefinitePercentageInlineLength(val, space) {
 		return layoutunit.LayoutUnit{}, false
 	}
 	// CSS Values 4 §10: math functions with a % term need the
@@ -538,25 +562,22 @@ func ResolveMinBlockSize(style *css.Style, wdm WritingDirectionMode, space Const
 	if wdm.IsVertical() {
 		prop = "min-width"
 	}
-	// CSS Values 4 §10: math functions with a % term resolve against
-	// block-size (not inline-size) for min-height. A percentage block
-	// dimension against an indefinite CB block-size is ignored per
-	// CSS 2.1 §10.7 — same gate the bare-percentage branch below uses.
-	// Flex item branch is skipped — see ResolveMaxInlineSize.
+	// Percentages resolve against the containing block's block-size (not
+	// inline-size), or against 0 when it is indefinite
+	// (minLengthPercentageBase). Flex item branch is skipped — see
+	// ResolveMaxInlineSize.
+	base := minLengthPercentageBase(space.PercentageResolutionSize.BlockSize)
 	if val, ok := style.Get(prop); ok && css.IsMathFunctionWithPercent(val) &&
-		!space.IsBlockSizeIndefinite() && !space.IsInsideFlexibleBox {
-		if result, calcOK := style.EvalMathWithBase(val,
-			space.PercentageResolutionSize.BlockSize.Float64(),
-		); calcOK {
+		!space.IsInsideFlexibleBox {
+		if result, calcOK := style.ResolveLengthPercentage(prop, base.Float64()); calcOK {
 			return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result))
 		}
 	}
 	if v, ok := style.GetLength(prop); ok {
 		return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, v))
 	}
-	if pct, ok := style.GetPercentage(prop); ok && !space.IsBlockSizeIndefinite() {
-		result := layoutunit.ResolvePercent(
-			space.PercentageResolutionSize.BlockSize, pct).Float64()
+	if pct, ok := style.GetPercentage(prop); ok {
+		result := layoutunit.ResolvePercent(base, pct).Float64()
 		return layoutunit.FromFloat64Round(applyBoxSizingBlock(style, geom, result))
 	}
 	return layoutunit.LayoutUnit{}

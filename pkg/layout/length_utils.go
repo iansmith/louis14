@@ -199,12 +199,8 @@ func (r replacedLengthResolver) resolveInline(prop string, lengthType replacedLe
 	case replacedLengthStretch:
 		return r.stretchInline()
 	case replacedLengthSpecified:
-		if propertyHasPercent(r.style, prop) && r.space.PercentageResolutionSize.InlineSize.Float64() < 0 {
-			if lengthType != replacedLengthTypeMin {
-				return Indefinite
-			}
-			return r.bp.InlineSum()
-		}
+		// The Resolve*InlineSize helpers apply ResolveInlineLengthInternal's
+		// indefinite-percentage rule (length_utils.cc:66-77).
 		var content layoutunit.LayoutUnit
 		ok := true
 		switch lengthType {
@@ -255,9 +251,6 @@ func (r replacedLengthResolver) resolveBlock(prop string, lengthType replacedLen
 		ok := true
 		switch lengthType {
 		case replacedLengthTypeMin:
-			if propertyHasPercent(r.style, prop) && r.space.IsBlockSizeIndefinite() {
-				return r.bp.BlockSum()
-			}
 			content = ResolveMinBlockSize(r.style, r.wdm, r.space, r.geom)
 		case replacedLengthTypeMain:
 			if content, ok = ResolveBlockSize(r.style, r.wdm, r.space, r.geom); !ok {
@@ -708,8 +701,9 @@ func (s replacedSizer) computeReplacedSizeInternal(mode ReplacedSizeMode) Logica
 // min-inline-size. An intrinsic pass has an indefinite available and
 // percentage-resolution inline-size, and sizes an auto inline-size
 // fit-content (a block container never stretches a replaced child); the
-// space is made so here because louis14's intrinsic spaces do not carry
-// either. Mirrors Blink's ComputeMinAndMaxContentContributionForReplaced
+// space is made so here because not every louis14 intrinsic space carries
+// them (buildParallelChildMinMaxSpace carries the indefinite percentage
+// size only). Mirrors Blink's ComputeMinAndMaxContentContributionForReplaced
 // (length_utils.cc:314-355 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func ComputeMinAndMaxContentContributionForReplaced(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSpace) MinMaxSizes {
 	space.AvailableSize.InlineSize = layoutunit.IndefiniteSize
