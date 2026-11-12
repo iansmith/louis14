@@ -108,3 +108,227 @@ func cellPercentageInlineSize(style *css.Style, tableWD WritingDirectionMode) (f
 	}
 	return percent, true
 }
+
+// Width-distribution guesses (css-tables-3 #width-distribution-algorithm).
+const (
+	tableMinGuess = iota
+	tablePercentageGuess
+	tableSpecifiedGuess
+	tableMaxGuess
+	tableAboveMax
+)
+
+// DistributeInlineSizeToComputedInlineSizeAuto distributes targetInlineSize
+// to the columns of columnSpan, returning each column's inline-size, by the
+// css-tables-3 width distribution algorithm: the min, percentage, specified
+// and max guesses, then growth above max. treatTargetSizeAsConstrained lets
+// a target above every max grow fixed columns. Mirrors Blink's
+// DistributeInlineSizeToComputedInlineSizeAuto
+// (table/table_layout_utils.cc:463-775 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no mergeable
+// columns.
+func DistributeInlineSizeToComputedInlineSizeAuto(targetInlineSize float64, columnSpan []TableTypesColumn, treatTargetSizeAsConstrained bool) []float64 {
+	var percentColumnsCount, fixedColumnsCount, autoColumnsCount int
+	var guessSizes, guessSizeTotalIncreases [tableAboveMax]float64
+	totalPercent, totalAutoMaxInlineSize, totalFixedMaxInlineSize := 0.0, 0.0, 0.0
+
+	for _, column := range columnSpan {
+		switch {
+		case column.HasPercent:
+			percentColumnsCount++
+			totalPercent += column.Percent
+			percentInlineSize := column.ResolvePercentInlineSize(targetInlineSize)
+			guessSizes[tableMinGuess] += column.MinInlineSize
+			guessSizes[tablePercentageGuess] += percentInlineSize
+			guessSizes[tableSpecifiedGuess] += percentInlineSize
+			guessSizes[tableMaxGuess] += percentInlineSize
+			guessSizeTotalIncreases[tablePercentageGuess] += percentInlineSize - column.MinInlineSize
+		case column.IsConstrained: // Fixed column
+			fixedColumnsCount++
+			totalFixedMaxInlineSize += column.MaxInlineSize
+			guessSizes[tableMinGuess] += column.MinInlineSize
+			guessSizes[tablePercentageGuess] += column.MinInlineSize
+			guessSizes[tableSpecifiedGuess] += column.MaxInlineSize
+			guessSizes[tableMaxGuess] += column.MaxInlineSize
+			guessSizeTotalIncreases[tableSpecifiedGuess] += column.MaxInlineSize - column.MinInlineSize
+		default: // Auto column
+			autoColumnsCount++
+			totalAutoMaxInlineSize += column.MaxInlineSize
+			guessSizes[tableMinGuess] += column.MinInlineSize
+			guessSizes[tablePercentageGuess] += column.MinInlineSize
+			guessSizes[tableSpecifiedGuess] += column.MinInlineSize
+			guessSizes[tableMaxGuess] += column.MaxInlineSize
+			guessSizeTotalIncreases[tableMaxGuess] += column.MaxInlineSize - column.MinInlineSize
+		}
+	}
+
+	computedSizes := make([]float64, len(columnSpan))
+	// Distribution never makes a column narrower than its min inline-size.
+	targetInlineSize = max(targetInlineSize, guessSizes[tableMinGuess])
+
+	startingGuess := tableAboveMax
+	for i := tableMinGuess; i != tableAboveMax; i++ {
+		if guessSizes[i] >= targetInlineSize {
+			startingGuess = i
+			break
+		}
+	}
+
+	// grow gives the columns grow selects their share of distributable,
+	// in proportion to weight(column) (evenly when the weights sum to 0),
+	// added to base(column); the rounding remainder goes to the last of
+	// them. Other columns get other(column).
+	grow := func(distributable float64, selects func(TableTypesColumn) bool, weight, base, other func(TableTypesColumn) float64, totalWeight float64, count int) {
+		remainingDeficit := distributable
+		last := -1
+		for i, column := range columnSpan {
+			if !selects(column) {
+				computedSizes[i] = other(column)
+				continue
+			}
+			last = i
+			var delta float64
+			if totalWeight > 0 {
+				delta = distributable * weight(column) / totalWeight
+			} else {
+				delta = distributable / float64(count)
+			}
+			remainingDeficit -= delta
+			computedSizes[i] = base(column) + delta
+		}
+		// Blink's remainder is LayoutUnit rounding; here it is float noise.
+		if remainingDeficit != 0 && last >= 0 {
+			computedSizes[last] += remainingDeficit
+		}
+	}
+	minSize := func(c TableTypesColumn) float64 { return c.MinInlineSize }
+	maxSize := func(c TableTypesColumn) float64 { return c.MaxInlineSize }
+	percentSize := func(c TableTypesColumn) float64 { return c.ResolvePercentInlineSize(targetInlineSize) }
+	isPercent := func(c TableTypesColumn) bool { return c.HasPercent }
+	isFixed := func(c TableTypesColumn) bool { return !c.HasPercent && c.IsConstrained }
+	isAuto := func(c TableTypesColumn) bool { return !c.HasPercent && !c.IsConstrained }
+
+	switch startingGuess {
+	case tableMinGuess:
+		// All columns are their min inline-size.
+		for i, column := range columnSpan {
+			computedSizes[i] = column.MinInlineSize
+		}
+	case tablePercentageGuess:
+		// Percent columns grow in proportion to their percentage size
+		// above their min; the others get their min.
+		grow(targetInlineSize-guessSizes[tableMinGuess], isPercent,
+			func(c TableTypesColumn) float64 { return percentSize(c) - c.MinInlineSize }, minSize, minSize,
+			guessSizeTotalIncreases[tablePercentageGuess], percentColumnsCount)
+	case tableSpecifiedGuess:
+		// Fixed columns grow; auto columns get their min, percent columns
+		// their percentage size.
+		grow(targetInlineSize-guessSizes[tablePercentageGuess], isFixed,
+			func(c TableTypesColumn) float64 { return c.MaxInlineSize - c.MinInlineSize }, minSize,
+			func(c TableTypesColumn) float64 {
+				if c.HasPercent {
+					return percentSize(c)
+				}
+				return c.MinInlineSize
+			},
+			guessSizeTotalIncreases[tableSpecifiedGuess], fixedColumnsCount)
+	case tableMaxGuess:
+		// Auto columns grow; fixed columns get their max, percent columns
+		// their percentage size. An exact match gives every auto column
+		// its max, avoiding rounding that could wrap a line.
+		isExactMatch := targetInlineSize == guessSizes[tableMaxGuess]
+		growsAuto := func(c TableTypesColumn) bool { return isAuto(c) && !isExactMatch }
+		grow(targetInlineSize-guessSizes[tableSpecifiedGuess], growsAuto,
+			func(c TableTypesColumn) float64 { return c.MaxInlineSize - c.MinInlineSize }, minSize,
+			func(c TableTypesColumn) float64 {
+				if c.HasPercent {
+					return percentSize(c)
+				}
+				return c.MaxInlineSize
+			},
+			guessSizeTotalIncreases[tableMaxGuess], autoColumnsCount)
+	case tableAboveMax:
+		distributable := targetInlineSize - guessSizes[tableMaxGuess]
+		percentOrMax := func(c TableTypesColumn) float64 {
+			if c.HasPercent {
+				return percentSize(c)
+			}
+			return c.MaxInlineSize
+		}
+		switch {
+		case autoColumnsCount > 0:
+			// Grow the auto columns.
+			grow(distributable, isAuto, maxSize, maxSize, percentOrMax, totalAutoMaxInlineSize, autoColumnsCount)
+		case fixedColumnsCount > 0 && treatTargetSizeAsConstrained:
+			// Grow the fixed columns.
+			grow(distributable, isFixed, maxSize, maxSize, percentOrMax, totalFixedMaxInlineSize, fixedColumnsCount)
+		case percentColumnsCount > 0:
+			// Only percent columns remain: each grows past its percentage
+			// size in proportion to its percent; the rest stay 0.
+			grow(distributable, isPercent, func(c TableTypesColumn) float64 { return c.Percent }, percentSize,
+				func(TableTypesColumn) float64 { return 0 }, totalPercent, percentColumnsCount)
+		}
+	}
+	return computedSizes
+}
+
+// DistributeColspanCellToColumnsAuto spreads a colspan cell's min and max
+// inline-sizes, less the inner border spacing, across the columns it spans
+// in an auto-layout table, and a percentage beyond the spanned columns'
+// own across the non-percentage ones in proportion to their max. Mirrors
+// Blink's DistributeColspanCellToColumnsAuto
+// (table/table_layout_utils.cc:1007-1121 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no mergeable
+// columns.
+func DistributeColspanCellToColumnsAuto(colspanCell TableTypesColspanCell, inlineBorderSpacing float64, columnConstraints *TableTypesColumns) {
+	if len(columnConstraints.Data) == 0 || colspanCell.StartColumn >= len(columnConstraints.Data) {
+		return
+	}
+	effectiveSpan := min(colspanCell.Span, len(columnConstraints.Data)-colspanCell.StartColumn)
+	columnSpan := columnConstraints.Data[colspanCell.StartColumn : colspanCell.StartColumn+effectiveSpan]
+
+	// Inline sizes for redistribution exclude the inner border spacing.
+	totalInnerBorderSpacing := float64(len(columnSpan)-1) * inlineBorderSpacing
+	cell := colspanCell.CellInlineConstraint
+	colspanCellMinInlineSize := max(0, cell.MinInlineSize-totalInnerBorderSpacing)
+	colspanCellMaxInlineSize := max(0, cell.MaxInlineSize-totalInnerBorderSpacing)
+
+	if cell.HasPercent {
+		columnsPercent := 0.0
+		percentColumnsCount, nonpercentColumnsCount := 0, 0
+		nonpercentColumnsMaxInlineSize := 0.0
+		for _, column := range columnSpan {
+			if column.HasPercent {
+				percentColumnsCount++
+				columnsPercent += column.Percent
+			} else {
+				nonpercentColumnsCount++
+				nonpercentColumnsMaxInlineSize += column.MaxInlineSize
+			}
+		}
+		if surplusPercent := cell.Percent - columnsPercent; surplusPercent > 0 && len(columnSpan) > percentColumnsCount {
+			// Give the surplus percentage to the non-percentage columns,
+			// in proportion to their max inline-size.
+			for i := range columnSpan {
+				if columnSpan[i].HasPercent {
+					continue
+				}
+				if nonpercentColumnsMaxInlineSize != 0 {
+					columnSpan[i].Percent = surplusPercent * columnSpan[i].MaxInlineSize / nonpercentColumnsMaxInlineSize
+				} else {
+					columnSpan[i].Percent = surplusPercent / float64(nonpercentColumnsCount)
+				}
+				columnSpan[i].HasPercent = true
+			}
+		}
+	}
+
+	computedSizes := DistributeInlineSizeToComputedInlineSizeAuto(colspanCellMinInlineSize, columnSpan, true)
+	for i := range columnSpan {
+		columnSpan[i].MinInlineSize = max(columnSpan[i].MinInlineSize, computedSizes[i])
+	}
+	computedSizes = DistributeInlineSizeToComputedInlineSizeAuto(colspanCellMaxInlineSize, columnSpan, cell.IsConstrained)
+	for i := range columnSpan {
+		columnSpan[i].MaxInlineSize = max(columnSpan[i].MinInlineSize, columnSpan[i].MaxInlineSize, computedSizes[i])
+	}
+}

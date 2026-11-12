@@ -163,3 +163,32 @@ func (c TableTypesColumn) IsFixed() bool {
 type TableTypesColumns struct {
 	Data []TableTypesColumn
 }
+
+// ResolvePercentInlineSize mirrors TableTypes::Column::
+// ResolvePercentInlineSize: the column's percentage of the resolution size
+// plus its percent border+padding, at least its min inline-size.
+func (c TableTypesColumn) ResolvePercentInlineSize(percentageResolutionInlineSize float64) float64 {
+	return max(c.MinInlineSize, c.Percent*percentageResolutionInlineSize/100+c.PercentBorderPadding)
+}
+
+// TableTypesCellInlineConstraint mirrors Blink's
+// TableTypes::CellInlineConstraint (table/table_layout_algorithm_types.h:
+// 31-41 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): one cell's border-box
+// inline-size constraints.
+type TableTypesCellInlineConstraint struct {
+	MinInlineSize        float64
+	MaxInlineSize        float64
+	Percent              float64
+	HasPercent           bool
+	PercentBorderPadding float64
+	IsConstrained        bool
+}
+
+// TableTypesColspanCell mirrors Blink's TableTypes::ColspanCell
+// (table_layout_algorithm_types.h:44-55): a cell spanning several
+// columns.
+type TableTypesColspanCell struct {
+	CellInlineConstraint TableTypesCellInlineConstraint
+	StartColumn          int
+	Span                 int
+}
