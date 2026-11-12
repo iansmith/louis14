@@ -304,6 +304,10 @@ var cssProperties = append([]cssProperty{
 	{"grid-column", false, []string{"grid-column-start", "grid-column-end"}},                                                                     // :9718
 	{"grid-row", false, []string{"grid-row-start", "grid-row-end"}},                                                                              // :9730
 	{"grid-template", false, []string{"grid-template-rows", "grid-template-columns", "grid-template-areas"}},                                     // :9735
+	{"grid", false, []string{ // :9679
+		"grid-template-rows", "grid-template-columns", "grid-template-areas",
+		"grid-auto-flow", "grid-auto-rows", "grid-auto-columns",
+	}},
 	{"animation", false, []string{"animation-duration", "animation-timing-function", "animation-delay", "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state", "animation-name", "animation-timeline", "animation-range-start", "animation-range-end"}}, // :9036
 	{"text-emphasis", false, []string{"text-emphasis-style", "text-emphasis-color"}},                                                            // :10137
 	{"text-decoration", false, []string{"text-decoration-line", "text-decoration-thickness", "text-decoration-style", "text-decoration-color"}}, // :10023

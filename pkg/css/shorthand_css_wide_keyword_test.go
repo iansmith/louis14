@@ -55,6 +55,8 @@ func TestShorthandCSSWideKeywordInherit(t *testing.T) {
 			map[string]string{"text-emphasis-style": "open dot", "text-emphasis-color": "blue"}},
 		{"columns", "columns: 120px 3", "50px 2",
 			map[string]string{"column-width": "120px", "column-count": "3"}},
+		{"grid", "grid: 10px / 20px", "auto-flow / 5px",
+			map[string]string{"grid-template-rows": "10px", "grid-template-columns": "20px", "grid-auto-flow": "row"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.shorthand, func(t *testing.T) {

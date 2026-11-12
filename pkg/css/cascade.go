@@ -3011,7 +3011,7 @@ var isVarDeferredShorthand = map[string]bool{
 	"border-width": true, "border-style": true, "border-color": true,
 	"font": true, "flex": true, "flex-flow": true, "list-style": true,
 	"gap": true, "grid-gap": true, "grid-area": true, "grid-row": true,
-	"grid-column": true, "background": true,
+	"grid-column": true, "grid-template": true, "grid": true, "background": true,
 }
 
 // pendingSubstitutionPrefix starts a longhand value that is a pending

@@ -2861,20 +2861,13 @@ func expandShorthand(style *Style, property, value string) {
 	case "grid-row", "grid-column":
 		expandGridLineShorthand(style, value, shorthandLonghands[property], []int{0, 0})
 	case "grid-template":
-		// grid-template shorthand: <row-tracks> / <col-tracks>
-		// Also handles: grid-template: none
-		if value == "none" {
-			style.Set("grid-template-rows", "none")
-			style.Set("grid-template-columns", "none")
-			style.Set("grid-template-areas", "none")
-		} else if slashIdx := strings.Index(value, " / "); slashIdx >= 0 {
-			rowPart := strings.TrimSpace(value[:slashIdx])
-			colPart := strings.TrimSpace(value[slashIdx+3:])
-			style.Set("grid-template-rows", rowPart)
-			style.Set("grid-template-columns", colPart)
-		} else {
-			style.Set("grid-template-rows", value)
+		if rows, columns, areas, ok := gridTemplateLonghands(splitGridComponentValues(value)); ok {
+			style.Set("grid-template-rows", rows)
+			style.Set("grid-template-columns", columns)
+			style.Set("grid-template-areas", areas)
 		}
+	case "grid":
+		expandGridShorthand(style, value)
 	case "transition":
 		// Store transition value as-is; static renderer ignores it
 		style.Set("transition", value)
@@ -9549,6 +9542,172 @@ func (s *Style) GetGridLine(prop string) GridLine {
 		}
 	}
 	return GridLine{Auto: true}
+}
+
+// splitGridComponentValues is splitComponentValues with a bracketed
+// <line-names> list kept as one token.
+func splitGridComponentValues(value string) []string {
+	var toks []string
+	for _, t := range splitComponentValues(value) {
+		if n := len(toks); n > 0 && strings.HasPrefix(toks[n-1], "[") && !strings.HasSuffix(toks[n-1], "]") {
+			toks[n-1] += " " + t
+			continue
+		}
+		toks = append(toks, t)
+	}
+	return toks
+}
+
+// gridTemplateLonghands is ConsumeGridTemplateShorthand
+// (core/css/properties/css_parsing_utils.cc:7598 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the grid-template-rows,
+// grid-template-columns and grid-template-areas values of a
+// <'grid-template'>, tried as <rows> / <columns>, then as area strings with
+// their row sizes and line names (ConsumeGridTemplateRowsAndAreasAndColumns,
+// :7198), then as none.
+func gridTemplateLonghands(toks []string) (rows, columns, areas string, ok bool) {
+	before, after, hasSlash, ok := splitAtSlash(toks)
+	if !ok {
+		return "", "", "", false
+	}
+	// louis14 does not validate the track lists here; it rejects only the
+	// tokens that make the value an area form or one of grid's auto-flow
+	// forms instead.
+	notTrack := func(t string) bool {
+		return isQuotedStringValue(t) || strings.EqualFold(t, "auto-flow") || strings.EqualFold(t, "dense")
+	}
+	if hasSlash && len(before) > 0 && !slices.ContainsFunc(before, notTrack) && !slices.ContainsFunc(after, notTrack) {
+		return strings.Join(before, " "), strings.Join(after, " "), "none", true
+	}
+	if rows, areas, ok := gridTemplateAreaRows(before); ok {
+		columns = "none"
+		if hasSlash {
+			columns = strings.Join(after, " ")
+		}
+		return rows, columns, areas, true
+	}
+	if len(toks) == 1 && strings.EqualFold(toks[0], "none") {
+		return "none", "none", "none", true
+	}
+	return "", "", "", false
+}
+
+// splitAtSlash splits toks at its "/" token. hasSlash reports that there is
+// one; ok is false when tokens other than one "/" with something after it
+// would follow (a second "/", or nothing after the first).
+func splitAtSlash(toks []string) (before, after []string, hasSlash, ok bool) {
+	i := slices.Index(toks, "/")
+	if i < 0 {
+		return toks, nil, false, true
+	}
+	after = toks[i+1:]
+	return toks[:i], after, true, len(after) > 0 && !slices.Contains(after, "/")
+}
+
+// gridTemplateAreaRows reads [ <line-names>? <string> <track-size>?
+// <line-names>? ]+: the rows' track list, each size defaulting to auto and
+// a row's leading line names merged into the previous row's trailing ones,
+// and the area strings.
+func gridTemplateAreaRows(toks []string) (rows, areas string, ok bool) {
+	isLineNames := func(t string) bool { return strings.HasPrefix(t, "[") }
+	var rowList, areaList []string
+	for i := 0; i < len(toks); {
+		if isLineNames(toks[i]) {
+			if n := len(rowList); n > 0 && isLineNames(rowList[n-1]) {
+				rowList[n-1] = strings.TrimSuffix(rowList[n-1], "]") + " " + strings.TrimPrefix(toks[i], "[")
+			} else {
+				rowList = append(rowList, toks[i])
+			}
+			i++
+		}
+		if i == len(toks) || !isQuotedStringValue(toks[i]) {
+			return "", "", false
+		}
+		areaList = append(areaList, toks[i])
+		i++
+		size := "auto"
+		if i < len(toks) && !isQuotedStringValue(toks[i]) && !isLineNames(toks[i]) {
+			size = toks[i]
+			i++
+		}
+		rowList = append(rowList, size)
+		if i < len(toks) && isLineNames(toks[i]) {
+			rowList = append(rowList, toks[i])
+			i++
+		}
+	}
+	if len(areaList) == 0 {
+		return "", "", false
+	}
+	return strings.Join(rowList, " "), strings.Join(areaList, " "), true
+}
+
+// expandGridShorthand is Grid::ParseShorthand
+// (core/css/properties/shorthands/shorthands_custom.cc:3773 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A <'grid-template'> sets the
+// template longhands and resets the auto ones. Otherwise it is
+// [ auto-flow && dense? ] <'grid-auto-rows'>? / <'grid-template-columns'>
+// or <'grid-template-rows'> / [ auto-flow && dense? ] <'grid-auto-columns'>?,
+// which sets the auto longhands and resets the template ones it does not
+// name. An invalid value sets nothing.
+func expandGridShorthand(style *Style, value string) {
+	toks := splitGridComponentValues(value)
+	values := map[string]string{
+		"grid-template-rows": "none", "grid-template-columns": "none", "grid-template-areas": "none",
+		"grid-auto-flow": "row", "grid-auto-rows": "auto", "grid-auto-columns": "auto",
+	}
+	if rows, columns, areas, ok := gridTemplateLonghands(toks); ok {
+		values["grid-template-rows"], values["grid-template-columns"], values["grid-template-areas"] = rows, columns, areas
+	} else {
+		before, after, hasSlash, ok := splitAtSlash(toks)
+		if !hasSlash || !ok {
+			return
+		}
+		if flow, autoRows, ok := consumeImplicitAutoFlow(before, "row"); ok {
+			values["grid-auto-flow"], values["grid-template-columns"] = flow, strings.Join(after, " ")
+			if len(autoRows) > 0 {
+				values["grid-auto-rows"] = strings.Join(autoRows, " ")
+			}
+		} else if flow, autoColumns, ok := consumeImplicitAutoFlow(after, "column"); ok && len(before) > 0 {
+			values["grid-auto-flow"], values["grid-template-rows"] = flow, strings.Join(before, " ")
+			if len(autoColumns) > 0 {
+				values["grid-auto-columns"] = strings.Join(autoColumns, " ")
+			}
+		} else {
+			return
+		}
+	}
+	for _, lh := range shorthandLonghands["grid"] {
+		style.Set(lh, values[lh])
+	}
+}
+
+// consumeImplicitAutoFlow is ConsumeImplicitAutoFlow (shorthands_custom.cc:
+// 3743): [ auto-flow && dense? ] at the start of toks, as the grid-auto-flow
+// value for direction (dense alone for a dense row flow), and the tokens
+// after it.
+func consumeImplicitAutoFlow(toks []string, direction string) (flow string, rest []string, ok bool) {
+	is := func(i int, kw string) bool { return i < len(toks) && strings.EqualFold(toks[i], kw) }
+	var dense bool
+	switch {
+	case is(0, "auto-flow"):
+		dense = is(1, "dense")
+	case is(0, "dense") && is(1, "auto-flow"):
+		dense = true
+	default:
+		return "", nil, false
+	}
+	rest = toks[1:]
+	if dense {
+		rest = toks[2:]
+	}
+	switch {
+	case !dense:
+		return direction, rest, true
+	case direction == "row":
+		return "dense", rest, true
+	}
+	return direction + " dense", rest, true
 }
 
 // expandGridLineShorthand expands grid-area, grid-row or grid-column into
