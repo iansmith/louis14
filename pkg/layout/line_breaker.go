@@ -732,12 +732,12 @@ func isInsideMarkerItem(item *InlineItem) bool {
 // after the marker cannot place anything on this line, the marker must wrap
 // with it.
 func (lb *LineBreaker) rewindUnbreakableTail(line *LineInfo) {
-	// Only the marker box itself moves. Open/close tags before it stay on
-	// this line — they are trailable after the soft wrap point (Blink
-	// IsTrailableItemType, line_breaker.cc:222-231), which is why a wrapped
-	// list item paints its inline-start border at the end of the previous
-	// line and the marker starts the next line border-less (a non-first
-	// inline fragment).
+	// Only the marker box itself moves here. Open/close tags before it are
+	// trailable after the soft wrap point (Blink IsTrailableItemType,
+	// inline/line_breaker.cc:226-231 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); finishLine's
+	// rewindTrailingOpenTags then moves any open tags left at the end of
+	// the line to the next one, as Blink's RewindTrailingOpenTags does.
 	i := len(line.Results)
 	for i > 0 && isInsideMarkerItem(line.Results[i-1].Item) {
 		i--
@@ -747,17 +747,11 @@ func (lb *LineBreaker) rewindUnbreakableTail(line *LineInfo) {
 	if i == 0 || i == len(line.Results) {
 		return
 	}
-	first := line.Results[i]
-	for _, r := range line.Results[i:] {
-		lb.position -= r.InlineSize
-	}
+	lb.rewind(line, i)
 	if lb.position < 0 {
 		lb.position = 0
+		line.Width = 0
 	}
-	line.Width = lb.position
-	lb.currentItemIndex = first.ItemIndex
-	lb.currentTextOffset = first.Item.StartOffset
-	line.Results = line.Results[:i]
 }
 
 // breakTextAtWord finds a break point within a text item.
@@ -1957,10 +1951,57 @@ func (lb *LineBreaker) finishLine(line *LineInfo) {
 	// its following content is on line N+1 — violating LBA Rule LB14.
 	lb.retractTrailingOpenPunct(line)
 
+	// Wrap before trailing open tags, except after a forced break
+	// (RemoveTrailingCollapsibleSpace, inline/line_breaker.cc:2563-2568 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); after the LB14
+	// retraction, which can leave the open tag before a retracted "(". A
+	// ruby sub-breaker lays out one line of its column only, so a rewound
+	// item would be dropped: it does not rewind.
+	if !line.HasForcedBreak && lb.parent == nil {
+		lb.rewindTrailingOpenTags(line)
+	}
+
 	// Mark as last line if we've consumed all items.
 	if lb.currentItemIndex >= len(lb.itemsData.Items) {
 		line.IsLastLine = true
 	}
+}
+
+// rewindTrailingOpenTags removes the open tags at the end of line, moving
+// them, and so their inline boxes' start edges, to the next line: open tags
+// are trailable while breaking because they are ambiguous, but a line
+// never ends with them. If every result is an open tag nothing moves.
+// Mirrors LineBreaker::RewindTrailingOpenTags (inline/line_breaker.cc:
+// 2536-2560 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (lb *LineBreaker) rewindTrailingOpenTags(line *LineInfo) {
+	end := len(line.Results)
+	for end > 0 && line.Results[end-1].Item.Type == InlineItemOpenTag {
+		end--
+	}
+	if end == 0 || end == len(line.Results) {
+		return
+	}
+	lb.rewind(line, end)
+}
+
+// rewind moves the line's results from index end on back to the item
+// stream: they are removed, their inline sizes taken off the position, and
+// the next line starts at the first of them. Mirrors LineBreaker::Rewind
+// (inline/line_breaker.cc:4422 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for
+// whole items.
+func (lb *LineBreaker) rewind(line *LineInfo, end int) {
+	first := line.Results[end]
+	removed := 0.0
+	for _, r := range line.Results[end:] {
+		removed += r.InlineSize
+	}
+	lb.position -= removed
+	line.Width -= removed
+	lb.currentItemIndex = first.ItemIndex
+	lb.currentTextOffset = first.Item.StartOffset
+	lb.done = false
+	line.IsLastLine = false
+	line.Results = line.Results[:end]
 }
 
 // retractTrailingOpenPunct implements Unicode LBA Rule LB14 ("do not break
