@@ -3052,7 +3052,7 @@ func createLineBoxEx(
 					itemsData.TextContent,
 					r.RubyColumn.RubyAlign,
 					wdm, fonts, centralBaseline, sidewaysVLR,
-					lineBuilder,
+					&lineBox,
 				)
 			}
 			inlinePos += r.InlineSize
