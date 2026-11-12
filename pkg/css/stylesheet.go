@@ -1257,7 +1257,6 @@ func splitRulesAt(css string, starts *[]int) []string {
 	return rules
 }
 
-
 // isValidSelector checks if a selector string looks valid enough to parse.
 // Returns false for clearly malformed selectors that should cause the rule to be skipped.
 func isValidSelector(s string) bool {
