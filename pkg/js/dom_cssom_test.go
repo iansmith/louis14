@@ -343,3 +343,31 @@ func TestStyleSheetRuleMutationArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A url() set through a rule's CSSOM style resolves against the sheet's
+// base once, as one a stylesheet declares does, and stays resolved once
+// after a mutation re-parses the sheet (Blink resolves a url() against the
+// parser context's base when it parses the value into a CSSUrlData,
+// core/css/css_url_data.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestRuleStyleURLResolvesAgainstSheetBase(t *testing.T) {
+	doc := parseHTML(t, `<!DOCTYPE html><style>a { color: red }</style>`)
+	doc.BaseDir = "support"
+	run := func(script string) {
+		t.Helper()
+		doc.Scripts = []string{script}
+		if err := New().Execute(doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backgroundImage := func() string {
+		return css.ParseDocumentStylesheets(doc)[0].Rules[0].Declarations["background-image"]
+	}
+	run(`document.styleSheets[0].cssRules[0].style.backgroundImage = "url(rel.png)";`)
+	if got := backgroundImage(); got != "url(support/rel.png)" {
+		t.Errorf("background-image when set = %q, want url(support/rel.png)", got)
+	}
+	run(`document.styleSheets[0].insertRule("b { color: blue }", 1);`)
+	if got := backgroundImage(); got != "url(support/rel.png)" {
+		t.Errorf("background-image after insertRule = %q, want url(support/rel.png)", got)
+	}
+}
