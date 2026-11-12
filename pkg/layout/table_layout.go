@@ -228,7 +228,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	if tla.style.GetTableLayout() == css.TableLayoutFixed && hasExplicitTableWidth {
 		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols, colWidthSpecs)
 	} else {
-		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, geom, colWidthSpecs)
+		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, geom, captions, colWidthSpecs)
 	}
 
 	// Track which columns have explicit col/colgroup widths (used for orthogonal cell row height).
@@ -277,7 +277,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	blockOffset := 0.0
 	for _, cap := range topCaptions {
 		tla.addCaptionResult(builder, wdm,
-			tla.layoutCaption(cap, wdm, availableInline, tableContentInline), &blockOffset)
+			tla.layoutCaption(cap, wdm, tableContentInline), &blockOffset)
 	}
 
 	// Layout each row — single-pass pipeline (refactor-b ckpt 3).
@@ -982,7 +982,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// @ d4ecdfed88f9).
 	for _, cap := range bottomCaptions {
 		tla.addCaptionResult(builder, wdm,
-			tla.layoutCaption(cap, wdm, availableInline, tableContentInline), &blockOffset)
+			tla.layoutCaption(cap, wdm, tableContentInline), &blockOffset)
 	}
 
 	// Negative caption margins can pull blockOffset below 0; Blink clamps
@@ -1127,21 +1127,33 @@ func (tla *TableLayoutAlgorithm) ComputeMinMaxSizes() MinMaxSizes {
 		minMax.MaxContent = max(0, minMax.MaxContent-tableBorder.InlineStart-tableBorder.InlineEnd)
 	}
 
-	// The captions' min-content contributions, border-box with margins,
-	// against the table's content box.
+	// The captions' min-content contributions, against the table's content
+	// box.
 	tableBP := ComputeFragmentGeometry(tla.style, wdm).InlineBorderPadding()
+	minMax.Encompass(tla.computeCaptionConstraint(captions).MinContent - tableBP)
+	return minMax
+}
+
+// computeCaptionConstraint returns the captions' min/max-content
+// contributions, border-box with their inline margins, the largest of
+// each. Mirrors Blink's ComputeCaptionConstraint (table/
+// table_layout_algorithm.cc:38-58 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (tla *TableLayoutAlgorithm) computeCaptionConstraint(captions []tableCaption) MinMaxSizes {
+	wdm := tla.space.WritingDirection
+	var constraint MinMaxSizes
 	for _, caption := range captions {
 		captionWDM := NewWritingDirectionMode(caption.style)
 		space := NewConstraintSpaceBuilder(wdm, captionWDM, true).
 			SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(captionWDM, tla.ctx)).
 			SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: Indefinite}).
 			Build()
-		captionMin := ComputeMinMaxSizes(tla.ctx, caption.node, space).MinContent +
-			ComputeFragmentGeometry(caption.style, captionWDM).InlineBorderPadding() +
-			ResolveMargins(caption.style, wdm, 0).InlineSum() - tableBP
-		minMax.Encompass(captionMin)
+		sizes := ComputeMinMaxSizes(tla.ctx, caption.node, space)
+		extra := ComputeFragmentGeometry(caption.style, captionWDM).InlineBorderPadding() +
+			ResolveMargins(caption.style, wdm, 0).InlineSum()
+		constraint.MinContent = max(constraint.MinContent, sizes.MinContent+extra)
+		constraint.MaxContent = max(constraint.MaxContent, sizes.MaxContent+extra)
 	}
-	return minMax
+	return constraint
 }
 
 // collectRowsAndCaptions extracts table rows, captions, and col/colgroup width specs
@@ -1954,7 +1966,7 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 // assignable table inline size, distributed to the column constraints.
 func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	rows []tableRow, numCols int, availableInline float64, borderCollapse bool, hasExplicitWidth bool,
-	geom FragmentGeometry, colWidthSpecs []tableColWidth,
+	geom FragmentGeometry, captions []tableCaption, colWidthSpecs []tableColWidth,
 ) []float64 {
 	inlineSpacing := 0.0
 	if !borderCollapse {
@@ -1973,8 +1985,9 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	// (availableInline), or for an auto width fit-content over the
 	// layout-pass grid min/max, where percentage columns count; clamped to
 	// the table's min/max inline sizes, which never go below the grid min
-	// (ComputeMinMaxInlineSizes, :758-799). The columns share the assignable
-	// size by the width distribution algorithm
+	// (ComputeMinMaxInlineSizes, :758-799), then floored at the captions'
+	// min-content (table_layout_algorithm.cc:248-250). The columns share the
+	// assignable size by the width distribution algorithm
 	// (SynchronizeAssignableTableInlineSizeAndColumns, table/
 	// table_layout_utils.cc:1849-1864).
 	if tla.space.IsFixedInlineSize {
@@ -1997,7 +2010,11 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 		return MinMaxSizes{MinContent: grid.MinContent + spacing, MaxContent: grid.MaxContent + spacing}
 	}
 	sizes := computeMinMaxInlineSizes(tla.style, wdm, tla.space, geom, minProp, maxProp, content, fitContentModeNormal, true)
-	assignable := sizes.ClampSizeToMinAndMax(extent+spacing) - spacing
+	used := sizes.ClampSizeToMinAndMax(extent + spacing)
+	// Never below the captions' min-content contributions (border-box),
+	// taken against the table's content box (:248-250).
+	used = max(used, tla.computeCaptionConstraint(captions).MinContent-geom.InlineBorderPadding())
+	assignable := used - spacing
 	return DistributeInlineSizeToComputedInlineSizeAuto(assignable, columns.Data, true)
 }
 
@@ -2019,25 +2036,23 @@ type captionResult struct {
 // layoutCaption lays out one caption and resolves its margins. Mirrors Blink
 // ComputeCaptionMargins (table_layout_algorithm.cc:118-128),
 // CreateCaptionConstraintSpace (:61-90) and LayoutCaption (:92-111), all @
-// d4ecdfed88f9. Margins are resolved in the table's writing direction, as
-// Blink passes the table's to ComputeMarginsFor.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Margins are resolved in the
+// table's writing direction, as Blink passes the table's to
+// ComputeMarginsFor.
 //
-// Divergences from Blink:
-//   - Percentage margins and the caption's available size use
-//     availableInline (the table content box from initial geometry); Blink
-//     uses the final table border-box inline size. They agree for an
-//     explicit-width table with no inline border or padding.
-//   - Auto inline margins resolve against tableContentInline, the final table
-//     content inline size; Blink uses the border-box inline size, which it
-//     also floors at the caption's min size (ComputeCaptionConstraint,
-//     :38-59 @ d4ecdfed88f9), which louis14 does not port.
+// The caption lays out at the table's final inline size: its available
+// and percentage-resolution inline size, and the base its margins resolve
+// against, are tableInline (GenerateFragment, :1230-1243). Divergence from Blink:
+// tableInline is the table's content box, where Blink uses its border box,
+// because louis14 places captions inside the table's border and padding
+// (addCaptionResult; LOU-573). They agree when the table has no inline
+// border or padding.
 //
 // An auto-width caption stretches to the available size minus its inline
 // margins: Blink's kStretchImplicit (:73) feeds the kStretch inline size,
-// which subtracts the box's own margins (length_utils.cc:46-58 @
-// d4ecdfed88f9). Percentage sizes still resolve against availableInline.
-func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDirectionMode, availableInline, tableContentInline float64) captionResult {
-	margins := ResolveMargins(cap.style, wdm, availableInline)
+// which subtracts the box's own margins (length_utils.cc:46-62).
+func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDirectionMode, tableInline float64) captionResult {
+	margins := ResolveMargins(cap.style, wdm, tableInline)
 	capWDM := wdm
 	if cap.style != nil {
 		capWDM = NewWritingDirectionMode(cap.style)
@@ -2048,18 +2063,18 @@ func (tla *TableLayoutAlgorithm) layoutCaption(cap tableCaption, wdm WritingDire
 			orthogonalFallbackSize(capWDM, tla.ctx)).
 		SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(LogicalSize{
-			InlineSize: max(0, availableInline-margins.InlineSum()),
+			InlineSize: max(0, tableInline-margins.InlineSum()),
 			BlockSize:  Indefinite,
 		}).
 		SetPercentageResolutionSize(LogicalSize{
-			InlineSize: availableInline,
+			InlineSize: tableInline,
 			BlockSize:  0,
 		}).
-		SetPercentageResolutionInlineSize(availableInline).
+		SetPercentageResolutionInlineSize(tableInline).
 		Build()
 
 	result := layoutElement(tla.ctx, cap.node, capSpace)
-	margins = resolveInlineAutoMargins(cap.style, wdm, tableContentInline,
+	margins = resolveInlineAutoMargins(cap.style, wdm, tableInline,
 		NewLogicalFragment(wdm, result.Fragment).InlineSize(), margins)
 	return captionResult{result: result, margins: margins}
 }
