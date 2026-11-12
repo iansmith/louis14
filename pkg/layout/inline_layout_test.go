@@ -263,47 +263,39 @@ func TestInlineLayout_MultipleLines(t *testing.T) {
 	}
 }
 
-func TestInlineLayout_TextAlignCenter(t *testing.T) {
-	textNode := makeTextNode("Hi")
-	parent := makeNode("div", textNode)
-	parentStyle := makeStyle("display", "block", "font-size", "16px", "text-align", "center")
-	styles := map[*html.Node]*css.Style{parent: parentStyle}
-
-	lineBoxes, _ := inlineLayoutForTest(parent, styles, 400)
-
-	if len(lineBoxes) < 1 || len(lineBoxes[0].Children) < 1 {
-		t.Fatal("no text fragment in line box")
+// textAlignTestTextX lays out "Hi" in a 400px block with text-align
+// align and returns the text's x in the block. The offset is the line
+// box's, not the text's inside it (LOU-818: text-align moves the line box,
+// inline/inline_layout_algorithm.cc:479-486 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func textAlignTestTextX(t *testing.T, align string) float64 {
+	t.Helper()
+	root := layoutRootTestHTML(t, `<!doctype html><style>body{margin:0}</style>`+
+		`<div id=t style="width:400px;font-size:16px;text-align:`+align+`">Hi</div>`)
+	div := findBoxByID(root, "t")
+	if div == nil {
+		t.Fatal("no box for #t")
 	}
+	boxes := collectTextBoxes(div, nil)
+	if len(boxes) == 0 {
+		t.Fatal("no text box under #t")
+	}
+	return boxes[0].X
+}
 
-	textOffset := lineBoxes[0].Children[0].Offset.LeftF64()
-	if textOffset <= 0 {
-		t.Errorf("text-align:center should offset text, got X=%f", textOffset)
+func TestInlineLayout_TextAlignCenter(t *testing.T) {
+	if x := textAlignTestTextX(t, "center"); x <= 0 {
+		t.Errorf("text-align:center should offset text, got X=%f", x)
 	}
 }
 
 func TestInlineLayout_TextAlignRight(t *testing.T) {
-	textNode := makeTextNode("Hi")
-	parent := makeNode("div", textNode)
-	parentStyle := makeStyle("display", "block", "font-size", "16px", "text-align", "right")
-	styles := map[*html.Node]*css.Style{parent: parentStyle}
-
-	lineBoxes, _ := inlineLayoutForTest(parent, styles, 400)
-
-	textOffset := lineBoxes[0].Children[0].Offset.LeftF64()
+	textOffset := textAlignTestTextX(t, "right")
 	if textOffset <= 0 {
 		t.Errorf("text-align:right should offset text, got X=%f", textOffset)
 	}
-
 	// Compare with center: right should offset more.
-	textNodeC := makeTextNode("Hi")
-	parentC := makeNode("div", textNodeC)
-	parentStyleC := makeStyle("display", "block", "font-size", "16px", "text-align", "center")
-	stylesC := map[*html.Node]*css.Style{parentC: parentStyleC}
-
-	lineBoxesC, _ := inlineLayoutForTest(parentC, stylesC, 400)
-	centerOffset := lineBoxesC[0].Children[0].Offset.LeftF64()
-
-	if textOffset <= centerOffset {
+	if centerOffset := textAlignTestTextX(t, "center"); textOffset <= centerOffset {
 		t.Errorf("right offset (%f) should be > center offset (%f)", textOffset, centerOffset)
 	}
 }
