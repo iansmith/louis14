@@ -123,7 +123,7 @@ func annotationEmHeightFromSubLine(
 			d = fontSize / 2
 		} else {
 			fontPath := resolveFontPath(r.Item.Style, fonts)
-			a, d = text.NormalizedTypoAscentAndDescent(fontSize, fontPath, fonts.Registry)
+			a, d = text.NormalizedTypoAscentAndDescent(fontSize, fontPath)
 			if sidewaysVLR {
 				a, d = d, a
 			}
@@ -207,7 +207,7 @@ func emphasisMarkAscentFromLine(
 		} else {
 			fontPath := resolveFontPath(style, fonts)
 			baseAsc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
-			markAsc, markDesc := text.NormalizedTypoAscentAndDescent(markFontSize, fontPath, fonts.Registry)
+			markAsc, markDesc := text.NormalizedTypoAscentAndDescent(markFontSize, fontPath)
 			markHeight = markAsc + markDesc
 		}
 		if n := baseAsc + markHeight; n > needed {

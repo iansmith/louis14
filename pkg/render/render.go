@@ -5698,6 +5698,14 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 	}
 }
 
+// emphasisMarkAscentDescent is the emphasis-mark font's ascent and descent
+// at size: its normalized OS/2 typo metrics (Font::EmphasisMarkAscent /
+// EmphasisMarkDescent, platform/fonts/font.cc:259-281 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r *Renderer) emphasisMarkAscentDescent(size float64, fontPath string) (ascent, descent float64) {
+	return text.NormalizedTypoAscentAndDescent(size, fontPath)
+}
+
 // drawTextEmphasis renders text emphasis marks (e.g., dots, circles, sesame)
 // above or below each character. The mark is drawn at ~50% of the text font
 // size, centered horizontally over each glyph.
@@ -5714,9 +5722,13 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 
 	r.setColor(layer.TextEmphasisColor)
 
-	emphMetrics := r.dc.GetFontMetrics(emphFontID)
-	emphAscent := float64(emphMetrics.Ascent) / 64.0
-	emphDescent := float64(emphMetrics.Descent) / 64.0
+	// The mark font's ascent and descent are its normalized OS/2 typo
+	// metrics (Font::EmphasisMarkAscent / EmphasisMarkDescent →
+	// SimpleFontData::NormalizedTypoAscent / Descent, platform/fonts/
+	// font.cc:259-281 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b, with
+	// TextEmphasisAsRuby stable), the ones layout sizes the mark with
+	// (emphasisMarkAscentFromLine).
+	emphAscent, emphDescent := r.emphasisMarkAscentDescent(emphFontSize, fontPath)
 	markW := r.dc.MeasureText(mark, emphFontID)
 
 	// Compute vertical position of the emphasis mark.
@@ -5739,7 +5751,12 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	//   emphY = box.Y + ascent + baseDescent
 	// once ruby-position:under paints annotations below the base text.
 	// Both over and under use the over formula; see comment above.
-	emphY := box.Y - emphDescent - emphAscent
+	// TextPainter::SetEmphasisMark (core/paint/text_painter.cc:510-550 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) floors the over offset from
+	// the baseline: floor(-baseAscent - emphDescent). box.Y is the baseline
+	// less the rounded base ascent, so the mark baseline is
+	// box.Y + floor(-emphDescent).
+	emphY := box.Y + math.Floor(-emphDescent) - emphAscent
 
 	// Iterate over each character and draw the mark centered above/below it.
 	x := box.X
@@ -5792,9 +5809,8 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 	if emphFontID < 0 {
 		return
 	}
-	emphMetrics := r.dc.GetFontMetrics(emphFontID)
-	emphAscent := float64(emphMetrics.Ascent) / 64.0
-	emphDescent := float64(emphMetrics.Descent) / 64.0
+	// Normalized OS/2 typo metrics, as in drawTextEmphasis.
+	emphAscent, emphDescent := r.emphasisMarkAscentDescent(emphFontSize, fontPath)
 	markW := r.dc.MeasureText(mark, emphFontID)
 
 	// Compute the annotation fragment's TOP edge and BASELINE in the parent's

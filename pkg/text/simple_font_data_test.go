@@ -197,7 +197,7 @@ func TestNormalizedTypoAscentAndDescent(t *testing.T) {
 		{"LiberationSerif 8px", serif, 8, 6.09375, 1.90625},
 		{"Ahem 16px", "../../fonts/Ahem.ttf", 16, 12.796875, 3.203125},
 	} {
-		if a, d := NormalizedTypoAscentAndDescent(tc.size, tc.path, nil); a != tc.asc || d != tc.desc {
+		if a, d := NormalizedTypoAscentAndDescent(tc.size, tc.path); a != tc.asc || d != tc.desc {
 			t.Errorf("%s: NormalizedTypoAscentAndDescent = %v/%v, want %v/%v", tc.name, a, d, tc.asc, tc.desc)
 		}
 	}
