@@ -57,7 +57,7 @@ func TestComputeColumnWidths_LeftoverToAutoColumns(t *testing.T) {
 	tableNode := buildTestTree(makeNode("table"), map[*html.Node]*css.Style{})
 	tla := &TableLayoutAlgorithm{ctx: ctx, node: tableNode, style: tableStyle, space: space}
 
-	widths := tla.computeColumnWidths(rows, 2, 400, false, true, nil)
+	widths := tla.computeColumnWidths(rows, 2, 400, false, true, FragmentGeometry{}, nil, nil)
 
 	if len(widths) != 2 {
 		t.Fatalf("expected 2 column widths, got %d (%v)", len(widths), widths)
@@ -110,7 +110,7 @@ func TestComputeColumnWidths_LeftoverAllAutoEvenSplit(t *testing.T) {
 	tableNode := buildTestTree(makeNode("table"), map[*html.Node]*css.Style{})
 	tla := &TableLayoutAlgorithm{ctx: ctx, node: tableNode, style: tableStyle, space: space}
 
-	widths := tla.computeColumnWidths(rows, 2, 400, false, true, nil)
+	widths := tla.computeColumnWidths(rows, 2, 400, false, true, FragmentGeometry{}, nil, nil)
 
 	const eps = 0.5
 	if d := widths[0] - 200; d < -eps || d > eps {
@@ -171,7 +171,7 @@ func TestComputeColumnWidths_ColMaxWidthClampsWidthDown(t *testing.T) {
 	specs := []tableColWidth{
 		{colIndex: 0, span: 1, width: 100, maxWidth: 40, hasMax: true},
 	}
-	widths := tla.computeColumnWidths(rows, 2, 600, false, false, specs)
+	widths := tla.computeColumnWidths(rows, 2, 600, false, false, FragmentGeometry{}, nil, specs)
 	const eps = 0.5
 	if d := widths[0] - 40; d < -eps || d > eps {
 		t.Errorf("col0 width = %v, want 40 (max-width:40px clamps width:100px)", widths[0])
@@ -185,7 +185,7 @@ func TestComputeColumnWidths_ColMaxWidthZeroCollapses(t *testing.T) {
 	specs := []tableColWidth{
 		{colIndex: 0, span: 1, width: 100, maxWidth: 0, hasMax: true},
 	}
-	widths := tla.computeColumnWidths(rows, 2, 600, false, false, specs)
+	widths := tla.computeColumnWidths(rows, 2, 600, false, false, FragmentGeometry{}, nil, specs)
 	const eps = 0.5
 	if d := widths[0]; d < -eps || d > eps {
 		t.Errorf("col0 width = %v, want 0 (max-width:0 collapses width:100px)", widths[0])
@@ -200,7 +200,7 @@ func TestComputeColumnWidths_ColMinWidthRaisesWithoutWidth(t *testing.T) {
 	specs := []tableColWidth{
 		{colIndex: 0, span: 1, width: 0, minWidth: 100, hasMin: true},
 	}
-	widths := tla.computeColumnWidths(rows, 2, 600, false, false, specs)
+	widths := tla.computeColumnWidths(rows, 2, 600, false, false, FragmentGeometry{}, nil, specs)
 	const eps = 0.5
 	if d := widths[0] - 100; d < -eps || d > eps {
 		t.Errorf("col0 width = %v, want 100 (min-width:100px with no width)", widths[0])
@@ -216,7 +216,7 @@ func TestComputeColumnWidths_ColMinWidthBeatsMaxWidth(t *testing.T) {
 	specs := []tableColWidth{
 		{colIndex: 0, span: 1, width: 0, minWidth: 100, hasMin: true, maxWidth: 0, hasMax: true},
 	}
-	widths := tla.computeColumnWidths(rows, 2, 600, false, false, specs)
+	widths := tla.computeColumnWidths(rows, 2, 600, false, false, FragmentGeometry{}, nil, specs)
 	const eps = 0.5
 	if d := widths[0] - 100; d < -eps || d > eps {
 		t.Errorf("col0 width = %v, want 100 (min-width:100px beats max-width:0)", widths[0])

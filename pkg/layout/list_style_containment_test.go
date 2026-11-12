@@ -42,6 +42,7 @@ func pseudoTexts(b *Box, tag string) []string {
 //     and style-contained elements alike (InitialCounterForReversedOrderedList,
 //     list_item_ordinal.cc:359-425); other reversed counters skip only a
 //     contained element's subtree.
+//
 // Mirrors WPT css-contain/contain-style-ol-ordinal-*.
 func TestListItemOrdinalsUnderStyleContainment(t *testing.T) {
 	cases := []struct {

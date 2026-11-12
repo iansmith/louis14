@@ -41,9 +41,9 @@ var (
 
 func TestToPhysicalOffset_AllWMDir(t *testing.T) {
 	cases := []struct {
-		name        string
-		wm          WritingMode
-		dir         Direction
+		name         string
+		wm           WritingMode
+		dir          Direction
 		wantX, wantY int
 	}{
 		{"htb-ltr", WritingModeHorizontalTB, DirectionLTR, 10, 20},
