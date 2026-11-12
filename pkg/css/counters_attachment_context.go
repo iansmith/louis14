@@ -1,7 +1,7 @@
 package css
 
 import (
-	"strconv"
+	"math"
 	"strings"
 
 	"louis14/pkg/html"
@@ -819,7 +819,8 @@ func parseCounterPropertyList(raw string, defaultVal int) []parsedCounterPropert
 		value := defaultVal
 		hasExplicit := false
 		if i+1 < len(tokens) {
-			if n, err := strconv.Atoi(tokens[i+1]); err == nil {
+			// ConsumeCounter's ConsumeInteger (css_parsing_utils.cc:6159).
+			if n, ok := consumeInteger(tokens[i+1], math.Inf(-1)); ok {
 				value = n
 				hasExplicit = true
 				i++
