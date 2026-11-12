@@ -28,6 +28,15 @@ func TestTableComputeMinMaxSizes(t *testing.T) {
 		// container. (The table's own layout width:
 		// TestTableLayoutWidthWithPercentColumn.)
 		{"percent column", `<div style="width:100px"><div style="float:left" id="t"><div style="display:table">` + pctCell + cell10 + `</div></div></div>`, 100},
+		// A cell width of calc(N% + 0px) is a percentage column, as N% is:
+		// Blink's InlineSizesFromStyle reads a calc() whose pixel part is 0
+		// as its percent (table/table_layout_algorithm_types.cc:62-74;
+		// css-tables/calc-percent-plus-0px-auto). A 50% column beside a
+		// 100px one makes the table 100 / (100% - 50%) = 200px wide.
+		{"percent beside px", `<table id="t" style="border-spacing:0"><tr><td style="padding:0;width:50%">x</td>` +
+			`<td style="padding:0;width:100px">y</td></tr></table>`, 200},
+		{"calc percent plus 0px beside px", `<table id="t" style="border-spacing:0"><tr><td style="padding:0;width:calc(50% + 0px)">x</td>` +
+			`<td style="padding:0;width:100px">y</td></tr></table>`, 200},
 		// Guard: inside a flexbox, column percentages do not count while
 		// sizing intrinsically (TableNode::AllowColumnPercentages,
 		// table/table_node.cc:63-84), so the table item is 10px.
