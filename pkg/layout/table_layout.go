@@ -1270,10 +1270,15 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 // collectRowsAndCaptions extracts table rows, captions, and col/colgroup width specs
 // from the table's children, handling row-groups (thead, tbody, tfoot).
-// CSS 2.1 §17.5: rendering order is thead, tbodies (in source order), tfoot.
-// Also returns column width specifications and border styles from col/colgroup elements.
+// Rendering order is the header, the bodies in source order, then the
+// footer. The header is the first table-header-group and the footer the
+// first table-footer-group; later ones are bodies (TableGroupedChildren,
+// table/table_layout_algorithm_types.cc:296-330 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Also returns column width
+// specifications and border styles from col/colgroup elements.
 func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCaption, []tableColWidth, []tableColStyle) {
 	var headerRows, bodyRows, footerRows []tableRow
+	hasHeader, hasFooter := false, false // an empty group still takes the slot
 	var captions []tableCaption
 	var colWidths []tableColWidth
 	var colStyleSpecs []tableColStyle
@@ -1395,11 +1400,11 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 					groupRows = append(groupRows, r)
 				}
 			}
-			switch display {
-			case css.DisplayTableHeaderGroup:
-				headerRows = append(headerRows, groupRows...)
-			case css.DisplayTableFooterGroup:
-				footerRows = append(footerRows, groupRows...)
+			switch {
+			case display == css.DisplayTableHeaderGroup && !hasHeader:
+				headerRows, hasHeader = groupRows, true
+			case display == css.DisplayTableFooterGroup && !hasFooter:
+				footerRows, hasFooter = groupRows, true
 			default:
 				bodyRows = append(bodyRows, groupRows...)
 			}
@@ -1456,7 +1461,7 @@ func (tla *TableLayoutAlgorithm) collectRowsAndCaptions() ([]tableRow, []tableCa
 		}
 	}
 
-	// Render order: thead → tbody sections → tfoot.
+	// Render order: header → bodies → footer.
 	rows := make([]tableRow, 0, len(headerRows)+len(bodyRows)+len(footerRows))
 	rows = append(rows, headerRows...)
 	rows = append(rows, bodyRows...)
