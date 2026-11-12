@@ -772,7 +772,7 @@ func splitNthChildArg(arg string) (string, string, bool) {
 		// Match the keyword `of` at this position. The character before must
 		// be a non-identifier (whitespace OK; digit/`n`/`+`/`-` from An+B OK
 		// only if separated by whitespace per the grammar — but in practice
-		// stripCSSComments emits a space and authors write `2n+1 of`, so we
+		// StripComments emits a space and authors write `2n+1 of`, so we
 		// require whitespace on the left). The character after must end the
 		// identifier (whitespace or selector-start char or end).
 		if i+1 >= len(arg) || (arg[i] != 'o' && arg[i] != 'O') {

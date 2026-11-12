@@ -395,7 +395,6 @@ func layoutNestedDocument(ctx *LayoutContext, doc *html.Document, vpWidth, vpHei
 func computeDocumentStyles(doc *html.Document, vpWidth, vpHeight float64, fetcher images.ImageFetcher, fontSelector css.FontSelector) map[*html.Node]*css.Style {
 	resetImageLayoutDispositions(doc.Root, doc.BaseDir, fetcher)
 	styles := css.ApplyStylesToDocumentWithFontSelector(doc, vpWidth, vpHeight, fontSelector)
-	css.ResolveLogicalPropertiesInTree(doc.Root, styles)
 	css.AdjustImageFallbackHostStylesInTree(doc.Root, styles)
 	return styles
 }

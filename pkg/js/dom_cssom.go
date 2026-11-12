@@ -1,6 +1,7 @@
 package js
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 
@@ -108,29 +109,22 @@ type ruleStyleAccessor struct {
 }
 
 func (s *ruleStyleAccessor) Get(key string) goja.Value {
-	if val, ok := s.rule.Declarations[camelToKebab(key)]; ok {
-		return s.vm.ToValue(val)
-	}
-	return s.vm.ToValue("")
+	val, _ := s.rule.Value(camelToKebab(key))
+	return s.vm.ToValue(val)
 }
 
-// Set replaces the declaration and clears any stale !important flag — the
-// attribute setter always writes important=false (Blink's SetPropertyInternal,
+// Set parses the declaration as the stylesheet parser would and replaces
+// what the property set before, not important — the attribute setter always
+// writes important=false (Blink's SetPropertyInternal,
 // core/css/abstract_property_set_css_style_declaration.cc:254 @ 4a32dc92).
 // Assigning the empty string removes the declaration, matching styleAccessor.
 func (s *ruleStyleAccessor) Set(key string, val goja.Value) bool {
 	prop := camelToKebab(key)
 	if v := val.String(); strings.TrimSpace(v) == "" {
-		delete(s.rule.Declarations, prop)
-	} else if !cssomValueAccepted(prop, v) {
-		return true
-	} else {
-		if s.rule.Declarations == nil {
-			s.rule.Declarations = make(map[string]string)
-		}
-		s.rule.Declarations[prop] = v
+		s.rule.RemoveDeclaration(prop)
+	} else if cssomValueAccepted(prop, v) {
+		s.rule.SetDeclaration(prop, v)
 	}
-	delete(s.rule.Important, prop)
 	return true
 }
 
@@ -139,16 +133,10 @@ func (s *ruleStyleAccessor) Has(key string) bool {
 }
 
 func (s *ruleStyleAccessor) Delete(key string) bool {
-	prop := camelToKebab(key)
-	delete(s.rule.Declarations, prop)
-	delete(s.rule.Important, prop)
+	s.rule.RemoveDeclaration(camelToKebab(key))
 	return true
 }
 
 func (s *ruleStyleAccessor) Keys() []string {
-	keys := make([]string, 0, len(s.rule.Declarations))
-	for k := range s.rule.Declarations {
-		keys = append(keys, k)
-	}
-	return keys
+	return slices.Clone(s.rule.Order)
 }
