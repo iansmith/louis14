@@ -56,6 +56,7 @@ func FuzzParseStylesheet(f *testing.F) {
 		"@scope (.a) to (.b) { :scope { color: red } }",
 		`a{b:"}"} c{d:e}`,
 		`a{/*}*/b:c}`,
+		`a}{content:"}"`,
 	}, noPanicInputs...) {
 		f.Add(s)
 	}

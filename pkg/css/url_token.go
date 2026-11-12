@@ -111,6 +111,25 @@ func consumeURLToken(s string) (value string, n int, ok bool) {
 	return out.String(), len(s), true // end of input closes the token
 }
 
+// skipStringToken is the extent of the string token consumeStringToken
+// reads, without building its value: s is after the opening quote, and n
+// the bytes the token takes, the closing quote included. A newline ends it
+// before the newline as a bad string (bad true); an escaped character,
+// newline included, is skipped; end of input closes it.
+func skipStringToken(s string, quote byte) (n int, bad bool) {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case quote:
+			return i + 1, false
+		case '\n', '\r', '\f':
+			return i, true
+		case '\\':
+			i++
+		}
+	}
+	return len(s), false
+}
+
 // consumeStringToken mirrors CSSTokenizer::ConsumeStringTokenUntil
 // (:393-434): s is after the opening quote. A newline makes a bad string
 // (ok false); an escaped newline, or a backslash at the end of input, is

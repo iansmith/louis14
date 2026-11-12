@@ -526,8 +526,8 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 		}
 
 		sel := strings.TrimSpace(part[:bracePos])
-		closePos := strings.LastIndex(part, "}")
-		if closePos < 0 {
+		closePos := lastCloseBrace(part)
+		if closePos < bracePos {
 			continue
 		}
 		body := part[bracePos+1 : closePos]
@@ -1315,8 +1315,8 @@ func parseRules(ruleStr string) ([]Rule, error) {
 
 	// Extract declarations (shared by all selectors)
 	declStart := bracePos + 1
-	declEnd := strings.LastIndex(ruleStr, "}")
-	if declEnd == -1 {
+	declEnd := lastCloseBrace(ruleStr)
+	if declEnd < declStart {
 		declEnd = len(ruleStr)
 	}
 	declStr := ruleStr[declStart:declEnd]
@@ -1396,8 +1396,8 @@ func parseRule(ruleStr string) (Rule, error) {
 
 	// Extract declarations (between { and })
 	declStart := bracePos + 1
-	declEnd := strings.LastIndex(ruleStr, "}")
-	if declEnd == -1 {
+	declEnd := lastCloseBrace(ruleStr)
+	if declEnd < declStart {
 		declEnd = len(ruleStr)
 	}
 
@@ -1448,8 +1448,8 @@ func parseMediaRule(ruleStr string, ss *Stylesheet) []Rule {
 
 	// Extract inner CSS (between outermost { and })
 	innerStart := bracePos + 1
-	innerEnd := strings.LastIndex(ruleStr, "}")
-	if innerEnd == -1 || innerEnd <= innerStart {
+	innerEnd := lastCloseBrace(ruleStr)
+	if innerEnd <= innerStart {
 		return rules
 	}
 
@@ -1606,8 +1606,8 @@ func parseContainerRule(ruleStr string) []Rule {
 
 	// Extract inner CSS (between outermost { and })
 	innerStart := bracePos + 1
-	innerEnd := strings.LastIndex(ruleStr, "}")
-	if innerEnd == -1 || innerEnd <= innerStart {
+	innerEnd := lastCloseBrace(ruleStr)
+	if innerEnd <= innerStart {
 		return rules
 	}
 
@@ -1687,8 +1687,8 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string, ss *Stylesheet)
 
 	// Extract inner CSS (between outermost { and last })
 	innerStart := strings.Index(ruleStr, "{") + 1
-	innerEnd := strings.LastIndex(ruleStr, "}")
-	if innerEnd == -1 || innerEnd <= innerStart {
+	innerEnd := lastCloseBrace(ruleStr)
+	if innerEnd <= innerStart {
 		return rules, layerNames
 	}
 
@@ -2224,8 +2224,8 @@ func parseSupportsRule(ruleStr string, ss *Stylesheet) []Rule {
 
 	conditionStr := strings.TrimSpace(ruleStr[len("@supports"):braceIdx])
 
-	// Find matching closing brace
-	innerEnd := strings.LastIndex(ruleStr, "}")
+	// The block's end: the last `}` outside strings and comments.
+	innerEnd := lastCloseBrace(ruleStr)
 	if innerEnd <= braceIdx {
 		return nil
 	}
@@ -2969,6 +2969,42 @@ func consumeGeneralEnclosedFunction(s string) (string, bool) {
 		return s, false
 	}
 	return after, true
+}
+
+// functionalPseudoArg is the argument of the functional pseudo-class pc
+// (e.g. "is(.a)" with name "is("): the text after the name up to the
+// closing `)`, or to the end when the function is left open, as Blink's
+// tokenizer runs an unclosed function to EOF.
+func functionalPseudoArg(pc, name string) string {
+	return strings.TrimSuffix(pc[len(name):], ")")
+}
+
+// lastCloseBrace is the index of the last `}` in s outside a string or a
+// comment, -1 if none: the end of a rule's block as Blink's tokenizer sees
+// it, where a `}` inside a string token or a comment is no block end
+// (CSSTokenizer @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A string
+// token's extent is skipStringToken's: to its quote or, as a bad string,
+// to a newline.
+func lastCloseBrace(s string) int {
+	last := -1
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '"' || c == '\'':
+			n, _ := skipStringToken(s[i+1:], c)
+			i += n
+		case c == '\\':
+			i++
+		case c == '/' && i+1 < len(s) && s[i+1] == '*':
+			end := strings.Index(s[i+2:], "*/")
+			if end < 0 {
+				return last
+			}
+			i += end + 3
+		case c == '}':
+			last = i
+		}
+	}
+	return last
 }
 
 // indexTopLevelBrace returns the byte index of the first `{` in s that lies
@@ -3979,7 +4015,7 @@ func parseSelector(selectorStr string) Selector {
 		for _, pc := range part.PseudoClasses {
 			if strings.HasPrefix(pc, "is(") {
 				// :is() takes specificity of its most specific argument
-				arg := pc[len("is(") : len(pc)-1]
+				arg := functionalPseudoArg(pc, "is(")
 				sels := splitSelectorGroup(strings.TrimSpace(arg))
 				maxSpec := 0
 				for _, sel := range sels {
@@ -3999,9 +4035,9 @@ func parseSelector(selectorStr string) Selector {
 				specificity += 10
 				var arg string
 				if strings.HasPrefix(pc, "nth-child(") {
-					arg = pc[len("nth-child(") : len(pc)-1]
+					arg = functionalPseudoArg(pc, "nth-child(")
 				} else {
-					arg = pc[len("nth-last-child(") : len(pc)-1]
+					arg = functionalPseudoArg(pc, "nth-last-child(")
 				}
 				if _, ofSel, hasOf := splitNthChildArg(arg); hasOf {
 					maxSpec := 0
@@ -6620,7 +6656,7 @@ func SplitSelectorGroup(s string) []string {
 func parseFontFaceRule(ruleStr string) *FontFaceRule {
 	// Extract the block between { and }
 	start := strings.Index(ruleStr, "{")
-	end := strings.LastIndex(ruleStr, "}")
+	end := lastCloseBrace(ruleStr)
 	if start < 0 || end <= start {
 		return nil
 	}
@@ -6781,7 +6817,7 @@ func parseKeyframesRule(ruleStr string) (string, []KeyframeRule) {
 	}
 
 	// Extract the inner block (between outermost { and last })
-	innerEnd := strings.LastIndex(rest, "}")
+	innerEnd := lastCloseBrace(rest)
 	if innerEnd <= bracePos {
 		return "", nil
 	}
@@ -6799,7 +6835,7 @@ func parseKeyframesRule(ruleStr string) (string, []KeyframeRule) {
 		if stop == "" {
 			continue
 		}
-		declEnd := strings.LastIndex(part, "}")
+		declEnd := lastCloseBrace(part)
 		if declEnd <= bp {
 			continue
 		}
@@ -6830,7 +6866,7 @@ func parseCounterStyleRule(ruleStr string) CounterStyleRule {
 	nameStr := strings.TrimSpace(ruleStr[len("@counter-style"):bracePos])
 
 	// Extract the block body (between { and last })
-	innerEnd := strings.LastIndex(ruleStr, "}")
+	innerEnd := lastCloseBrace(ruleStr)
 	if innerEnd <= bracePos {
 		return CounterStyleRule{}
 	}
