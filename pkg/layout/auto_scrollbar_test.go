@@ -102,18 +102,32 @@ func TestAutoScrollbar_NoneWhenContentsAreNotVisible(t *testing.T) {
 	}
 }
 
-// TestAutoScrollbar_TableCellKeepsNoScrollbars pins that a table cell does
-// not take its auto scrollbars from its measure layout: the table later
-// stretches the cell to its row, where its content fits
-// (TryRemovingAutoScrollbars on the cell's final layout, core/paint/
-// paint_layer_scrollable_area.cc:1851-1890 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 lays a cell out once,
-// at its measure size, so the cell keeps no auto scrollbars until it gets
-// a layout at its final size (LOU-918).
-func TestAutoScrollbar_TableCellKeepsNoScrollbars(t *testing.T) {
-	for _, tc := range []struct{ name, html string }{
-		{"td", `<table style="border-spacing: 0"><tr><td id="s" style="padding: 0; height: 50px; overflow: auto"><div style="width: 100px; height: 200px"></div></td></tr></table>`},
-		{"table-cell", `<div style="display: table"><div id="s" style="display: table-cell; height: 50px; overflow: auto"><div style="width: 100px; height: 200px"></div></div></div>`},
+// TestAutoScrollbar_TableCellBlockAxisWaitsForFinalSize pins a table
+// cell's auto scrollbars as far as louis14 can decide them. A cell is laid
+// out once, at its final inline size but before the table stretches its
+// block size to the row; Blink decides on the final layout
+// (UpdateAfterLayout / TryRemovingAutoScrollbars, core/paint/
+// paint_layer_scrollable_area.cc:1021-1075, :1851-1890 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So the inline-axis scrollbar
+// is decided as for any box, and the block-axis one waits for a final-size
+// cell layout (LOU-918): none yet.
+func TestAutoScrollbar_TableCellBlockAxisWaitsForFinalSize(t *testing.T) {
+	sb := classicScrollbarWidth(&css.Style{})
+	for _, tc := range []struct {
+		name, html string
+		want       css.BoxEdge
+		w, h       float64
+	}{
+		// The cell's measure height is 50 but the row grows to the 200px
+		// content: no block-axis scrollbar, and nothing overflows inline.
+		{"td grows to its content", `<table style="border-spacing: 0"><tr><td id="s" style="padding: 0; height: 50px; overflow: auto"><div style="width: 100px; height: 200px"></div></td></tr></table>`,
+			css.BoxEdge{}, 100, 200},
+		{"table-cell grows to its content", `<div style="display: table"><div id="s" style="display: table-cell; height: 50px; overflow: auto"><div style="width: 100px; height: 200px"></div></div></div>`,
+			css.BoxEdge{}, 100, 200},
+		// A fixed-layout cell narrower than its content: the inline-axis
+		// scrollbar (css-tables/table-cell-overflow-auto-scrolled).
+		{"fixed-width cell overflows inline", `<table style="table-layout: fixed; width: 100px; height: 100px; border-spacing: 0"><tr><td id="s" style="padding: 0; overflow: auto; vertical-align: top"><div style="width: 200px; height: 50px"></div></td></tr></table>`,
+			css.BoxEdge{Bottom: sb}, 100, 100},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := layoutRootTestHTML(t, `<!DOCTYPE html><style>body { margin: 0 }</style>`+tc.html)
@@ -121,8 +135,8 @@ func TestAutoScrollbar_TableCellKeepsNoScrollbars(t *testing.T) {
 			if s == nil {
 				t.Fatal("missing #s")
 			}
-			if s.Scrollbar != (css.BoxEdge{}) || s.Width != 100 || s.Height != 200 {
-				t.Errorf("#s %vx%v scrollbar %+v; want 100x200 with none", s.Width, s.Height, s.Scrollbar)
+			if s.Scrollbar != tc.want || s.Width != tc.w || s.Height != tc.h {
+				t.Errorf("#s %vx%v scrollbar %+v; want %vx%v with %+v", s.Width, s.Height, s.Scrollbar, tc.w, tc.h, tc.want)
 			}
 		})
 	}
