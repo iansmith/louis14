@@ -363,6 +363,12 @@ func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *
 	if node.IsFieldsetContainer() {
 		return measureFieldsetMinMax(node, ctx, space)
 	}
+	// An auto-layout table measures its columns (TableLayoutAlgorithm::
+	// ComputeMinMaxSizes); a fixed-layout table is still measured as a
+	// block (LOU-901 follow-up).
+	if node.IsTable() && style.GetTableLayout() != css.TableLayoutFixed {
+		return NewTableLayoutAlgorithm(ctx, node, space).ComputeMinMaxSizes()
+	}
 	display := style.GetDisplay()
 	if measuresAsMulticol(node, style) {
 		return measureMulticolMinMax(node, ctx, space)
