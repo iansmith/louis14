@@ -2363,11 +2363,13 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 	// table stretches its block size to the row; Blink decides its auto
 	// scrollbars on the final layout (UpdateAfterLayout runs after each
 	// layout). louis14 has no final-size cell layout yet (LOU-839), so a
-	// cell decides only its inline-axis scrollbar (LOU-918).
-	blockSizeFinal := space.TableSectionData == nil
+	// cell is judged at the block size the table gives it at least: its
+	// content's, border and padding included (table_layout.go's row
+	// minimum). A row stretched further by another cell is LOU-918.
 	wdm := space.WritingDirection
+	isTableCell := space.TableSectionData != nil
 	hadHorizontal, hadVertical := node.hasHorizontalScrollbar, node.hasVerticalScrollbar
-	if !updateScrollbarsAfterLayout(node, result, blockSizeFinal, wdm) &&
+	if !updateScrollbarsAfterLayout(node, result, minFinalBlockSize(isTableCell, result, style, wdm), wdm) &&
 		(!node.intrinsicLogicalWidthsDirty || !inlineSizeChangedAfterLayout(ctx, node, style, space, result)) {
 		return result
 	}
@@ -2380,10 +2382,38 @@ func layoutElement(ctx *LayoutContext, node *LayoutInputNode, space ConstraintSp
 		addScrollbarFreeze(before, after, wdm, node)
 		before = after
 		result = layoutAndStore(ctx, node, space)
-		if !updateScrollbarsAfterLayout(node, result, blockSizeFinal, wdm) {
+		if !updateScrollbarsAfterLayout(node, result, minFinalBlockSize(isTableCell, result, style, wdm), wdm) {
 			return result
 		}
 	}
+}
+
+// minFinalBlockSize is a lower bound on the final border-box block size of
+// a box laid out as result, when its block size grows after this layout: a
+// table cell, which the table makes at least as tall as its content
+// (cellContentBorderBoxBlockSize). 0 for any other box.
+func minFinalBlockSize(isTableCell bool, result *LayoutResult, style *css.Style, wdm WritingDirectionMode) float64 {
+	if !isTableCell {
+		return 0
+	}
+	return cellContentBorderBoxBlockSize(result, style, wdm)
+}
+
+// cellContentBorderBoxBlockSize is a table cell's content block size lifted
+// to its border box: result's content-box IntrinsicBlockSize plus the
+// cell's block border and padding. Mirrors Blink's
+// TableLayoutUtils::ComputeMinimumRowBlockSize comparand
+// `border_box_block_size = intrinsic_block_size + border_padding`
+// (SHA 4883d11fef).
+func cellContentBorderBoxBlockSize(result *LayoutResult, style *css.Style, wdm WritingDirectionMode) float64 {
+	if result == nil {
+		return 0
+	}
+	size := result.IntrinsicBlockSize
+	if style != nil {
+		size += ComputeFragmentGeometry(style, wdm).BlockBorderPadding()
+	}
+	return size
 }
 
 // layoutAndStore runs node's layout algorithm and stores the result on it.
