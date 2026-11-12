@@ -243,18 +243,19 @@ func (b *Box) ScrollPosition() html.ScrollOffset {
 }
 
 // updateScrollbarsAfterLayout decides node's overflow:auto scrollbars from
-// result's scrollable overflow and reports whether they changed: an auto
+// result's scrollable overflow and reports whether they changed. An auto
 // axis needs its scrollbar when the scroll size rounds above the client
-// size, and when both axes are auto and the overflow fits the client size
-// with the scrollbars included, neither is needed. A frozen scrollbar
-// keeps its state. A change marks the ancestors' intrinsic inline sizes
-// dirty for their relayout check. Mirrors PaintLayerScrollableArea::UpdateAfterLayout /
+// size and the scrollport has extent in the other axis; when both axes are
+// auto and the overflow fits the scrollport with the scrollbars included,
+// neither is needed. A frozen scrollbar keeps its state. A change marks the
+// ancestors' intrinsic inline sizes dirty for their relayout check.
+// Mirrors PaintLayerScrollableArea::UpdateAfterLayout /
 // ComputeScrollbarExistence / HasHorizontalOverflow / HasVerticalOverflow
 // / TryRemovingAutoScrollbars (core/paint/paint_layer_scrollable_area.cc:
-// 1021-1075, :1732-1830, :1368-1389, :1851-1890 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Divergence:
-// HasHorizontalOverflow's widening of the client width by a vertical
-// scrollbar that is about to appear is not ported.
+// 1021-1075, :1732-1847, :1368-1389, :1851-1890 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). HasHorizontalOverflow's
+// allowance for a vertical scrollbar added during a relayout is omitted:
+// its NeedsRelayout flag has no setter at that SHA, so it never applies.
 func updateScrollbarsAfterLayout(node *LayoutInputNode, result *LayoutResult) bool {
 	style := node.Style()
 	if result == nil || result.Status != LayoutResultSuccess || style == nil ||
@@ -271,20 +272,22 @@ func updateScrollbarsAfterLayout(node *LayoutInputNode, result *LayoutResult) bo
 	}
 	needsHorizontal, needsVertical := node.hasHorizontalScrollbar, node.hasVerticalScrollbar
 	overflowX, overflowY := a.computeScrollableSize()
+	// The scrollport with the scrollbars (VisibleContentRect(
+	// kIncludeScrollbars)): an auto scrollbar is not added while the box
+	// shows none of its contents in the other axis.
+	_, scrollbar := a.borderScrollbarOutsets()
+	portWidth := a.clientWidth + scrollbar.Left + scrollbar.Right
+	portHeight := a.clientHeight + scrollbar.Top + scrollbar.Bottom
 	if autoX {
-		needsHorizontal = overflowX > 0
+		needsHorizontal = overflowX > 0 && portHeight > 0
 	}
 	if autoY {
-		needsVertical = overflowY > 0
+		needsVertical = overflowY > 0 && portWidth > 0
 	}
 	frozenH, frozenV := node.frozenHorizontalScrollbar, node.frozenVerticalScrollbar
-	if autoX && autoY && !frozenH && !frozenV && (needsHorizontal || needsVertical) {
-		_, scrollbar := a.borderScrollbarOutsets()
-		scrollWidth, scrollHeight := a.overflowRect.Size.WidthF64(), a.overflowRect.Size.HeightF64()
-		if scrollWidth <= a.clientWidth+scrollbar.Left+scrollbar.Right &&
-			scrollHeight <= a.clientHeight+scrollbar.Top+scrollbar.Bottom {
-			needsHorizontal, needsVertical = false, false
-		}
+	if autoX && autoY && !frozenH && !frozenV && (needsHorizontal || needsVertical) &&
+		a.overflowRect.Size.WidthF64() <= portWidth && a.overflowRect.Size.HeightF64() <= portHeight {
+		needsHorizontal, needsVertical = false, false
 	}
 	changed := false
 	if !frozenH && needsHorizontal != node.hasHorizontalScrollbar {
