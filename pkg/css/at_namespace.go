@@ -97,8 +97,20 @@ func (s *Selector) resolveNamespaces(defaultNamespace string, resistDefaultNames
 // (core/css/style_sheet_contents.cc:183 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520).
 func (ss *Stylesheet) parserAppendRules(rules []Rule) {
+	resolved := map[*StyleScope]bool{}
 	for i := range rules {
 		rules[i].Selector.resolveNamespaces(ss.DefaultNamespace, false)
+		// An @scope's <scope-start> and <scope-end> are parsed with the
+		// sheet's context too (StyleScope::Consume, style_scope.cc:86-139
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); its rules share it.
+		for scope := rules[i].Scope; scope != nil && !resolved[scope]; scope = scope.parent {
+			resolved[scope] = true
+			for _, list := range [][]Selector{scope.from, scope.to} {
+				for j := range list {
+					list[j].resolveNamespaces(ss.DefaultNamespace, false)
+				}
+			}
+		}
 	}
 	ss.Rules = append(ss.Rules, rules...)
 }

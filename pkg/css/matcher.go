@@ -2,6 +2,8 @@ package css
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	xbidi "golang.org/x/text/unicode/bidi"
 
@@ -43,11 +45,23 @@ type matchContext struct {
 	// Like that AutoReset, setting it on the by-value ctx scopes it to the
 	// argument.
 	resistDefaultNamespace bool
+
+	// scope is the scoping root :scope matches (SelectorCheckingContext::
+	// scope, core/css/selector_checker.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an @scope activation's
+	// root, or nil for the document, where :scope is the root element.
+	scope *html.Node
 }
 
 // Phase 17: MatchesSelector returns true if the node matches the complex selector
 func MatchesSelector(node *html.Node, selector Selector) bool {
-	return matchesSelectorCtx(node, selector, matchContext{defaultNamespace: selector.defaultNamespace})
+	return matchesSelectorInScope(node, selector, nil)
+}
+
+// matchesSelectorInScope matches selector against node with :scope as
+// scope (nil: the document, so the root element).
+func matchesSelectorInScope(node *html.Node, selector Selector, scope *html.Node) bool {
+	return matchesSelectorCtx(node, selector, matchContext{defaultNamespace: selector.defaultNamespace, scope: scope})
 }
 
 // parseNestedSelector parses one comma branch of a functional pseudo-class
@@ -61,11 +75,84 @@ func MatchesSelector(node *html.Node, selector Selector) bool {
 // d4ecdfed88f962439247c2ad36b8fe47805b1520), and an earlier branch is
 // followed by a comma. No Blink analog for re-parsing: louis14 keeps those
 // arguments as strings (SelectorPart.PseudoClasses).
+//
+// Parses are cached by their inputs (nestedSelectorCache): an argument is
+// re-matched for every candidate element, and a parsed Selector is only
+// read.
 func parseNestedSelector(sel string, ctx matchContext, atEnd bool) Selector {
-	s := ParseSelector(sel)
-	s.resolveNamespaces(ctx.defaultNamespace, ctx.resistDefaultNamespace && atEnd)
+	key := nestedSelectorKey{sel, ctx.defaultNamespace, ctx.resistDefaultNamespace && atEnd}
+	if s, ok := nestedSelectorCache.Load(key); ok {
+		return s.(Selector)
+	}
+	s := parseNestedSelectorUncached(sel, key.defaultNamespace, key.resist)
+	storeNestedParse(key, s)
 	return s
 }
+
+// parseNestedSelectorUncached is parseNestedSelector's parse.
+func parseNestedSelectorUncached(sel, defaultNamespace string, resist bool) Selector {
+	s := ParseSelector(sel)
+	s.resolveNamespaces(defaultNamespace, resist)
+	return s
+}
+
+// nestedSelectorKey is what a parseNestedSelector parse depends on.
+type nestedSelectorKey struct {
+	sel, defaultNamespace string
+	resist                bool
+}
+
+// nestedArgument is a functional pseudo-class argument (:is/:where/:not)
+// parsed into its branches, and whether a branch has a pseudo-element.
+type nestedArgument struct {
+	branches         []Selector
+	hasPseudoElement bool
+}
+
+// nestedArgumentKey is what a parseNestedArgument parse depends on.
+type nestedArgumentKey struct {
+	arg, defaultNamespace string
+	resist                bool
+}
+
+// parseNestedArgument parses a functional pseudo-class argument into its
+// branches (parseNestedSelectorList), cached whole so a match allocates
+// nothing once the argument has been seen.
+func parseNestedArgument(arg string, ctx matchContext) nestedArgument {
+	key := nestedArgumentKey{arg, ctx.defaultNamespace, ctx.resistDefaultNamespace}
+	if a, ok := nestedSelectorCache.Load(key); ok {
+		return a.(nestedArgument)
+	}
+	branches := splitSelectorGroup(strings.TrimSpace(arg))
+	a := nestedArgument{hasPseudoElement: containsPseudoElementArg(branches)}
+	// The branches are parsed uncached: the argument is cached whole.
+	for i, sel := range branches {
+		if sel = strings.TrimSpace(sel); sel != "" {
+			a.branches = append(a.branches, parseNestedSelectorUncached(sel, ctx.defaultNamespace, ctx.resistDefaultNamespace && i == len(branches)-1))
+		}
+	}
+	storeNestedParse(key, a)
+	return a
+}
+
+// nestedSelectorCache holds parseNestedSelector's and parseNestedArgument's
+// parses (a sync.Map keyed by nestedSelectorKey or nestedArgumentKey); the
+// cascade matches from several goroutines. Parses are only read.
+var nestedSelectorCache sync.Map
+
+// storeNestedParse caches a parse unless the cache is full.
+func storeNestedParse(key, parse any) {
+	if nestedSelectorCacheSize.Load() < maxNestedSelectorCacheSize && nestedSelectorCacheSize.Add(1) <= maxNestedSelectorCacheSize {
+		nestedSelectorCache.Store(key, parse)
+	}
+}
+
+// nestedSelectorCacheSize counts parses offered to nestedSelectorCache,
+// which stops growing at maxNestedSelectorCacheSize entries: the cache
+// lives as long as the process, and its keys come from documents.
+var nestedSelectorCacheSize atomic.Int64
+
+const maxNestedSelectorCacheSize = 1 << 14
 
 // parseNestedSelectorList parses the comma branches of a functional
 // pseudo-class argument with parseNestedSelector, skipping empty branches.
@@ -412,10 +499,13 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		// attribute — the union of :link and :visited, with no visitedness or
 		// privacy distinction.
 		return isHyperlink(node)
-	case pc == "scope":
-		// :scope matches the element serving as the scope reference.
-		// In a static document context, approximate as :root (LOU-860
-		// ports @scope).
+	case pc == "scope", pc == nestingParentPseudo:
+		// SelectorChecker::CheckPseudoScope (selector_checker.cc:3650-3659
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the scoping root, or
+		// the root element when the scope is the document.
+		if ctx.scope != nil {
+			return node == ctx.scope
+		}
 		return isRootElement(node)
 	case pc == "link":
 		// Per CSS Selectors 4 §6.6.1, `:link` matches a non-visited hyperlink
@@ -1062,8 +1152,8 @@ func parseInt(s string) (int, bool) {
 // contextually-invalid-selectors-* tests.
 func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
 	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1627 / :1642 @ d4ecdfed88f9
-	selectors := splitSelectorGroup(strings.TrimSpace(arg))
-	if containsPseudoElementArg(selectors) {
+	parsed := parseNestedArgument(arg, ctx)
+	if parsed.hasPseudoElement {
 		return false
 	}
 	// kPseudoIs/kPseudoWhere dispatch to MatchesAnyInList,
@@ -1071,7 +1161,7 @@ func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
 	// d4ecdfed88f962439247c2ad36b8fe47805b1520. The match context (e.g.
 	// inside-:has) propagates into each branch so :is(:link)/:is(:visited)
 	// follow the same privacy rules as a bare :link/:visited there.
-	return matchesAnyInList(node, parseNestedSelectorList(selectors, ctx), ctx)
+	return matchesAnyInList(node, parsed.branches, ctx)
 }
 
 // checkPseudoNot matches :not(arg): node must match none of the argument's
@@ -1083,7 +1173,7 @@ func matchesIsLike(node *html.Node, arg string, ctx matchContext) bool {
 // match every element.
 func checkPseudoNot(node *html.Node, arg string, ctx matchContext) bool {
 	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1712 @ d4ecdfed88f9
-	return !matchesAnyInList(node, parseNestedSelectorList(splitSelectorGroup(strings.TrimSpace(arg)), ctx), ctx)
+	return !matchesAnyInList(node, parseNestedArgument(arg, ctx).branches, ctx)
 }
 
 // containsPseudoElementArg returns true if any selector in the list contains a
@@ -1460,6 +1550,11 @@ func matchesReadWrite(node *html.Node) bool {
 // FindMatchingRules returns all rules that match the given node
 // Phase 22: Added viewport dimensions for media query evaluation
 func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, viewportHeight float64) []Rule {
+	return findMatchingRules(node, stylesheet, viewportWidth, viewportHeight, nil)
+}
+
+// findMatchingRules is FindMatchingRules with node's styleScopeFrame.
+func findMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, viewportHeight float64, frame *styleScopeFrame) []Rule {
 	matches := make([]Rule, 0)
 
 	for _, rule := range stylesheet.Rules {
@@ -1481,8 +1576,8 @@ func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, v
 			continue
 		}
 
-		if MatchesSelector(node, rule.Selector) {
-			matches = append(matches, rule)
+		if matched, ok := matchRule(node, &rule, frame); ok {
+			matches = append(matches, matched)
 		}
 	}
 

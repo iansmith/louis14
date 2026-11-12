@@ -126,6 +126,25 @@ type Rule struct {
 	// nesting, an @media body, an @import's sheet). -1 when that rule is
 	// one Blink drops.
 	SourceRuleIndex int
+
+	// Scope is the @scope the rule is in (RuleData's StyleScope, set by
+	// RuleSet::AddChildRules, rule_set.cc:1057-1064 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); nil when unscoped.
+	Scope *StyleScope
+
+	// proximity is set on a matched copy of a scoped rule: the generations
+	// between the element and the scoping root it matched in (MatchedRule
+	// proximity, element_rule_collector.cc:1433). cascadeProximity reads it.
+	proximity uint32
+}
+
+// cascadeProximity is the rule's scope proximity in the cascade order;
+// an unscoped rule's is infinite (unscopedProximity).
+func (r *Rule) cascadeProximity() uint32 {
+	if r.Scope == nil {
+		return unscopedProximity
+	}
+	return r.proximity
 }
 
 // MediaQueryResult mirrors Blink's KleeneValue
@@ -534,18 +553,21 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 
 		// Handle conditional at-rules nested inside a selector block. Per CSS
 		// Nesting 1 §3.2, when a conditional group at-rule (CSS Conditional
-		// 4 §1: @media, @supports, @container, @layer, @scope) is nested
+		// 4 §1: @media, @supports, @container, @layer) is nested
 		// inside a style rule, the wrapper applies to a synthesized "nested
 		// declarations rule" whose selector is the parent. Even at TOP level,
 		// the body of these at-rules must be passed through expandNesting
 		// recursively so nested selectors inside the body get expanded —
 		// otherwise `@supports selector(&) { p { & { ... } } }` leaves the
 		// inner `& { ... }` unexpanded and the cascade silently loses the
-		// override.
+		// override. @scope's body is a scope, not the parent rule
+		// (expandScopeRule).
 		selLower := strings.ToLower(sel)
-		if strings.HasPrefix(selLower, "@media") || strings.HasPrefix(selLower, "@supports") ||
-			strings.HasPrefix(selLower, "@container") || strings.HasPrefix(selLower, "@layer") ||
-			strings.HasPrefix(selLower, "@scope") {
+		if selLower == "@scope" || hasAtKeyword(selLower, "@scope") {
+			result.WriteString(expandScopeRule(sel, body, parentSelector))
+			continue
+		}
+		if slices.ContainsFunc(groupingAtRules, func(kw string) bool { return strings.HasPrefix(selLower, kw) }) {
 			if parentSelector != "" {
 				// Nested at-rule inside a selector: lift and wrap the parent
 				// selector inside the at-rule, e.g.
@@ -562,12 +584,9 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 				}
 				// Recurse for any nested rules inside the at-rule body.
 				innerBlock.WriteString(expandNesting(nestedParts, parentSelector))
-				// For @scope (<scope-start>) the prelude itself may contain
-				// `&` — resolve before emission so the lifted selector is
-				// consistent with the rest of the cascade. @layer's prelude
-				// is an <ident> and never references &; @media / @supports /
-				// @container preludes are queries and don't either, but a
-				// blanket resolve is harmless.
+				// @layer's prelude is an <ident> and never references &;
+				// @media / @supports / @container preludes are queries and
+				// don't either, but a blanket resolve is harmless.
 				resolvedSel := sel
 				if strings.Contains(sel, "&") {
 					resolvedSel = strings.ReplaceAll(sel, "&", wrapParentInIs(parentSelector))
@@ -608,31 +627,112 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 
 		// Resolve the effective selector for declaration segments.
 		// - Top-level: "& at the top level counts as :scope" per CSS
-		//   Nesting 1 §2.1, so swap any `&` in sel for `:scope`.
+		//   Nesting 1 §2.1; the parser keeps it (nestingParentPseudo).
 		// - Nested: use resolveNestedSelector against the parent.
-		var declSel, childParent string
+		declSel := sel
 		if parentSelector != "" {
 			declSel = resolveNestedSelector(parentSelector, sel)
-			childParent = declSel
-		} else {
-			declSel = resolveTopLevelNestingSelector(sel)
-			childParent = declSel
 		}
-
-		for _, seg := range segments {
-			if seg.isDecls {
-				result.WriteString(declSel)
-				result.WriteString(" { ")
-				result.WriteString(seg.Text)
-				result.WriteString(" }\n")
-			} else {
-				// A nested rule — recurse with childParent (which already
-				// has & substituted) as the parent.
-				result.WriteString(expandNesting(seg.Text, childParent))
-			}
-		}
+		writeBodySegments(&result, segments, declSel, declSel)
 	}
 	return result.String()
+}
+
+// writeBodySegments writes a rule body's segments in source order: the
+// declarations as a declSel rule, the nested rules expanded against
+// childParent (which already has & substituted).
+func writeBodySegments(b *strings.Builder, segments []bodySegment, declSel, childParent string) {
+	for _, seg := range segments {
+		if seg.isDecls {
+			b.WriteString(declSel)
+			b.WriteString(" { ")
+			b.WriteString(seg.Text)
+			b.WriteString(" }\n")
+		} else {
+			b.WriteString(expandNesting(seg.Text, childParent))
+		}
+	}
+}
+
+// expandScopeRule expands an @scope rule's body (CSSParserImpl::
+// ConsumeScopeRule, css_parser_impl.cc:2135-2172 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The body is a scope, not
+// the parent rule: its `&` has no parent rule (StyleScope::RuleForNesting,
+// style_scope.cc:142-147, CSSScopeifiedParentPseudoClass stable), so its
+// rules expand as top-level ones, and declarations directly in it are a
+// `&` rule in source order (css_parser_impl.cc:1298-1305).
+// Nested in a style rule, the <scope-start> is relative to the parent rule
+// (StyleScope::Consume parses it with the parent's nesting type).
+func expandScopeRule(prelude, body, parentSelector string) string {
+	if parentSelector != "" {
+		prelude = nestScopePrelude(prelude, parentSelector)
+	}
+	var b strings.Builder
+	b.WriteString(prelude)
+	b.WriteString(" { ")
+	writeBodySegments(&b, anchorScopeBody(splitBodySegments(body)), "&", "")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// anchorScopeBody gives each style rule of an @scope body, including those
+// in its grouping rules at any depth, the implicit :scope anchor
+// (scopedRuleText) before CSS nesting expands it: Blink adds the anchor
+// when it parses the rule, so `&` in the rule's nested rules carries it
+// (MaybeCreateImplicitDescendantAnchor, css_selector_parser.cc:800-823,
+// called at :914-930 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A nested @scope anchors its
+// own body; another at-rule's body is not style rules.
+func anchorScopeBody(segments []bodySegment) []bodySegment {
+	for i, seg := range segments {
+		switch {
+		case seg.isDecls:
+		case !strings.HasPrefix(seg.Text, "@"):
+			segments[i].Text = scopedRuleText(seg.Text)
+		case isGroupingRule(seg.Text):
+			brace := indexTopLevelBrace(seg.Text)
+			end := strings.LastIndex(seg.Text, "}")
+			if brace < 0 || end < brace {
+				continue
+			}
+			var b strings.Builder
+			b.WriteString(seg.Text[:brace+1])
+			for _, inner := range anchorScopeBody(splitBodySegments(seg.Text[brace+1 : end])) {
+				b.WriteString(inner.Text)
+				b.WriteByte('\n')
+			}
+			b.WriteString(seg.Text[end:])
+			segments[i].Text = b.String()
+		}
+	}
+	return segments
+}
+
+// groupingAtRules are the conditional group rules and @layer, whose body
+// holds style rules of the enclosing rule or scope. Blink also passes the
+// nesting type through @starting-style (css_parser_impl.cc:904 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); add it here when louis14
+// parses @starting-style's style rules.
+var groupingAtRules = []string{"@media", "@supports", "@container", "@layer"}
+
+// isGroupingRule reports whether an at-rule (with its block) is one of
+// groupingAtRules.
+func isGroupingRule(rule string) bool {
+	return slices.ContainsFunc(groupingAtRules, func(kw string) bool { return hasAtKeyword(rule, kw) })
+}
+
+// nestScopePrelude resolves an @scope prelude's <scope-start> against the
+// parent rule of a nested @scope: each selector is relative to it, as a
+// nested selector is (resolveNestedSelector). <scope-end> is relative to
+// the scope, so it is left as written; so is a prelude with no
+// <scope-start>.
+func nestScopePrelude(prelude, parentSelector string) string {
+	rest := strings.TrimSpace(prelude[len("@scope"):])
+	start, after, ok := consumeBalancedParens(rest)
+	if !ok {
+		return prelude
+	}
+	resolve := func(sel string) string { return resolveNestedSelector(parentSelector, sel) }
+	return "@scope (" + mapSelectorGroup(start, resolve) + ")" + after
 }
 
 // resolveNestedSelector resolves a nested selector relative to the parent.
@@ -656,17 +756,13 @@ func resolveNestedSelector(parent, nested string) string {
 	return wrappedParent + " " + nested
 }
 
-// resolveTopLevelNestingSelector substitutes occurrences of `&` in a top-
-// level selector with `:scope`. Per CSS Nesting 1 §2.1 / Selectors 4
-// §17.2, "& at the top level counts as :scope" — i.e. the scoping root,
-// which in a static document is the document's root element. Required
-// by css-nesting/nesting-basic.html test-12 (`& .test-12 { ... }`).
-func resolveTopLevelNestingSelector(sel string) string {
-	if !strings.Contains(sel, "&") {
-		return sel
-	}
-	return strings.ReplaceAll(sel, "&", ":scope")
-}
+// nestingParentPseudo is the PseudoClasses entry for a `&` with no parent
+// rule (Blink's kPseudoParent with a null parent): at the top level, and in
+// an @scope body, where CSSScopeifiedParentPseudoClass (stable,
+// style_scope.cc:142-147 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) gives
+// its rules no parent rule. It matches like :scope with no specificity.
+// Required by css-nesting/nesting-basic.html test-12 (`& .test-12 { ... }`).
+const nestingParentPseudo = "&"
 
 // wrapParentInIs wraps a parent selector in :is(...) for nesting substitution.
 // Single simple selectors that already are bare functional pseudo-classes
@@ -1038,6 +1134,8 @@ func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
 		return parseSupportsRule(ruleStr, ss)
 	case strings.HasPrefix(trimmed, "@container"):
 		return parseContainerRule(ruleStr)
+	case hasAtKeyword(trimmed, "@scope"):
+		return parseScopeRule(ruleStr, ss)
 	case strings.HasPrefix(trimmed, "@layer"):
 		var existing []string
 		if ss != nil {
@@ -1485,12 +1583,12 @@ func parseMediaRule(ruleStr string, ss *Stylesheet) []Rule {
 			switch {
 			case strings.HasPrefix(innerTrimmed, "@media"):
 				rules = append(rules, parseMediaRule(innerRuleStr, mediaSinkLive)...)
-			case strings.HasPrefix(innerTrimmed, "@supports"):
-				supportsRules := parseSupportsRule(innerRuleStr, mediaSinkLive)
+			case strings.HasPrefix(innerTrimmed, "@supports"), hasAtKeyword(innerTrimmed, "@scope"):
+				conditionalRules := dispatchAtRuleIntoStylesheet(innerRuleStr, mediaSinkLive)
 				for _, mq := range mediaQueries {
-					for _, sr := range supportsRules {
-						sr.MediaQuery = mq
-						rules = append(rules, sr)
+					for _, r := range conditionalRules {
+						r.MediaQuery = mq
+						rules = append(rules, r)
 					}
 				}
 			default:
@@ -2257,8 +2355,8 @@ func parseConditionalBody(innerCSS string, ss *Stylesheet) []Rule {
 			if ss == nil {
 				// Nested at-rules require a stylesheet sink to register
 				// side-state on; without one, fall back to the conditional
-				// dispatcher only (so nested @media / @supports / @layer /
-				// @container still produce style rules).
+				// dispatcher only (so nested @media / @supports /
+				// @container / @scope still produce style rules).
 				switch {
 				case strings.HasPrefix(innerTrimmed, "@media"):
 					rules = append(rules, parseMediaRule(inner, nil)...)
@@ -2266,6 +2364,8 @@ func parseConditionalBody(innerCSS string, ss *Stylesheet) []Rule {
 					rules = append(rules, parseSupportsRule(inner, nil)...)
 				case strings.HasPrefix(innerTrimmed, "@container"):
 					rules = append(rules, parseContainerRule(inner)...)
+				case hasAtKeyword(innerTrimmed, "@scope"):
+					rules = append(rules, parseScopeRule(inner, nil)...)
 				}
 				continue
 			}
@@ -4025,8 +4125,8 @@ func parseSelector(selectorStr string) Selector {
 					}
 				}
 				specificity += maxSpec
-			} else if strings.HasPrefix(pc, "where(") {
-				// :where() has zero specificity
+			} else if strings.HasPrefix(pc, "where(") || pc == nestingParentPseudo {
+				// :where() and a parentless & have zero specificity
 			} else if strings.HasPrefix(pc, "nth-child(") || strings.HasPrefix(pc, "nth-last-child(") {
 				// Per CSS Selectors 4 §17, `:nth-child(An+B of S)` adds the
 				// pseudo-class's own 10 (class-tier) plus the maximum
@@ -4140,6 +4240,12 @@ func tokenizeSelector(s string) []string {
 }
 
 // parseSelectorPart parses a single selector part like "div.class1.class2#id[attr=value]"
+// isCompoundDelimiter reports whether c starts a simple selector after a
+// type selector, class or id in a compound: `.`, `#`, `[`, `:` or `&`.
+func isCompoundDelimiter(c byte) bool {
+	return c == '.' || c == '#' || c == '[' || c == ':' || c == '&'
+}
+
 func parseSelectorPart(s string) SelectorPart {
 	part := SelectorPart{
 		Classes:       make([]string, 0),
@@ -4156,10 +4262,10 @@ func parseSelectorPart(s string) SelectorPart {
 	i := 0
 
 	// Check for element (must come first)
-	if s[i] != '.' && s[i] != '#' && s[i] != '[' && s[i] != ':' {
+	if !isCompoundDelimiter(s[i]) {
 		// Read element name until we hit a special character
 		j := i
-		for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
+		for j < len(s) && !isCompoundDelimiter(s[j]) {
 			j++
 		}
 		part.Element = strings.ToLower(s[i:j])
@@ -4186,11 +4292,20 @@ func parseSelectorPart(s string) SelectorPart {
 
 	// Parse classes, ID, and attributes
 	for i < len(s) {
-		if s[i] == '.' {
+		if s[i] == '&' {
+			// The nesting selector with no parent rule (a top-level rule,
+			// or an @scope body): Blink's kPseudoParent with a null parent,
+			// which matches like :scope (selector_checker.cc:2532-2540)
+			// with no specificity (css_selector.cc:223-227 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A nested rule's `&`
+			// was replaced by its parent selector before parsing.
+			part.PseudoClasses = append(part.PseudoClasses, nestingParentPseudo)
+			i++
+		} else if s[i] == '.' {
 			// Class
 			i++
 			j := i
-			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
+			for j < len(s) && !isCompoundDelimiter(s[j]) {
 				j++
 			}
 			part.Classes = append(part.Classes, s[i:j])
@@ -4199,7 +4314,7 @@ func parseSelectorPart(s string) SelectorPart {
 			// ID
 			i++
 			j := i
-			for j < len(s) && s[j] != '.' && s[j] != '#' && s[j] != '[' && s[j] != ':' {
+			for j < len(s) && !isCompoundDelimiter(s[j]) {
 				j++
 			}
 			part.ID = s[i:j]
@@ -4222,7 +4337,7 @@ func parseSelectorPart(s string) SelectorPart {
 						j++ // include the closing paren
 						break
 					}
-				} else if depth == 0 && (s[j] == '.' || s[j] == '#' || s[j] == '[' || s[j] == ':') {
+				} else if depth == 0 && isCompoundDelimiter(s[j]) {
 					break
 				}
 				j++
