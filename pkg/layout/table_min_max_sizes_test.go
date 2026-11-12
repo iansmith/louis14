@@ -90,6 +90,30 @@ func TestTableLayoutWidthWithPercentColumn(t *testing.T) {
 	}
 }
 
+// twoColumnTable is a table #t with cells #c0 and #c1 whose only content
+// is an inline-block 20px and 60px wide, so its grid min/max-content are
+// 80px; style is appended to the table's style.
+func twoColumnTable(style string) string {
+	td := func(id, w string) string {
+		return `<td id="` + id + `" style="padding:0"><span style="display:inline-block;width:` + w + `;height:5px"></span></td>`
+	}
+	return `<table id="t" style="border-spacing:0;` + style + `"><tr>` + td("c0", "20px") + td("c1", "60px") + `</tr></table>`
+}
+
+// checkTwoColumnWidths lays out body and checks the widths of
+// twoColumnTable's table and cells.
+func checkTwoColumnWidths(t *testing.T, body string, table, c0, c1 float64) {
+	t.Helper()
+	root := layoutRootTestHTML(t, `<!DOCTYPE html><body style="margin:0">`+body)
+	tb, b0, b1 := findBoxByID(root, "t"), findBoxByID(root, "c0"), findBoxByID(root, "c1")
+	if tb == nil || b0 == nil || b1 == nil {
+		t.Fatal("missing #t/#c0/#c1")
+	}
+	if tb.Width != table || b0.Width != c0 || b1.Width != c1 {
+		t.Errorf("table/c0/c1 widths = %v/%v/%v, want %v/%v/%v", tb.Width, b0.Width, b1.Width, table, c0, c1)
+	}
+}
+
 // When the parent fixes the table's inline size (a stretched grid item, a
 // flex item that grew), that size is the assignable table inline size, not
 // capped at the grid max-content: ComputeAssignableTableInlineSize returns
@@ -98,26 +122,27 @@ func TestTableLayoutWidthWithPercentColumn(t *testing.T) {
 // columns (max-content 20 and 60) share the 400px in proportion to their
 // max-content (DistributeInlineSizeToComputedInlineSizeAuto): 100 and 300.
 func TestTableFixedInlineSizeIsAssignable(t *testing.T) {
-	td := func(id, w string) string {
-		return `<td id="` + id + `" style="padding:0"><span style="display:inline-block;width:` + w + `;height:5px"></span></td>`
-	}
-	table := func(style string) string {
-		return `<table id="t" style="border-spacing:0;` + style + `"><tr>` + td("c0", "20px") + td("c1", "60px") + `</tr></table>`
-	}
 	cases := []struct{ name, html string }{
-		{"stretched grid item", `<div style="display:grid;width:400px">` + table("") + `</div>`},
-		{"flex item that grew", `<div style="display:flex;width:400px">` + table("flex-grow:1") + `</div>`},
+		{"stretched grid item", `<div style="display:grid;width:400px">` + twoColumnTable("") + `</div>`},
+		{"flex item that grew", `<div style="display:flex;width:400px">` + twoColumnTable("flex-grow:1") + `</div>`},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			root := layoutRootTestHTML(t, `<!DOCTYPE html><body style="margin:0">`+c.html)
-			tb, c0, c1 := findBoxByID(root, "t"), findBoxByID(root, "c0"), findBoxByID(root, "c1")
-			if tb == nil || c0 == nil || c1 == nil {
-				t.Fatal("missing #t/#c0/#c1")
-			}
-			if tb.Width != 400 || c0.Width != 100 || c1.Width != 300 {
-				t.Errorf("table/c0/c1 widths = %v/%v/%v, want 400/100/300", tb.Width, c0.Width, c1.Width)
-			}
+		t.Run(c.name, func(t *testing.T) { checkTwoColumnWidths(t, c.html, 400, 100, 300) })
+	}
+}
+
+// An auto table's min-width enters the used table width before the columns
+// are distributed: ComputeUsedInlineSizeForTableFragment clamps the
+// fit-content width over the grid min/max to the table's min/max inline
+// sizes (length_utils.cc:527-598, :618-649 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and
+// ComputeAssignableTableInlineSize distributes that (table/
+// table_layout_algorithm.cc:236-257). A 200px min-width over columns of
+// max-content 20 and 60 grows them in proportion: 50 and 150.
+func TestTableMinWidthIsDistributed(t *testing.T) {
+	for _, display := range []string{"table", "inline-table"} {
+		t.Run(display, func(t *testing.T) {
+			checkTwoColumnWidths(t, `<div style="width:400px">`+twoColumnTable("display:"+display+";min-width:200px")+`</div>`, 200, 50, 150)
 		})
 	}
 }
