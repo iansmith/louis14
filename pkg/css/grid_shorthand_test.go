@@ -23,7 +23,7 @@ func TestGridShorthandSetsItsSixLonghands(t *testing.T) {
 			"grid-template-rows": "repeat(3, 10px)", "grid-template-columns": "repeat(2, 10px)"}},
 		{"grid: none", nil},
 		{"grid: auto-flow dense 20px / 10px 30px", map[string]string{
-			"grid-template-columns": "10px 30px", "grid-auto-flow": "row dense", "grid-auto-rows": "20px"}},
+			"grid-template-columns": "10px 30px", "grid-auto-flow": "dense", "grid-auto-rows": "20px"}},
 		{"grid: auto-flow / 10px", map[string]string{"grid-template-columns": "10px"}},
 		{"grid: 10px 20px / dense auto-flow 5px", map[string]string{
 			"grid-template-rows": "10px 20px", "grid-auto-flow": "column dense", "grid-auto-columns": "5px"}},
@@ -32,6 +32,8 @@ func TestGridShorthandSetsItsSixLonghands(t *testing.T) {
 		{`grid: "a b" 10px "c d" / 1fr 1fr`, map[string]string{
 			"grid-template-areas": `"a b" "c d"`, "grid-template-rows": "10px auto",
 			"grid-template-columns": "1fr 1fr"}},
+		{`grid: [p] "a" 10px [x] [y] "b"`, map[string]string{
+			"grid-template-areas": `"a" "b"`, "grid-template-rows": "[p] 10px [x y] auto"}},
 	}
 	for _, tt := range tests {
 		got := parseDeclarations(tt.decl).Declarations
