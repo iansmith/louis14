@@ -23,16 +23,10 @@ func calculateLeadingSpace(lineHeight, fontHeight float64) (overLeading, underLe
 }
 
 // blockLeadingSpace is calculateLeadingSpace mapped onto louis14's line
-// metrics, which measure ascent from the line's block-start. That is
-// line-over except in the flipped-lines writing mode
-// (WritingDirectionMode.IsFlippedLines), where the floored half goes to the
-// descent (block-end) side.
+// metrics, which measure from the line's block-start
+// (WritingDirectionMode.lineToBlock).
 func blockLeadingSpace(lineHeight, fontHeight float64, wdm WritingDirectionMode) (ascentLeading, descentLeading float64) {
-	over, under := calculateLeadingSpace(lineHeight, fontHeight)
-	if wdm.IsFlippedLines() {
-		return under, over
-	}
-	return over, under
+	return wdm.lineToBlock(calculateLeadingSpace(lineHeight, fontHeight))
 }
 
 // usedLineHeight is style's line height for a run at fontSize: the

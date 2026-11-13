@@ -50,21 +50,12 @@ func baseFontAscentFromSubLine(
 		fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
 		// CSS Fonts 4 §6.1: base font ascent for annotation placement uses the
 		// native (non-overridden) ascent. The override grows the line box's
-		// strut ascent (maxAscent), and annotationBlockTop is computed relative
-		// to that grown maxAscent. Using overridden baseFontAsc here would
+		// strut on the line-over side, and annotationBlockStart places the
+		// annotation from that grown line. Using overridden baseFontAsc here would
 		// double-count the override delta and push the annotation into the base.
-		fontPath := resolveFontPath(r.Item.Style, fonts)
-		var asc float64
-		if wdm.IsFlippedLines() {
-			// louis14 places vertical-lr annotations on the block-start
-			// (line-under) side, so this measures that side, less the
-			// em-height adjustment.
-			asc, _ = blockAscentDescent(fontSize, fontPath, nil, wdm, centralBaseline)
-			asc -= text.EmHeightOverAdjustment(fontSize, fontPath, centralBaseline)
-		} else {
-			// Annotations sit on the base's em height (text.EmHeightAscent).
-			asc = text.EmHeightAscent(fontSize, fontPath, centralBaseline)
-		}
+		// Annotations sit on the base's em height on its line-over side
+		// (text.EmHeightAscent), in every writing mode.
+		asc := text.EmHeightAscent(fontSize, resolveFontPath(r.Item.Style, fonts), centralBaseline)
 		if asc > maxAscent {
 			maxAscent = asc
 		}
@@ -171,6 +162,9 @@ func EmphasisMarkFontSize(baseFontSize float64) float64 {
 // text-emphasis-line-height refs' ruby annotation rows produce the identical
 // number and the test/ref renders match exactly.
 //
+// The result is measured from the baseline toward line-over, which is
+// block-end in vertical-lr; the caller grows that side (growLineOverSide).
+//
 // The over/under side is intentionally NOT consulted: louis14 paints
 // emphasis-position:under with the over formula until ruby-position:under
 // lands (see the TODO(Phase11) block in render.go drawTextEmphasis), and the
@@ -204,7 +198,7 @@ func emphasisMarkAscentFromLine(
 		fontSize, _, _, _, _ := fontPropsFromStyle(style)
 		markFontSize := EmphasisMarkFontSize(fontSize)
 		fontPath := resolveFontPath(style, fonts)
-		baseAsc, _ := blockAscentDescent(fontSize, fontPath, nil, wdm, centralBaseline)
+		baseAsc, _ := lineRelativeAscentDescent(fontSize, fontPath, nil, centralBaseline)
 		markHeight := markFontSize
 		if !centralBaseline {
 			markAsc, markDesc := text.NormalizedTypoAscentAndDescent(markFontSize, fontPath)

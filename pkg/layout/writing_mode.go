@@ -91,6 +91,16 @@ func (wdm WritingDirectionMode) IsFlippedLines() bool {
 	return wdm.WM == WritingModeVerticalLR
 }
 
+// lineToBlock maps a line-relative pair (over, under) onto the line's
+// block-start and block-end sides: over is block-start except in the
+// flipped-lines mode, where it is block-end.
+func (wdm WritingDirectionMode) lineToBlock(over, under float64) (blockStart, blockEnd float64) {
+	if wdm.IsFlippedLines() {
+		return under, over
+	}
+	return over, under
+}
+
 // IsSideways returns true for sideways-rl and sideways-lr writing modes.
 // Per CSS Writing Modes 3 §5.1, these modes force text-orientation: sideways
 // regardless of the computed value: all glyphs are rotated 90° from the
