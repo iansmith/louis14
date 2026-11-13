@@ -1,6 +1,8 @@
 package layout
 
 import (
+	"math"
+
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/html"
@@ -2398,7 +2400,7 @@ func createLineBoxEx(
 	// element" (the assertion the first-line-line-height WPT reftests check by
 	// modelling ::first-line as a `<span>`): so its background covers the
 	// line's CONTENT inline extent (line.Width starting at the text-align
-	// offset) at the first-line font's em box (CSS 2.1 §10.6.1: inline content
+	// offset) at the first-line font box (CSS 2.1 §10.6.1: inline content
 	// area is font-derived, not line-height), anchored at the baseline like the
 	// inline span-background pre-pass below — the genuine WPT references model
 	// ::first-line as an inline `<span>`, so this band must match that span's
@@ -2449,11 +2451,11 @@ func createLineBoxEx(
 	}
 	if firstLineStyle != nil && hasVisibleInlinePaint(firstLineStyle) {
 		// Same band geometry as an inline span background (see the Step 3a
-		// pre-pass below): max(em box, line box), em box baseline-anchored.
-		flFontSize, flAscent := inlineAlignmentAscent(firstLineStyle, fonts, wdm, centralBaseline)
+		// pre-pass below): max(font box, line box), font box baseline-anchored.
+		_, flAscent, flTextHeight := textFragmentMetrics(firstLineStyle, fonts, wdm, centralBaseline)
 		flBlockSize, flBlockOffset := lineHeight, 0.0
-		if flFontSize >= lineHeight {
-			flBlockSize, flBlockOffset = flFontSize, maxAscent-flAscent
+		if flTextHeight >= lineHeight {
+			flBlockSize, flBlockOffset = flTextHeight, maxAscent-flAscent
 		}
 		bgFrag := &PhysicalFragment{
 			Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
@@ -2607,23 +2609,23 @@ func createLineBoxEx(
 				spanInlineSize = 0
 			}
 			blockOverhang := geom.Border.BlockStart + geom.Padding.BlockStart
-			// An inline background covers at least the font's em box (CSS 2.1
+			// An inline background covers at least the font box (CSS 2.1
 			// §10.6.1: the content area is font-derived, not line-height) and
-			// grows to the line box when line-height exceeds it — max(em box,
+			// grows to the line box when line-height exceeds it — max(font box,
 			// line box). When line-height is SMALLER than the font (e.g.
-			// line-height:0) the em box still paints: the t32-opacity-offscreen
-			// WPT tests need a full-em band even though the line box collapsed.
+			// line-height:0) the font box still paints: the t32-opacity-offscreen
+			// WPT tests need a full font-box band even though the line box collapsed.
 			// When line-height is normal/larger, the band fills the line box,
 			// matching the block's own line height and how a ::first-line or
-			// sibling-span background covered it. The em box is baseline-
+			// sibling-span background covered it. The font box is baseline-
 			// anchored at maxAscent − spanAscent (Blink
 			// InlineBoxState::ComputeTextMetrics, inline_box_state.cc:105-132 @
 			// 4883d11fef); the line box is anchored at line top.
-			spanFontSize, spanAscent := inlineAlignmentAscent(span.style, fonts, wdm, centralBaseline)
-			spanEmBox := spanFontSize >= lineHeight
+			_, spanAscent, spanTextHeight := textFragmentMetrics(span.style, fonts, wdm, centralBaseline)
+			spanFontBox := spanTextHeight >= lineHeight
 			spanContentBlock := lineHeight
-			if spanEmBox {
-				spanContentBlock = spanFontSize
+			if spanFontBox {
+				spanContentBlock = spanTextHeight
 			}
 			spanBlockSize := blockOverhang + spanContentBlock + geom.Padding.BlockEnd + geom.Border.BlockEnd
 			// Inline span background fragments must paint in flow order (behind
@@ -2661,7 +2663,7 @@ func createLineBoxEx(
 			}
 			// Anchor the band's content top at maxAscent − spanAscent — the
 			// same place the text pass puts this span's text fragments
-			// (blockPos = maxAscent − ascent), so band and glyph em boxes
+			// (blockPos = maxAscent − ascent), so band and glyph font boxes
 			// coincide.
 			//
 			// CSS 2.1 §10.8.1: vertical-align: <length> on an inline element
@@ -2669,10 +2671,10 @@ func createLineBoxEx(
 			// offset, matching the shift applied to its text children. Use
 			// the cumulative offset so nested spans stack correctly.
 			//
-			// Anchor: an em box sits on the baseline (maxAscent − spanAscent);
+			// Anchor: a font box sits on the baseline (maxAscent − spanAscent);
 			// a line box fills the line from its top.
 			spanBlockOffset := -blockOverhang - span.cumulativeVAOffs
-			if spanEmBox {
+			if spanFontBox {
 				spanBlockOffset += maxAscent - spanAscent
 			}
 			pendingBg = append(pendingBg, pendingBgFrag{
@@ -2829,19 +2831,12 @@ func createLineBoxEx(
 	// inlineBoxAsDesc computes an inline box's ascent/descent contribution the
 	// same way computeLineMetricsEx does for an OpenTag: font ascent/descent
 	// plus half-leading from line-height. Used to derive subtree-root metrics.
-	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 	inlineBoxAsDesc := func(style *css.Style) (asc, desc float64) {
 		if style == nil {
 			return 0, 0
 		}
 		fs, _, _, _, _ := fontPropsFromStyle(style)
-		if centralBaseline {
-			asc, desc = fs/2, fs/2
-		} else {
-			fontPath := resolveFontPath(style, fonts)
-			asc = alignmentAscentFromFont(sidewaysVLR, fs, fontPath, fonts.Registry)
-			desc = alignmentDescentFromFont(sidewaysVLR, fs, fontPath, fonts.Registry)
-		}
+		asc, desc = blockAscentDescent(fs, resolveFontPath(style, fonts), fonts.Registry, wdm, centralBaseline)
 		lineHt := usedLineHeight(style, fs, fonts, centralBaseline, func() string { return resolveFontPath(style, fonts) })
 		ascLeading, descLeading := blockLeadingSpace(lineHt, asc+desc, wdm)
 		asc += ascLeading
@@ -2907,11 +2902,11 @@ func createLineBoxEx(
 			// draws the glyph at box.Y + nativeAscent; if we used the overridden
 			// ascent here, blockPos = maxAscent - overriddenAscent would shift the
 			// fragment up, making the glyph land at a different visual position
-			// than the reference. inlineAlignmentAscent passes a nil registry so
+			// than the reference. textFragmentMetrics passes a nil registry so
 			// the native font ascent is used for positioning, matching Blink's
 			// text_fragment_painter.cc paint path which reads metrics.Ascent from
 			// the underlying font data directly.
-			fontSize, ascent := inlineAlignmentAscent(rStyle, fonts, wdm, centralBaseline)
+			fontSize, ascent, textHeight := textFragmentMetrics(rStyle, fonts, wdm, centralBaseline)
 
 			// Default: baseline-align the text fragment so its baseline sits
 			// at the line's maxAscent.
@@ -2982,7 +2977,7 @@ func createLineBoxEx(
 				frag := &PhysicalFragment{
 					Size: oldSizeToGeom(ToPhysicalSize(LogicalSize{
 						InlineSize: pieceInline,
-						BlockSize:  fontSize,
+						BlockSize:  textHeight,
 					}, wdm.WM)),
 					Type:             FragmentText,
 					TextContent:      piece,
@@ -3088,7 +3083,7 @@ func createLineBoxEx(
 					maxAscent,
 					itemsData.TextContent,
 					r.RubyColumn.RubyAlign,
-					wdm, fonts, centralBaseline, sidewaysVLR,
+					wdm, fonts, centralBaseline,
 					&lineBox,
 				)
 			}
@@ -3282,59 +3277,55 @@ func createLineBoxEx(
 	return result.Fragment, lineHeight, maxAscent, alignOffset, residualSpanStack, lineOOFCandidates
 }
 
-// needsSidewaysVLRBaselineSwap reports whether alphabetic ascent/descent must
-// be swapped for line-metric and text-placement purposes. This applies only to
-// writing-mode: vertical-lr combined with text-orientation: sideways: the
-// glyphs are rotated 90° CW and the block-start side is on the LEFT, so the
-// alphabetic baseline lands at the typographic descent from block-start (not
-// ascent). sideways-lr uses CCW rotation and sideways-rl / vertical-rl +
-// sideways place block-start on the RIGHT, so those keep the normal mapping.
-// See CSS Writing Modes 3 §4.3 and §5.1.
-func needsSidewaysVLRBaselineSwap(wdm WritingDirectionMode, centralBaseline bool) bool {
-	return wdm.WM == WritingModeVerticalLR && !centralBaseline
-}
-
-// alignmentAscentFromFont returns the distance from the line's block-start to
-// the alphabetic baseline for a font. When swap is true (VLR+sideways per
-// needsSidewaysVLRBaselineSwap), this returns the typographic descent.
-// reg is passed through to FontAscentFromFont / FontDescentFromFont for
-// CSS Fonts 4 metric-override support.
-func alignmentAscentFromFont(swap bool, fontSize float64, fontPath string, reg *text.FontRegistry) float64 {
-	if swap {
-		return text.FontDescentFromFont(fontSize, fontPath, reg)
-	}
-	return text.FontAscentFromFont(fontSize, fontPath, reg)
-}
-
-// inlineAlignmentAscent returns the font size (the inline em-box block size)
-// and the baseline-alignment ascent for an inline style — the shared metric
-// source for text-fragment block positioning and inline background bands
-// (both anchor at line maxAscent − ascent). Passes a nil registry to
-// alignmentAscentFromFont so CSS Fonts 4 ascent-override affects only the
-// strut, not per-item placement (see the text-pass comment in
-// createLineBoxEx; mirrors Blink's text_fragment_painter.cc reading native
-// font metrics).
-func inlineAlignmentAscent(style *css.Style, fonts text.FontConfig, wdm WritingDirectionMode, centralBaseline bool) (fontSize, ascent float64) {
-	fontSize, _, _, _, _ = fontPropsFromStyle(style)
+// blockAscentDescent returns a font's ascent and descent measured from the
+// baseline toward the line's block-start and block-end edges. On the
+// alphabetic baseline these are the font's integer ascent and descent; on the
+// central baseline Blink splits FontMetrics::Height() as Height() -
+// Height() / 2 on the line-over side and Height() / 2 on the line-under side
+// (FontMetrics::IntAscentInternal, platform/fonts/font_metrics.cc:193-194 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the split InlineBoxState::
+// ComputeTextMetrics uses for both the line box and the text fragment
+// (core/layout/inline/inline_box_state.cc:130-136 @ same SHA). Line-over is
+// block-end in the flipped-lines mode (vertical-lr), so there the two swap.
+func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistry, wdm WritingDirectionMode, centralBaseline bool) (ascent, descent float64) {
+	ascent = text.FontAscentFromFont(fontSize, fontPath, reg)
+	descent = text.FontDescentFromFont(fontSize, fontPath, reg)
 	if centralBaseline {
-		// CSS Writing Modes 3 §4.3: in vertical modes with central
-		// baseline, use fontSize / 2.
-		return fontSize, fontSize / 2
+		height := ascent + descent
+		descent = CentralBaselineUnderSide(height)
+		ascent = height - descent
 	}
-	swap := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
-	return fontSize, alignmentAscentFromFont(swap, fontSize, resolveFontPath(style, fonts), nil)
+	if wdm.IsFlippedLines() {
+		ascent, descent = descent, ascent
+	}
+	return ascent, descent
 }
 
-// alignmentDescentFromFont returns the distance from the alphabetic baseline
-// to the line's block-end for a font. When swap is true, this returns the
-// typographic ascent.
-// reg is passed through to FontAscentFromFont / FontDescentFromFont for
-// CSS Fonts 4 metric-override support.
-func alignmentDescentFromFont(swap bool, fontSize float64, fontPath string, reg *text.FontRegistry) float64 {
-	if swap {
-		return text.FontAscentFromFont(fontSize, fontPath, reg)
-	}
-	return text.FontDescentFromFont(fontSize, fontPath, reg)
+// CentralBaselineUnderSide is the part of a font box of the given height on
+// the line-under side of the central baseline: Height() / 2 in integer
+// arithmetic (FontMetrics::Descent / IntAscentInternal,
+// platform/fonts/font_metrics.cc:193-194 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). In vertical text the line-under
+// side is the physical left, so it is also the central baseline's offset from
+// a text fragment's left edge.
+func CentralBaselineUnderSide(height float64) float64 {
+	return math.Floor(height / 2)
+}
+
+// textFragmentMetrics returns a text fragment's font size, the distance from
+// its block-start edge to the baseline, and its block size. Blink sizes a
+// text fragment from the primary font's integer metrics rather than the em
+// box: text_top = -ascent, text_height = ascent + descent
+// (InlineBoxState::ComputeTextMetrics, core/layout/inline/inline_box_state.cc:
+// 130-136 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b; placed by
+// LogicalLineBuilder, logical_line_builder.cc:262-266 @ same SHA). This box
+// (ascent + descent around the baseline) is the "font box" that inline
+// background bands also use. The nil registry keeps CSS Fonts 4
+// ascent-override out of per-item placement: it sizes only the strut.
+func textFragmentMetrics(style *css.Style, fonts text.FontConfig, wdm WritingDirectionMode, centralBaseline bool) (fontSize, ascent, height float64) {
+	fontSize, _, _, _, _ = fontPropsFromStyle(style)
+	ascent, descent := blockAscentDescent(fontSize, resolveFontPath(style, fonts), nil, wdm, centralBaseline)
+	return fontSize, ascent, ascent + descent
 }
 
 // computeLineMetrics is the backward-compatible wrapper that uses wdm.UsesCentralBaseline().
@@ -3359,7 +3350,6 @@ func computeLineMetrics(line *LineInfo, wdm WritingDirectionMode, fonts text.Fon
 // An empty string disables coverage-aware resolution (safe fallback).
 func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.FontConfig, centralBaseline bool, parentStyle *css.Style, textContent string) (maxAscent, maxDescent float64) {
 	var maxTopBottom float64 // tallest vertical-align:top/bottom element
-	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 
 	// CSS 2.1 §10.8.1: "the minimum height consists of a minimum height
 	// above the baseline and a minimum height below it, exactly as if each
@@ -3367,15 +3357,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 	// and line height properties." This is the "strut".
 	if parentStyle != nil {
 		fontSize, _, _, _, _ := fontPropsFromStyle(parentStyle)
-		var strutAscent, strutDescent float64
-		if centralBaseline {
-			strutAscent = fontSize / 2
-			strutDescent = fontSize / 2
-		} else {
-			fontPath := resolveStrutFontPath(parentStyle, fonts)
-			strutAscent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
-			strutDescent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
-		}
+		strutAscent, strutDescent := blockAscentDescent(fontSize, resolveStrutFontPath(parentStyle, fonts), fonts.Registry, wdm, centralBaseline)
 		// CSS 2.1 §10.8.1: line-height: normal uses the font's recommended
 		// line height rather than a fixed 1.2× multiplier. This ensures the
 		// strut height matches the font's built-in metrics.
@@ -3429,16 +3411,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				topBottomDepth++
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
-			var ascent, descent float64
-			if centralBaseline {
-				// CSS Writing Modes 3 §4.3: central baseline = fontSize / 2.
-				ascent = fontSize / 2
-				descent = fontSize / 2
-			} else {
-				fontPath := resolveFontPath(rStyle, fonts)
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
-				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
-			}
+			ascent, descent := blockAscentDescent(fontSize, resolveFontPath(rStyle, fonts), fonts.Registry, wdm, centralBaseline)
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
 			// and reduces the inline box's ascent/descent contribution.
@@ -3473,19 +3446,10 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				isInTopBottom = va == css.VerticalAlignTop || va == css.VerticalAlignBottom
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
-			var ascent, descent float64
-			if centralBaseline {
-				// CSS Writing Modes 3 §4.3: central baseline = fontSize / 2.
-				ascent = fontSize / 2
-				descent = fontSize / 2
-			} else {
-				// Use coverage-aware resolution: a face whose unicode-range
-				// excludes the run's first character is skipped, mirroring
-				// Blink's per-character font selection.
-				fontPath := resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd)
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
-				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
-			}
+			// Use coverage-aware resolution: a face whose unicode-range
+			// excludes the run's first character is skipped, mirroring
+			// Blink's per-character font selection.
+			ascent, descent := blockAscentDescent(fontSize, resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd), fonts.Registry, wdm, centralBaseline)
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
 			// and reduces the inline box's ascent/descent contribution.
@@ -3521,15 +3485,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				continue
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
-			var ascent, descent float64
-			if centralBaseline {
-				ascent = fontSize / 2
-				descent = fontSize / 2
-			} else {
-				fontPath := resolveFontPath(rStyle, fonts)
-				ascent = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
-				descent = alignmentDescentFromFont(sidewaysVLR, fontSize, fontPath, fonts.Registry)
-			}
+			ascent, descent := blockAscentDescent(fontSize, resolveFontPath(rStyle, fonts), fonts.Registry, wdm, centralBaseline)
 			lineHt := usedLineHeight(rStyle, fontSize, fonts, centralBaseline, func() string { return resolveFontPath(rStyle, fonts) })
 			ascLeading, descLeading := blockLeadingSpace(lineHt, ascent+descent, wdm)
 			ascent += ascLeading

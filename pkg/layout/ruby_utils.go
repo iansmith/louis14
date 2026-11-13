@@ -31,7 +31,6 @@ func baseFontAscentFromSubLine(
 	if line == nil {
 		return 0
 	}
-	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 	var maxAscent float64
 	for _, r := range line.Results {
 		if r.Item == nil || r.Item.Type != InlineItemText || r.Item.Style == nil {
@@ -56,15 +55,11 @@ func baseFontAscentFromSubLine(
 		// double-count the override delta and push the annotation into the base.
 		fontPath := resolveFontPath(r.Item.Style, fonts)
 		var asc float64
-		if wdm.WM == WritingModeVerticalLR {
+		if wdm.IsFlippedLines() {
 			// louis14 places vertical-lr annotations on the block-start
 			// (line-under) side, so this measures that side, less the
 			// em-height adjustment.
-			if centralBaseline {
-				asc = fontSize / 2
-			} else {
-				asc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
-			}
+			asc, _ = blockAscentDescent(fontSize, fontPath, nil, wdm, centralBaseline)
 			asc -= text.EmHeightOverAdjustment(fontSize, fontPath, centralBaseline)
 		} else {
 			// Annotations sit on the base's em height (text.EmHeightAscent).
@@ -80,7 +75,7 @@ func baseFontAscentFromSubLine(
 // annotationEmHeightFromSubLine returns the maximum font typo ascent and
 // descent across all text items in a ruby annotation sub-line, EXCLUDING
 // CSS line-height half-leading and EXCLUDING the integer rounding that
-// `computeLineMetricsEx` applies via `alignmentAscentFromFont`.
+// `computeLineMetricsEx` applies via `blockAscentDescent`.
 //
 // Mirrors Blink's `ComputeEmHeight(line_item)` at
 // `core/layout/inline/ruby_utils.cc:78-126 @
@@ -93,7 +88,7 @@ func baseFontAscentFromSubLine(
 //     asc+desc) to the ascent and descent for `line-height: normal`. Blink's
 //     annotation positioning uses font em-height only; the leading is
 //     a property of the OUTER line's block metrics.
-//  2. No integer rounding. computeLineMetricsEx → alignmentAscentFromFont
+//  2. No integer rounding. computeLineMetricsEx → blockAscentDescent
 //     → FontAscentFromFont applies `math.Round`. Blink's annotation
 //     positioning uses sub-pixel `FixedAscent`/`FixedDescent`; the
 //     rounding to integer ascent (`int_ascent_` via `lroundf`) happens
@@ -110,7 +105,7 @@ func annotationEmHeightFromSubLine(
 	if line == nil {
 		return 0, 0
 	}
-	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
+	sidewaysVLR := wdm.IsFlippedLines() && !centralBaseline
 	for _, r := range line.Results {
 		if r.Item == nil || r.Item.Type != InlineItemText || r.Item.Style == nil {
 			continue
@@ -192,7 +187,6 @@ func emphasisMarkAscentFromLine(
 		return 0
 	}
 	isHorizontal := !wdm.IsVertical()
-	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 	var needed float64
 	for _, r := range line.Results {
 		if r.Item == nil || r.Item.Type != InlineItemText {
@@ -209,13 +203,10 @@ func emphasisMarkAscentFromLine(
 		}
 		fontSize, _, _, _, _ := fontPropsFromStyle(style)
 		markFontSize := EmphasisMarkFontSize(fontSize)
-		var baseAsc, markHeight float64
-		if centralBaseline {
-			baseAsc = fontSize / 2
-			markHeight = markFontSize
-		} else {
-			fontPath := resolveFontPath(style, fonts)
-			baseAsc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
+		fontPath := resolveFontPath(style, fonts)
+		baseAsc, _ := blockAscentDescent(fontSize, fontPath, nil, wdm, centralBaseline)
+		markHeight := markFontSize
+		if !centralBaseline {
 			markAsc, markDesc := text.NormalizedTypoAscentAndDescent(markFontSize, fontPath)
 			markHeight = markAsc + markDesc
 		}
@@ -223,7 +214,7 @@ func emphasisMarkAscentFromLine(
 		// less its annotation ascent (ruby_utils.cc:775-776 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which lowers it by the
 		// em-height adjustment.
-		baseAsc -= text.EmHeightOverAdjustment(fontSize, resolveFontPath(style, fonts), centralBaseline)
+		baseAsc -= text.EmHeightOverAdjustment(fontSize, fontPath, centralBaseline)
 		if n := baseAsc + markHeight; n > needed {
 			needed = n
 		}

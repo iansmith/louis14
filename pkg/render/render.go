@@ -5601,7 +5601,8 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		for i, ch := range []rune(text) {
 			charStr := string(ch)
 			charW := r.measureTextStr(charStr, fontID, layer.featureInputs())
-			xOffset := (box.Width - charW) / 2
+			// Center the glyph on the central baseline.
+			xOffset := layout.CentralBaselineUnderSide(box.Width) - charW/2
 			if xOffset < 0 {
 				xOffset = 0
 			}
