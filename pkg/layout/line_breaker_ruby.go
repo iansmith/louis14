@@ -60,6 +60,7 @@ func (lb *LineBreaker) CreateSubLineInfo(startIdx, endIdx int) *LineInfo {
 		return &LineInfo{}
 	}
 	subData := &InlineItemsData{
+		ContainerStyle:  lb.itemsData.ContainerStyle,
 		TextContent:     lb.itemsData.TextContent,
 		Items:           lb.itemsData.Items[startIdx:endIdx],
 		RuneLevels:      lb.itemsData.RuneLevels,

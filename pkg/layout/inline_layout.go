@@ -375,39 +375,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// Phase 2: Create line breaker.
 	fonts := bla.ctx.FontConfig
 
-	// CSS 2.1 §16.6: white-space: nowrap / pre prevent soft wrapping.
-	// CSS Text 4 §3.4: text-wrap: nowrap is equivalent in line-break behavior.
-	// Use unlimited available width so the line breaker produces a single line
-	// that may overflow the container (overflow:hidden will clip it).
+	// Lines are broken at the content inline size; text whose style does
+	// not wrap is never broken inside (LineBreaker's auto_wrap_).
 	lineAvailableWidth := contentInlineSize
-	noWrap := false
-	if bla.style != nil {
-		ws := bla.style.GetWhiteSpace()
-		if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
-			noWrap = true
-		}
-		if !noWrap && bla.style.GetTextWrap() == "nowrap" {
-			noWrap = true
-		}
-	}
-	// Also check inline items: if any text item's style has nowrap, apply.
-	if !noWrap {
-		for _, item := range itemsData.Items {
-			if item.Type == InlineItemText && item.Style != nil {
-				ws := item.Style.GetWhiteSpace()
-				if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
-					noWrap = true
-				}
-				if !noWrap && item.Style.GetTextWrap() == "nowrap" {
-					noWrap = true
-				}
-				break
-			}
-		}
-	}
-	if noWrap {
-		lineAvailableWidth = 1e9
-	}
 
 	// The lines' space; the balance probe breaks lines in it too, only
 	// narrowing its available inline size.
@@ -418,7 +388,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// that still produces the same number of lines. Per spec, only apply
 	// when the line count is ≤ 4. This mirrors Blink's text balancing in
 	// InlineLayoutAlgorithm.
-	if !noWrap && bla.style != nil && bla.style.GetTextWrap() == "balance" {
+	if bla.style != nil && shouldAutoWrap(bla.style) && bla.style.GetTextWrap() == "balance" {
 		normalLineCount := countLinesForWidth(itemsData, bla.ctx, lineSpace, lineAvailableWidth, fonts, contentInlineSize)
 		if normalLineCount >= 2 && normalLineCount <= 4 {
 			// Binary search: find the narrowest width that still yields
@@ -611,16 +581,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			lineAvailableInline = 1
 		}
 
-		// lineVisualInline is the actual container width used for text alignment
-		// and line box sizing. It is always the physical container width, not
-		// the inflated value used for noWrap line breaking.
+		// lineVisualInline is the container width used for text alignment
+		// and line box sizing.
 		lineVisualInline := lineAvailableInline
-
-		// CSS 2.1 §16.6: white-space: nowrap / pre — override available width
-		// to prevent soft wrapping, allowing text to overflow the container.
-		if noWrap {
-			lineAvailableInline = 1e9
-		}
 
 		// Set available width for the line breaker, including text-indent on first line.
 		if isFirstLine && textIndent != 0 {
@@ -1382,7 +1345,7 @@ type inlineFloatSpaceSizes struct {
 
 // inlineFloatSizes computes inlineFloatSpaceSizes once for a block's inline
 // floats: newLineSpace at the content inline size (Blink's child available
-// inline size, not a nowrap line's unbounded width).
+// inline size, not the line's available width).
 func (bla *BlockLayoutAlgorithm) inlineFloatSizes(contentInlineSize float64) inlineFloatSpaceSizes {
 	lineSpace := bla.newLineSpace(contentInlineSize, contentInlineSize, nil)
 	return inlineFloatSpaceSizes{

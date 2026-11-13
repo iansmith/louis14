@@ -312,8 +312,8 @@ func TestOrthogonalAvailableBlockFromContainerGeometry(t *testing.T) {
 }
 
 // An atomic inline is laid out in its container's space, the content box:
-// the line's own width (text-wrap:balance narrowing, nowrap's unbounded
-// width, a float beside it, text-indent) shapes only the line opportunity
+// the line's own width (text-wrap:balance narrowing, a float beside it,
+// text-indent) shapes only the line opportunity
 // (BlockNode::LayoutAtomicInline in the parent space, block_node.cc;
 // LineBreaker::HandleAtomicInline, inline/line_breaker.cc:3042-3160 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its ten 40px children wrap at

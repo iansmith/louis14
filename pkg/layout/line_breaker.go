@@ -3,6 +3,7 @@ package layout
 import (
 	"math"
 	"slices"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -211,6 +212,96 @@ type LineBreaker struct {
 	// resolution instead of repeating it. Only populated while
 	// useFirstLineStyle is set (the first formatted line).
 	firstLineMergeCache map[*css.Style]*css.Style
+
+	// autoWrapAfter[i] is auto_wrap_ once item i is handled: the current
+	// style wraps (see autoWrapAfterItem). Built on first use.
+	autoWrapAfter []bool
+}
+
+// shouldAutoWrap reports whether style lets its lines wrap: Blink's
+// ComputedStyle::ShouldWrapLine (text-wrap-mode is not nowrap;
+// core/style/computed_style.h:2345-2347 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which white-space: nowrap
+// and pre set. louis14 parses no text-wrap-mode longhand, so it reads
+// white-space and the text-wrap shorthand.
+func shouldAutoWrap(style *css.Style) bool {
+	if style == nil {
+		return true
+	}
+	if ws := style.GetWhiteSpace(); ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
+		return false
+	}
+	return style.GetTextWrap() != "nowrap"
+}
+
+// autoWrapAfterItem reports auto_wrap_ once item i is handled. Blink sets it
+// from the current style (SetCurrentStyleForce, inline/line_breaker.cc:
+// 4549-4553 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which a text item
+// and an open tag set to their own style and a close tag returns to its
+// parent's (HandleText; HandleOpenTag :3988; HandleCloseTag :4023); other
+// items leave it. The line starts at the container's style (:553, :869).
+// louis14 rewinds by item index, so the sequence is computed once over the
+// items rather than tracked as the breaker goes.
+func (lb *LineBreaker) autoWrapAfterItem(i int) bool {
+	if lb.autoWrapAfter == nil {
+		items := lb.itemsData.Items
+		lb.autoWrapAfter = make([]bool, len(items))
+		current := lb.itemsData.ContainerStyle
+		var open []*css.Style
+		for j, item := range items {
+			switch item.Type {
+			case InlineItemText, InlineItemOpenTag:
+				if item.Type == InlineItemOpenTag {
+					open = append(open, current)
+				}
+				if item.Style != nil {
+					current = item.Style
+				}
+			case InlineItemCloseTag:
+				if n := len(open); n > 0 {
+					current = open[n-1]
+					open = open[:n-1]
+				}
+			}
+			lb.autoWrapAfter[j] = shouldAutoWrap(current)
+		}
+	}
+	if i < 0 || i >= len(lb.autoWrapAfter) {
+		return shouldAutoWrap(lb.itemsData.ContainerStyle)
+	}
+	return lb.autoWrapAfter[i]
+}
+
+// itemIndexAt returns the index of the item whose text holds offset, or -1.
+func (lb *LineBreaker) itemIndexAt(offset int) int {
+	items := lb.itemsData.Items
+	i := sort.Search(len(items), func(j int) bool { return items[j].EndOffset > offset })
+	if i < len(items) && items[i].StartOffset <= offset {
+		return i
+	}
+	return -1
+}
+
+// autoWrapsAt reports whether the line may break at offset, a boundary
+// after a breakable character: the style in effect there wraps. That is the
+// style after the item holding the character, or, when an open tag follows
+// that item at offset, the open tag's: HandleOpenTag recomputes the
+// previous text's can_break_after when it turns auto_wrap_ on
+// (inline/line_breaker.cc:3987-3996 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a close tag does not after a
+// breakable space (HandleCloseTag :4061-4062).
+func (lb *LineBreaker) autoWrapsAt(offset int) bool {
+	i := lb.itemIndexAt(offset - 1)
+	if i < 0 || lb.autoWrapAfterItem(i) {
+		return true
+	}
+	items := lb.itemsData.Items
+	for j := i + 1; j < len(items) && items[j].StartOffset == offset && items[j].Type == InlineItemOpenTag; j++ {
+		if lb.autoWrapAfterItem(j) {
+			return true
+		}
+	}
+	return false
 }
 
 // measuringStyle returns the style the breaker should measure item with. On
@@ -323,7 +414,7 @@ func (lb *LineBreaker) startsAfterBreakOpportunity(textStart int) bool {
 		return true
 	}
 	r, _ := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:textStart])
-	return isBreakOpportunityRune(r)
+	return isBreakOpportunityRune(r) && lb.autoWrapsAt(textStart)
 }
 
 // isBreakOpportunityRune reports whether r itself marks a line-break
@@ -387,7 +478,7 @@ func (lb *LineBreaker) gluedRunStartsLine(line *LineInfo, textStart int) bool {
 func (lb *LineBreaker) lastBreakOpportunityAtOrBefore(offset int) int {
 	for offset > 0 {
 		r, size := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:offset])
-		if isBreakOpportunityRune(r) {
+		if isBreakOpportunityRune(r) && lb.autoWrapsAt(offset) {
 			break
 		}
 		offset -= size
@@ -609,18 +700,7 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 	remaining := lb.availableWidth - lb.position
 	if fullWidth <= remaining || lb.mode == LineBreakerMaxContent {
 		// Fits — add the full text.
-		line.Results = append(line.Results, InlineItemResult{
-			Item:       item,
-			ItemIndex:  lb.currentItemIndex,
-			TextStart:  textStart,
-			TextEnd:    textEnd,
-			InlineSize: fullWidth,
-		})
-		line.HasContent = true
-		lb.position += fullWidth
-		line.Width = lb.position
-		lb.currentTextOffset = textEnd
-		return false
+		return lb.addWholeText(item, line, textStart, textEnd, fullWidth)
 	}
 
 	// CSS 2.1 §16.6.1: trailing whitespace is always stripped at end-of-line.
@@ -648,20 +728,21 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 				}
 			}
 			if strippedWidth <= remaining {
-				line.Results = append(line.Results, InlineItemResult{
-					Item:       item,
-					ItemIndex:  lb.currentItemIndex,
-					TextStart:  textStart,
-					TextEnd:    textEnd,
-					InlineSize: fullWidth,
-				})
-				line.HasContent = true
-				lb.position += fullWidth
-				line.Width = lb.position
-				lb.currentTextOffset = textEnd
-				return false
+				return lb.addWholeText(item, line, textStart, textEnd, fullWidth)
 			}
 		}
+	}
+
+	// Text whose style does not wrap is never broken inside: it goes on
+	// the line whole, after the line ends at its last break opportunity if
+	// it has one, else overflowing (HandleText, inline/line_breaker.cc:
+	// 1478-1495; overflow found at the next item, :1355-1370, and handled
+	// by HandleOverflow @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if !lb.autoWrapAfterItem(lb.currentItemIndex) {
+		if line.HasContent && lb.rewindToBreakOpportunity(line) {
+			return true
+		}
+		return lb.addWholeText(item, line, textStart, textEnd, fullWidth)
 	}
 
 	// Read the text-wrapping properties. Precedence mirrors Blink
@@ -711,6 +792,23 @@ func (lb *LineBreaker) handleText(item *InlineItem, line *LineInfo) bool {
 
 	// Normal mode: find where to break.
 	return lb.breakTextAtWord(item, content, textStart, textEnd, fontSize, fontPath, features, line, remaining, wordBreak, overflowWrap, hyphens)
+}
+
+// addWholeText puts text item's [textStart, textEnd) on the line whole, at
+// width fullWidth. It returns false: the line goes on.
+func (lb *LineBreaker) addWholeText(item *InlineItem, line *LineInfo, textStart, textEnd int, fullWidth float64) bool {
+	line.Results = append(line.Results, InlineItemResult{
+		Item:       item,
+		ItemIndex:  lb.currentItemIndex,
+		TextStart:  textStart,
+		TextEnd:    textEnd,
+		InlineSize: fullWidth,
+	})
+	line.HasContent = true
+	lb.position += fullWidth
+	line.Width = lb.position
+	lb.currentTextOffset = textEnd
+	return false
 }
 
 // isInsideMarkerItem reports whether an inline item belongs to an inside
@@ -772,18 +870,31 @@ func (lb *LineBreaker) rewindUnbreakableTail(line *LineInfo) {
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). With no opportunity on the
 // line the glued run stays and overflows.
 func (lb *LineBreaker) endLineBeforeItem(line *LineInfo, isContinuation bool) {
-	if isContinuation {
-		for i := len(line.Results) - 1; i > 0; i-- {
-			if lb.resultCanBreakAfter(line, i-1) {
-				line.Width -= lb.rewind(line, i)
-				return
-			}
-			if lb.breakTextAtPreviousOpportunity(line, i-1) {
-				return
-			}
-		}
+	if isContinuation && lb.rewindToBreakOpportunity(line) {
+		return
 	}
 	lb.rewindUnbreakableTail(line)
+}
+
+// rewindToBreakOpportunity ends the line at its last break opportunity, after
+// a result that can break after or inside a text result that can break
+// again, moving the results after it to the next line. It reports false,
+// changing nothing, when the line has no opportunity: what does not fit then
+// overflows. Mirrors HandleOverflow's walk back (inline/line_breaker.cc:
+// 4069-4160 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (lb *LineBreaker) rewindToBreakOpportunity(line *LineInfo) bool {
+	for i := len(line.Results); i > 0; i-- {
+		if lb.resultCanBreakAfter(line, i-1) {
+			if i < len(line.Results) {
+				line.Width -= lb.rewind(line, i)
+			}
+			return true
+		}
+		if lb.breakTextAtPreviousOpportunity(line, i-1) {
+			return true
+		}
+	}
+	return false
 }
 
 // breakTextAtPreviousOpportunity ends the line inside text result i, at its
@@ -853,7 +964,9 @@ func (lb *LineBreaker) resultCanBreakAfter(line *LineInfo, i int) bool {
 	case InlineItemCloseTag:
 		return i > 0 && lb.resultCanBreakAfter(line, i-1)
 	case InlineItemAtomicInline:
-		return true
+		// CanBreakAfterAtomicInline: never where the line does not wrap
+		// (inline/line_breaker.cc:1168-1173).
+		return lb.startsAfterBreakOpportunity(r.TextEnd)
 	}
 	return false
 }
@@ -1887,11 +2000,20 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	// contributes independently to the min-content width.
 	// In LineBreakerMaxContent mode: never break (place everything on one line).
 	if totalInlineSize > remaining && line.HasContent && lb.mode != LineBreakerMaxContent {
-		// Doesn't fit and line has content — end the line. An inside
-		// marker trailing the line must wrap with the atomic (same
+		// Doesn't fit and line has content — end the line before it where
+		// the line wraps there (an atomic inline has an opportunity before
+		// it unless the style does not wrap, ComputeCanBreakAfter with
+		// auto_wrap_ @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An
+		// inside marker trailing the line must wrap with the atomic (same
 		// no-break contract as the text path in breakTextAtWord).
-		lb.rewindUnbreakableTail(line)
-		return true
+		if lb.autoWrapsAt(item.StartOffset) {
+			lb.rewindUnbreakableTail(line)
+			return true
+		}
+		// Otherwise at the line's last opportunity, else it overflows.
+		if lb.rewindToBreakOpportunity(line) {
+			return true
+		}
 	}
 
 	// Add inline-start margin.
