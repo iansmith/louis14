@@ -2267,6 +2267,9 @@ func (layer *PaintLayer) forEachChild(f func(c *PaintLayer, selfPainting bool)) 
 type overflowScope struct {
 	selfPainting map[*layout.Box]bool
 	layers       map[*layout.Box]*PaintLayer
+	// textInk is a text layer's ink overflow (Renderer.textInkOverflowRect),
+	// which needs the renderer's fonts; nil leaves text ink out.
+	textInk func(*PaintLayer) geometry.PhysicalRect
 }
 
 // overflowScope returns layer's overflowScope: the boxes of its
@@ -2327,6 +2330,15 @@ func (layer *PaintLayer) selfInkOverflowRect() geometry.PhysicalRect {
 	return ink
 }
 
+// maxShadowRectOutsets folds one shadow's ShadowData::RectOutsets
+// (core/style/shadow_data.cc:32-43 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+// ceil(3 sigma) + spread around its offset, sigma = blur / 2) into the
+// running per-side maxima.
+func maxShadowRectOutsets(top, right, bottom, left, blur, spread, offsetX, offsetY float64) (float64, float64, float64, float64) {
+	e := math.Ceil(3*blur/2) + spread
+	return max(top, e-offsetY), max(right, e+offsetX), max(bottom, e+offsetY), max(left, e-offsetX)
+}
+
 // hasBorderImage is BorderImage().HasImage(): a url() or generated
 // border-image-source.
 func (layer *PaintLayer) hasBorderImage() bool {
@@ -2345,14 +2357,9 @@ func (layer *PaintLayer) hasBorderImage() bool {
 func (layer *PaintLayer) boxDecorationOutsets() geometry.PhysicalBoxStrut {
 	var top, right, bottom, left float64
 	for _, sh := range layer.BoxShadows {
-		if sh.Inset {
-			continue
+		if !sh.Inset {
+			top, right, bottom, left = maxShadowRectOutsets(top, right, bottom, left, sh.Blur, sh.Spread, sh.OffsetX, sh.OffsetY)
 		}
-		blurAndSpread := math.Ceil(3*sh.Blur/2) + sh.Spread
-		top = max(top, blurAndSpread-sh.OffsetY)
-		right = max(right, blurAndSpread+sh.OffsetX)
-		bottom = max(bottom, blurAndSpread+sh.OffsetY)
-		left = max(left, blurAndSpread-sh.OffsetX)
 	}
 	if layer.Box != nil && layer.hasBorderImage() {
 		b := layer.Box.Border
@@ -2403,13 +2410,16 @@ func (layer *PaintLayer) hasOutline() bool {
 // scope; the overflow clip never cuts it.
 //
 // no Blink analog: louis14 keeps no visual overflow, so this is built from
-// border boxes and their layers' self ink overflow, without glyph ink
-// overflow.
+// border boxes, their layers' self ink overflow and, through scope.textInk,
+// text runs' decoration and shadow ink; glyph ink bounds are left out.
 func visualOverflowRect(box *layout.Box, scope overflowScope) geometry.PhysicalRect {
 	border := fragmentRect(box)
 	self := border
 	if l := scope.layers[box]; l != nil {
 		self = self.Unite(l.selfInkOverflowRect())
+		if scope.textInk != nil && box.Text != "" {
+			self = self.Unite(scope.textInk(l))
+		}
 	}
 	var contents geometry.PhysicalRect
 	for _, child := range box.Children {
@@ -2524,7 +2534,7 @@ func containingBlockWithin(oof, clipper *layout.Box) bool {
 // PaintLayer::LocalBoundingBoxIncludingSelfPaintingDescendants
 // (paint_layer.cc:2244-2249 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (r *Renderer) localBoundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer) geometry.PhysicalRect {
-	return r.boundingBoxIncludingSelfPaintingDescendants(layer, layer.overflowScope())
+	return r.boundingBoxIncludingSelfPaintingDescendants(layer, r.inkOverflowScope(layer))
 }
 
 // boundingBoxIncludingSelfPaintingDescendants is
@@ -2584,4 +2594,58 @@ func (r *Renderer) mapRectForFilter(layer *PaintLayer, rect geometry.PhysicalRec
 	}
 	m := filter.MapRect(builder.LayerReferenceBox())
 	return geometry.PhysicalRectEnclosingRect(rectFFromRect(m))
+}
+
+// inkOverflowScope is layer.overflowScope with the renderer's text ink
+// overflow, so text runs' decorations and shadows join the visual overflow.
+func (r *Renderer) inkOverflowScope(layer *PaintLayer) overflowScope {
+	scope := layer.overflowScope()
+	scope.textInk = r.textInkOverflowRect
+	return scope
+}
+
+// textInkOverflowRect mirrors InkOverflow::ComputeTextInkOverflow
+// (core/layout/ink_overflow.cc:438-490 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for a text layer: its box united
+// with its applied decorations' line bounds (ComputeAppliedDecorationOverflow,
+// :661-707, each line's DecorationLinePainter::Bounds) and grown by its
+// text-shadows' outsets (ExpandForShadowOverflow, :542-554; ShadowData::
+// RectOutsets, core/style/shadow_data.cc:32-43, sigma = blur / 2). Glyph
+// bounds stand at the box: louis14 has no glyph ink bounds. Decorations of
+// vertical and sideways runs are not included yet (LOU-1047, after
+// LOU-1032's vertical placement helpers).
+func (r *Renderer) textInkOverflowRect(layer *PaintLayer) geometry.PhysicalRect {
+	box := layer.Box
+	ink := fragmentRect(box)
+	if len(layer.AppliedTextDecorations) > 0 && !layer.IsVerticalText && !layer.IsSidewaysRL && !layer.IsSidewaysLR {
+		if fontID := r.openFont(r.fontPathForLayer(layer), layer.FontSize); fontID >= 0 {
+			m := r.dc.GetFontMetrics(fontID)
+			info := newTextDecorationInfo(box, box.Width, layer.FontSize, float64(m.Ascent)/64, float64(m.Descent)/64, 0)
+			lo, hi := box.Y, box.Y+box.Height
+			for _, td := range layer.AppliedTextDecorations {
+				t := info.computeThickness(td)
+				d := doubleOffsetFromThickness(t)
+				unite := func(top, doubleOffset, wavyOffset float64) {
+					a, b := decorationLineBounds(td.Style, top, t, doubleOffset, wavyOffset)
+					lo, hi = min(lo, a), max(hi, b)
+				}
+				if td.Lines.Has(css.TextDecorationLineUnderline) {
+					unite(info.underlineRectTop(td), d, d)
+				}
+				if td.Lines.Has(css.TextDecorationLineOverline) {
+					unite(info.overlineRectTop(t), -d, -d)
+				}
+				if td.Lines.Has(css.TextDecorationLineLineThrough) {
+					unite(info.computeLineThroughLineY(t)-t/2, math.Floor(d), 0)
+				}
+			}
+			ink = ink.Unite(geometry.PhysicalRectEnclosingRect(geometry.NewRectF(box.X, lo, box.Width, hi-lo)))
+		}
+	}
+	var top, right, bottom, left float64
+	for _, sh := range layer.TextShadows {
+		top, right, bottom, left = maxShadowRectOutsets(top, right, bottom, left, sh.Blur, 0, sh.OffsetX, sh.OffsetY)
+	}
+	return ink.ExpandEdges(layoutunit.FromFloat64Ceil(top), layoutunit.FromFloat64Ceil(right),
+		layoutunit.FromFloat64Ceil(bottom), layoutunit.FromFloat64Ceil(left))
 }

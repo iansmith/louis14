@@ -324,6 +324,19 @@ func (t textDecorationInfo) computeOverlinePerpX() float64 {
 	return t.computeOverlineLineY()
 }
 
+// underlineRectTop is a horizontal run's underline rect top: Blink's
+// paint_underline_offset, rounded to whole pixels so the underline meets
+// the rounded baseline drawTextStr paints at.
+func (t textDecorationInfo) underlineRectTop(td css.AppliedTextDecoration) float64 {
+	return math.Round(t.computeUnderlineLineY(td))
+}
+
+// overlineRectTop is a horizontal run's overline rect top: the rect spans
+// [TextTop - thickness, TextTop], growing up from the text top.
+func (t textDecorationInfo) overlineRectTop(thickness float64) float64 {
+	return t.computeOverlineLineY() - thickness
+}
+
 // computeLineThroughPerpX returns the perpendicular physical X coordinate of
 // a line-through's center in upright vertical text: 2 * ascent / 3 in from
 // the line-over (right) edge, as Blink's ComputeLineThroughLineData centers

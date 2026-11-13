@@ -215,7 +215,7 @@ func (r *Renderer) boxPaintBounds(l *PaintLayer, member bool) geometry.RectF {
 	}
 	var bounds geometry.PhysicalRect
 	if member {
-		bounds = l.localBoundingBox(l.overflowScope())
+		bounds = l.localBoundingBox(r.inkOverflowScope(l))
 	} else {
 		bounds = r.localBoundingBoxIncludingSelfPaintingDescendants(l)
 	}
