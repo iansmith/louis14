@@ -321,11 +321,7 @@ func oofContainerWritingDirection(item *InlineItem, lineWDM WritingDirectionMode
 	if item.Style == nil || !item.Style.IsOriginalDisplayInlineType() {
 		return lineWDM
 	}
-	dir := DirectionLTR
-	if item.BidiLevel%2 == 1 {
-		dir = DirectionRTL
-	}
-	return WritingDirectionMode{WM: lineWDM.WM, Dir: dir}
+	return WritingDirectionMode{WM: lineWDM.WM, Dir: item.Direction()}
 }
 
 // moveToLineBoxBlockEdge moves an in-line candidate's static block offset
@@ -1018,10 +1014,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// before positioning. Mirrors Blink's BidiReorder step in
 		// InlineLayoutAlgorithm::CreateLine.
 		ReorderLineVisual(line.Results, lineParagraphLevel)
+		lineDir := DirectionFromLevel(lineParagraphLevel)
 		hasInflowOnLine := false
 		for i := range line.Results {
 			r := line.Results[i]
-			if lineParagraphLevel%2 == 1 {
+			if lineDir == DirectionRTL {
 				r = line.Results[len(line.Results)-1-i]
 			}
 			// CSS Ruby: an OOF descendant of a ruby element is collected into the
@@ -1072,11 +1069,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// Use the effective direction for this line's box construction.
 		// For plaintext mode, this may vary per line.
 		effectiveWDM := wdm
-		if lineParagraphLevel%2 == 1 {
-			effectiveWDM.Dir = DirectionRTL
-		} else {
-			effectiveWDM.Dir = DirectionLTR
-		}
+		effectiveWDM.Dir = lineDir
 		// Determine if the line uses central baseline. This depends on the
 		// container's writing mode and text-orientation. text-orientation:
 		// sideways causes vertical modes to use alphabetic baseline.
@@ -3147,7 +3140,7 @@ func createLineBoxEx(
 			// In visual (left-to-right) placement order, the physical-right is
 			// the trailing side, so InlineEnd comes first (leading gap) and
 			// InlineStart comes last (trailing gap).
-			itemIsRTL := r.Item.BidiLevel%2 == 1
+			itemIsRTL := r.Item.Direction() == DirectionRTL
 			if itemIsRTL {
 				inlinePos += r.Margins.InlineEnd
 			} else {

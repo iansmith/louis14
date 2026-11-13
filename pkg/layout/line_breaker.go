@@ -2587,7 +2587,7 @@ func (lb *LineBreaker) applyCrossSpanKerning(line *LineInfo, isVertical bool) {
 			start := combined.Len()
 			combined.WriteString(content)
 			itemRanges[k] = [2]int{start, combined.Len()}
-			itemRTL[k] = r.Item.BidiLevel%2 == 1
+			itemRTL[k] = r.Item.Direction() == DirectionRTL
 		}
 
 		// Build direction runs: collapse consecutive same-direction items into

@@ -283,7 +283,7 @@ func (t *LineTruncator) TruncateChild(spaceForChild float64, isFirstChild bool, 
 // text: the part next to the line's start edge is the text's logical start
 // when the text runs in the line's direction, its logical end otherwise.
 func (t *LineTruncator) keepsLogicalStart(child *LogicalLineItem) bool {
-	return t.isLtr() == (child.Fragment.BidiLevel%2 == 0)
+	return t.lineDirection == DirectionFromLevel(child.Fragment.BidiLevel)
 }
 
 // keptText is the text truncating child to n grapheme clusters keeps.
