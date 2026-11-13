@@ -35,6 +35,16 @@ type gridItemAxisData struct {
 	// fragment's baselines can be read (LogicalBoxFragment::
 	// IsWritingModeEqual).
 	hasOwnBaselines bool
+	// spansIntrinsicTrack / spansFlexibleTrack: the item spans a track
+	// with an intrinsic (flexible) sizing function in this axis
+	// (GridItemData::IsSpanningIntrinsicTrack / IsSpanningFlexibleTrack),
+	// set when the axis's sizing items are built.
+	spansIntrinsicTrack, spansFlexibleTrack bool
+	// fallback is the alignment a baseline-aligned item falls back to when
+	// it cannot take part in baseline alignment (hasFallback;
+	// {column,row}_fallback_alignment).
+	fallback    AxisEdge
+	hasFallback bool
 }
 
 // newGridItemAxisData resolves an item's alignment in the columns
@@ -185,12 +195,83 @@ func AlignmentOffset(containerSize, size, marginStart, marginEnd, baselineOffset
 	return start.Float64()
 }
 
-// isBaselineAligned reports whether the item aligns to a shared baseline in
-// this axis. Mirrors GridItemData::IsBaselineAligned (grid_item.h:67-71 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) before any alignment fallback
-// (LOU-978 PR D).
-func (d gridItemAxisData) isBaselineAligned() bool {
+// alignmentEdge is the item's alignment in this axis, its fallback when it
+// has one. Mirrors GridItemData::Alignment (grid_item.h:55-59 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (d gridItemAxisData) alignmentEdge() AxisEdge {
+	if d.hasFallback {
+		return d.fallback
+	}
+	return d.alignment
+}
+
+// overflowSafe reports whether the item's alignment is overflow-safe: a
+// fallback always is (GridItemData::IsOverflowSafe, grid_item.h:60-64).
+func (d gridItemAxisData) overflowSafe() bool {
+	return d.hasFallback || d.isOverflowSafe
+}
+
+// isBaselineSpecified reports whether the item specifies baseline alignment
+// in this axis (GridItemData::IsBaselineSpecified, grid_item.h:73-78).
+func (d gridItemAxisData) isBaselineSpecified() bool {
 	return d.alignment == AxisEdgeFirstBaseline || d.alignment == AxisEdgeLastBaseline
+}
+
+// isBaselineAligned reports whether the item aligns to a shared baseline in
+// this axis: it specifies baseline alignment and has not fallen back.
+// Mirrors GridItemData::IsBaselineAligned (grid_item.h:67-71).
+func (d gridItemAxisData) isBaselineAligned() bool {
+	e := d.alignmentEdge()
+	return e == AxisEdgeFirstBaseline || e == AxisEdgeLastBaseline
+}
+
+// setAlignmentFallback decides whether a baseline-specified item can take
+// part in baseline alignment: not when it has only a synthesized baseline,
+// spans an intrinsic or flexible track, and its size in the baseline axis
+// (or its min or max) is a percentage or stretch, since its size then
+// depends on the track it sizes. It then falls back to start (the major
+// group) or end (the minor group). Mirrors GridItemData::
+// SetAlignmentFallback (grid_item.cc:262-322 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (item *gridItem) setAlignmentFallback(forColumns, hasSynthesizedBaseline bool) {
+	d := item.axisPtr(forColumns)
+	if !d.isBaselineSpecified() {
+		return
+	}
+	d.hasFallback = false
+	if !hasSynthesizedBaseline || (!d.spansIntrinsicTrack && !d.spansFlexibleTrack) {
+		return
+	}
+	itemWDM := NewWritingDirectionMode(item.style)
+	// The baseline axis is the item's block axis when it is parallel to
+	// the grid and the axis is the rows, or orthogonal and the columns.
+	prop := logicalInlineSizeProperty(itemWDM)
+	if item.wdm.IsOrthogonalTo(itemWDM) == forColumns {
+		prop = logicalBlockSizeProperty(itemWDM)
+	}
+	// Length::HasPercentOrStretch: the parser maps stretch keywords to
+	// 100%, so a percentage test covers both.
+	if gridItemHasPercentageSize(item.style, prop) {
+		d.fallback, d.hasFallback = AxisEdgeStart, true
+		if d.baselineGroup == BaselineGroupMinor {
+			d.fallback = AxisEdgeEnd
+		}
+	}
+}
+
+// setTrackSpanProperties records, for each item, whether it spans an
+// intrinsic or flexible track of sets in this axis. Mirrors
+// GridItemData::SetTrackSpanProperties' use in the sizing collections.
+func setTrackSpanProperties(items []*gridItem, sets []gridSet, forColumns bool) {
+	a := &gridTrackSizingAlgorithm{sets: sets}
+	for _, item := range items {
+		start, end := item.span(forColumns)
+		d := item.axisPtr(forColumns)
+		d.spansIntrinsicTrack, d.spansFlexibleTrack = false, false
+		if it := (&gridSizingItem{start: start, end: min(end, len(sets))}); it.start >= 0 && it.end > it.start {
+			d.spansIntrinsicTrack, d.spansFlexibleTrack = a.spansIntrinsic(it), a.spansFlexible(it)
+		}
+	}
 }
 
 // span is the item's [start, end) tracks in the columns (forColumns) or
@@ -200,6 +281,14 @@ func (item *gridItem) span(forColumns bool) (start, end int) {
 		return item.colStart, item.colEnd
 	}
 	return item.rowStart, item.rowEnd
+}
+
+// axisPtr is axis, for updating.
+func (item *gridItem) axisPtr(forColumns bool) *gridItemAxisData {
+	if forColumns {
+		return &item.columns
+	}
+	return &item.rows
 }
 
 // axis is the item's alignment data in the columns (forColumns) or rows.

@@ -294,9 +294,9 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		inlineBaselineOffset := colBaselines.baselineOffset(item, true, itemInline, fragSize.InlineSize)
 		blockBaselineOffset := rowBaselines.baselineOffset(item, false, itemBlock, fragSize.BlockSize)
 		inlineOffset := colOffsets[item.colStart] + AlignmentOffset(itemInline, fragSize.InlineSize,
-			margins.InlineStart, margins.InlineEnd, inlineBaselineOffset, item.columns.alignment, item.columns.isOverflowSafe)
+			margins.InlineStart, margins.InlineEnd, inlineBaselineOffset, item.columns.alignmentEdge(), item.columns.overflowSafe())
 		blockOffset := rowOffsets[item.rowStart] + AlignmentOffset(itemBlock, fragSize.BlockSize,
-			margins.BlockStart, margins.BlockEnd, blockBaselineOffset, item.rows.alignment, item.rows.isOverflowSafe)
+			margins.BlockStart, margins.BlockEnd, blockBaselineOffset, item.rows.alignmentEdge(), item.rows.overflowSafe())
 
 		offset := LogicalOffset{InlineOffset: inlineOffset, BlockOffset: blockOffset}
 		// Grid is special in that %-based offsets resolve against the grid

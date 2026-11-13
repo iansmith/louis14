@@ -182,14 +182,19 @@ func (gla *GridLayoutAlgorithm) computeGridItemBaselines(items []*gridItem, forC
 func computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int, centralBaseline bool) *gridTrackBaselines {
 	var b *gridTrackBaselines
 	for _, item := range items {
+		if !item.axis(forColumns).isBaselineSpecified() || item.result == nil {
+			continue
+		}
+		f := item.baselineFragment(forColumns)
+		_, hasBaseline := f.baseline(forColumns, false)
+		item.setAlignmentFallback(forColumns, !hasBaseline)
 		a := item.axis(forColumns)
-		if !a.isBaselineAligned() || item.result == nil {
+		if !a.isBaselineAligned() {
 			continue
 		}
 		if b == nil {
 			b = newGridTrackBaselines(trackCount, centralBaseline)
 		}
-		f := item.baselineFragment(forColumns)
 		isLast := a.alignment == AxisEdgeLastBaseline
 		b.setTrackBaseline(item, forColumns, item.extraMarginForBaseline(forColumns)+f.logicalBaseline(forColumns, centralBaseline, isLast))
 	}

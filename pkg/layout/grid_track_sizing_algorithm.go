@@ -788,12 +788,12 @@ func (a *gridTrackSizingAlgorithm) computeUsedTrackSizes(items []*gridSizingItem
 // flexible one (ExpandFlexibleTracks under indefinite free space,
 // :1236-1251). Measured once, they serve every constraint sizeColumns runs.
 func (gla *GridLayoutAlgorithm) columnSizingItems(sets []gridSet, items []*gridItem) []*gridSizingItem {
-	a := &gridTrackSizingAlgorithm{sets: sets}
 	wdm := gla.space.WritingDirection
+	setTrackSpanProperties(items, sets, true)
 	var sizing []*gridSizingItem
 	for _, item := range items {
 		it := &gridSizingItem{item: item, start: item.colStart, end: min(item.colEnd, len(sets))}
-		if it.start < 0 || it.end <= it.start || (!a.spansIntrinsic(it) && !a.spansFlexible(it)) {
+		if !item.columns.spansIntrinsicTrack && !item.columns.spansFlexibleTrack {
 			continue
 		}
 		var edges float64
@@ -918,18 +918,18 @@ func (gla *GridLayoutAlgorithm) computeRowSizes(tracks []css.GridTrack, availabl
 // MaxContentSize / BlockContributionSize, grid_layout_algorithm.cc:577-815 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem, parallelBlock rowContributionFunc) []*gridSizingItem {
-	a := &gridTrackSizingAlgorithm{sets: sets}
 	wdm := gla.space.WritingDirection
 	blockProp := logicalBlockSizeProperty(wdm)
 	// The rows' shared baselines from the items' layout at their columns
 	// (ComputeBaselineAlignment before the rows' track sizing,
 	// grid_layout_algorithm.cc:1263-1281 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), for the baseline shims.
+	setTrackSpanProperties(items, sets, false)
 	baselines := gla.computeGridItemBaselines(items, false, len(sets))
 	var sizing []*gridSizingItem
 	for _, item := range items {
 		it := &gridSizingItem{item: item, start: item.rowStart, end: min(item.rowEnd, len(sets))}
-		if it.start < 0 || it.end <= it.start || (!a.spansIntrinsic(it) && !a.spansFlexible(it)) {
+		if !item.rows.spansIntrinsicTrack && !item.rows.spansFlexibleTrack {
 			continue
 		}
 		// edges, the auto minimum's floor, counts no scrollbar; the
