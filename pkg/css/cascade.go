@@ -4550,7 +4550,7 @@ func applyFocusVisibleUserAgentStyles(node *html.Node, style *Style) {
 func unicodeBidiForDirAuto(node *html.Node) string {
 	if node.TagName == "input" {
 		t, _ := node.GetAttribute("type")
-		switch strings.ToLower(t) {
+		switch asciiToLower(t) {
 		case "search", "tel", "url", "email":
 			return "plaintext"
 		}
