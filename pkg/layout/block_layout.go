@@ -558,7 +558,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	hasBreakOpportunityBeforeNextChild := incomingBreakToken.HasMonolithicOverflow()
 	var propagatedTopMargin MarginStrut
 
-	var firstLineAscent float64
 	var firstChildBaseline float64    // Baseline of the first in-flow block child (for propagation).
 	var firstChildBlockOffset float64 // Block offset of the first in-flow block child.
 	hasFirstChildBaseline := false
@@ -638,12 +637,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		bla.containerBuilder.SetExclusionSpace(bla.resumeInlineFloats(wdm, contentInlineSize, prevES,
 			bfcBlockOrigin+blockCursor, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, &inlineContext))
 		var inlineAscent, lastBaselineOff float64
+		var hasLineBaseline bool
 		var inlineBreakToken *InlineBreakToken
 		if incomingBreakToken != nil && incomingBreakToken.HasSeenAllChildren {
 			// Skip IFC; everything was placed in a prior fragment.
 		} else {
 			var es *ExclusionSpace
-			blockCursor, es, inlineAscent, lastBaselineOff, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, bla.containerBuilder.GetExclusionSpace(), bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset, inlineSegment{}, &inlineContext)
+			blockCursor, es, inlineAscent, lastBaselineOff, hasLineBaseline, inlineBreakToken = bla.layoutInlineChildren(wdm, contentInlineSize, bla.containerBuilder.GetExclusionSpace(), bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, inlineStartIdx, inlineStartTextOffset, inlineSegment{}, &inlineContext)
 			bla.containerBuilder.SetExclusionSpace(es)
 			// Widows moved the break earlier than where the lines ran out
 			// of space: lay out again and break there
@@ -674,9 +674,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// (BlockChildIterator's inline mode, block_child_iterator.cc:47-70
 		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		bla.containerBuilder.SetHasSeenAllChildren()
-		firstLineAscent = inlineAscent
 		// Shared guard: capture first baseline in layout order (mirrors Blink).
-		if !hasFirstChildBaseline && inlineAscent > 0 {
+		if !hasFirstChildBaseline && hasLineBaseline {
 			firstChildBaseline = inlineAscent
 			firstChildBlockOffset = 0
 			hasFirstChildBaseline = true
@@ -684,7 +683,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// Track the last line's baseline offset for inline-block alignment.
 		lastChildBaseline = lastBaselineOff
 		lastChildBlockOffset = 0 // Already included in lastBaselineOff.
-		hasLastChildBaseline = lastBaselineOff > 0
+		hasLastChildBaseline = hasLineBaseline
 		// A line box is content: it resolves this block's BFC block-offset
 		// (an inline formatting context that produced none does not).
 		if slices.ContainsFunc(bla.containerBuilder.children, func(c logicalChildLink) bool {
@@ -821,7 +820,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 				prevES := bla.containerBuilder.GetExclusionSpace()
 				var inlineContext InlineChildLayoutContext
-				end, es, ascent, lastBaselineOff, lineBreakToken := bla.layoutInlineChildren(wdm, contentInlineSize, prevES, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, startIdx, startTextOffset, inlineSegment{
+				end, es, ascent, lastBaselineOff, hasLineBaseline, lineBreakToken := bla.layoutInlineChildren(wdm, contentInlineSize, prevES, bfcBlockOrigin, bfcInlineOrigin, bfcContainerInlineSize, startIdx, startTextOffset, inlineSegment{
 					blockStart:                lineTop,
 					hasBreakOpportunityBefore: hasBreakOpportunityBeforeNextChild,
 					node:                      child,
@@ -842,12 +841,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					firstNonEmptyChild = false
 					blockCursor = end
 					hasBreakOpportunityBeforeNextChild = true
-					if !hasFirstChildBaseline && ascent > 0 {
+					if !hasFirstChildBaseline && hasLineBaseline {
 						firstChildBaseline = ascent
 						firstChildBlockOffset = lineTop
 						hasFirstChildBaseline = true
 					}
-					if lastBaselineOff > 0 {
+					if hasLineBaseline {
 						lastChildBaseline = lastBaselineOff
 						lastChildBlockOffset = 0
 						hasLastChildBaseline = true
@@ -1740,24 +1739,24 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// CSS Align §9.1: orthogonal children don't contribute baselines.
 			skipTable := child.IsTable() && inlineBlockBaseline
 			if !isOrthogonal && !skipTable {
-				childLastBL := childResult.Baseline
+				childLastBL, hasChildLastBL := childResult.Baseline, childResult.HasBaseline
 				if !inlineBlockBaseline || childResult.UseLastBaselineForInlineBaseline {
-					childLastBL = childResult.LastBaseline
+					childLastBL, hasChildLastBL = childResult.LastBaseline, childResult.HasLastBaseline
 					// A flex or grid container that exported no last
 					// baseline gives its first.
-					if childLastBL == 0 && childStyle != nil {
+					if !hasChildLastBL && childStyle != nil {
 						d := childStyle.GetDisplay()
 						if d == css.DisplayFlex || d == css.DisplayGrid ||
 							d == css.DisplayInlineFlex || d == css.DisplayInlineGrid {
-							childLastBL = childResult.Baseline
+							childLastBL, hasChildLastBL = childResult.Baseline, childResult.HasBaseline
 						}
 					}
 				}
 				if inlineBlockBaseline && childResult.UseLastBaselineForInlineBaseline &&
 					childWDM.WM == wdm.WM && forceInlineBaselineSynthesis(childStyle, child.DOMNode) {
-					childLastBL = childBlockSize + childMargins.BlockEnd
+					childLastBL, hasChildLastBL = childBlockSize+childMargins.BlockEnd, true
 				}
-				if childLastBL > 0 {
+				if hasChildLastBL {
 					lastChildBaseline = childLastBL
 					lastChildBlockOffset = actualChildBlockOff
 					hasLastChildBaseline = true
@@ -1999,9 +1998,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS Inline §4.2: the first baseline of a block container is:
 	//   1. The first line box's baseline (inline children), OR
 	//   2. The first in-flow block child's propagated first baseline.
-	if firstLineAscent > 0 {
-		bla.containerBuilder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
-	} else if hasFirstChildBaseline {
+	if hasFirstChildBaseline {
 		bla.containerBuilder.SetBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 			firstChildBlockOffset + firstChildBaseline)
 	}
@@ -2020,8 +2017,6 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if hasLastChildBaseline {
 		bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 			lastChildBlockOffset + lastChildBaseline)
-	} else if firstLineAscent > 0 {
-		bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart + firstLineAscent)
 	}
 
 	// Set box data for the renderer.

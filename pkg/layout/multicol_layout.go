@@ -2522,8 +2522,11 @@ func (mla *MulticolLayoutAlgorithm) propagateBaselineFromChild(
 		mla.containerBuilder.SetBaseline(bl)
 	}
 
-	if result.LastBaseline > 0 {
-		bl := math.Max(blockOffset+result.LastBaseline, mla.containerBuilder.lastBaseline)
+	if result.HasLastBaseline {
+		bl := blockOffset + result.LastBaseline
+		if cur, has := mla.containerBuilder.LastBaseline(); has {
+			bl = math.Max(bl, cur)
+		}
 		mla.containerBuilder.SetLastBaseline(bl)
 	}
 

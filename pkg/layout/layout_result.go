@@ -51,6 +51,10 @@ type LayoutResult struct {
 	// alignment per CSS 2.1 §10.8.1 (baseline of the last line box).
 	LastBaseline float64
 
+	// HasLastBaseline is HasBaseline's counterpart for LastBaseline: a last
+	// baseline of 0 with HasLastBaseline is real.
+	HasLastBaseline bool
+
 	// UseLastBaselineForInlineBaseline mirrors Blink's
 	// use_last_baseline_for_inline_baseline_: set on a block (and multicol,
 	// fieldset) laid out as an inline-block, whose inline baseline is then its
