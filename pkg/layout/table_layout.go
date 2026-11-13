@@ -304,6 +304,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// final layout (Phase 3).
 		layoutInlineSize float64
 		cellWDM          WritingDirectionMode
+		// isRestrictedBlockSize: the cell's block size is restricted
+		// (isRestrictedBlockSizeTableCell), in its measure and final spaces.
+		isRestrictedBlockSize bool
 		// intrinsicBlockSize is the cell's own minimum block-size — the
 		// value that contributes to row intrinsic for rowSpan == 1 cells,
 		// and that DistributeRowspanCellToRows distributes across spanned
@@ -396,7 +399,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// All @ d4ecdfed88f962439247c2ad36b8fe47805b1520. A relative
 			// cell's percentage insets resolve against its row instead
 			// (Phase 3, relativeCellOffset).
-			cellSpace := tla.tableCellConstraintSpace(cellWDM, layoutWidth, Indefinite, true, tableData)
+			isRestrictedBlockSize := isTableBlockSizeSpecified || cellHasSpecifiedBlockSize(cell.style, cellWDM)
+			cellSpace := tla.tableCellConstraintSpace(cellWDM, layoutWidth, Indefinite, true, isRestrictedBlockSize, tableData)
 
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
 			cellLogical := NewLogicalFragment(wdm, cellResult.Fragment)
@@ -446,13 +450,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			cellLayouts = append(cellLayouts, cellMeasurement{
-				result:             cellResult,
-				inlineOffset:       cellInlineOffset,
-				cell:               cell,
-				layoutInlineSize:   layoutWidth,
-				cellWDM:            cellWDM,
-				intrinsicBlockSize: cellBlockForRow,
-				rowIndex:           rowIdx,
+				result:                cellResult,
+				inlineOffset:          cellInlineOffset,
+				cell:                  cell,
+				layoutInlineSize:      layoutWidth,
+				cellWDM:               cellWDM,
+				isRestrictedBlockSize: isRestrictedBlockSize,
+				intrinsicBlockSize:    cellBlockForRow,
+				rowIndex:              rowIdx,
 			})
 		}
 
@@ -765,7 +770,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			cellBlockSize, initialIndefinite := computeCellBlockSize(spRows, rowIdx, 1, blockSpacing,
 				cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-			result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, tableData)
+			result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, cl.isRestrictedBlockSize, tableData)
 			cellFrag := result.Fragment
 			cellFrag.HasCollapsedBorders = borderCollapse
 
@@ -922,7 +927,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// the cell will continue to show") and is clipped to the border box.
 		spannedBlock, initialIndefinite := computeCellBlockSize(spRows, rowIdx, cl.cell.rowSpan, blockSpacing,
 			cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-		result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, spannedBlock, initialIndefinite, tableData)
+		result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, spannedBlock, initialIndefinite, cl.isRestrictedBlockSize, tableData)
 		cellFrag := result.Fragment
 		cellFrag.HasCollapsedBorders = borderCollapse
 		if spansCollapsedRow {
@@ -1496,10 +1501,12 @@ func specifiedBlockSize(style *css.Style, wdm WritingDirectionMode) float64 {
 // block size. Mirrors Blink's SetupTableCellConstraintSpaceBuilder
 // (table/table_layout_utils.cc:1363-1425 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14's
-// IsFixedBlockSizeIndefinite is Blink's IsInitialBlockSizeIndefinite. Not
-// ported: the alignment baseline (LOU-839 T8b) and
-// IsRestrictedBlockSizeTableCell.
-func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirectionMode, inlineSize, blockSize float64, isInitialBlockSizeIndefinite bool, tableData *TableConstraintSpaceData) ConstraintSpace {
+// IsFixedBlockSizeIndefinite is Blink's IsInitialBlockSizeIndefinite.
+// isRestrictedBlockSize marks a cell whose table has a specified block size
+// or that has a fixed one (:1418-1419); its scrollable percentage-height
+// children then size to their min block size. Not ported: the alignment
+// baseline (LOU-948).
+func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirectionMode, inlineSize, blockSize float64, isInitialBlockSizeIndefinite, isRestrictedBlockSize bool, tableData *TableConstraintSpaceData) ConstraintSpace {
 	wdm := tla.space.WritingDirection
 	b := NewConstraintSpaceBuilder(wdm, cellWDM, true).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(cellWDM, tla.ctx)).
@@ -1509,7 +1516,8 @@ func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirecti
 		SetPercentageResolutionSize(LogicalSize{InlineSize: inlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionInlineSize(inlineSize).
 		SetTableSectionData(tableData).
-		SetTableSectionIndex(0)
+		SetTableSectionIndex(0).
+		SetIsRestrictedBlockSizeTableCell(isRestrictedBlockSize)
 	if blockSize != Indefinite {
 		b.SetIsFixedBlockSize(true)
 		if wdm.IsVertical() == cellWDM.IsVertical() {
@@ -1532,13 +1540,13 @@ func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirecti
 // layout_result_caching.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
 // without it each level of nested tables lays its cells out twice, which
 // is exponential in the nesting depth.
-func (tla *TableLayoutAlgorithm) layoutCellAtFinalSize(cell *LayoutInputNode, cellWDM WritingDirectionMode, inlineSize float64, measure *LayoutResult, cellBlockSize float64, initialIndefinite bool, tableData *TableConstraintSpaceData) *LayoutResult {
+func (tla *TableLayoutAlgorithm) layoutCellAtFinalSize(cell *LayoutInputNode, cellWDM WritingDirectionMode, inlineSize float64, measure *LayoutResult, cellBlockSize float64, initialIndefinite, isRestrictedBlockSize bool, tableData *TableConstraintSpaceData) *LayoutResult {
 	measured := NewLogicalFragment(tla.space.WritingDirection, measure.Fragment).BlockSize()
 	if layoutunit.FromFloat64Round(measured) == layoutunit.FromFloat64Round(cellBlockSize) {
 		return measure
 	}
 	return layoutElement(tla.ctx, cell,
-		tla.tableCellConstraintSpace(cellWDM, inlineSize, cellBlockSize, initialIndefinite, tableData))
+		tla.tableCellConstraintSpace(cellWDM, inlineSize, cellBlockSize, initialIndefinite, isRestrictedBlockSize, tableData))
 }
 
 // computeCellBlockSize returns a table cell's final block size, the sum of

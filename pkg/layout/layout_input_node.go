@@ -366,6 +366,17 @@ func (n *LayoutInputNode) IsReplaced() bool {
 	return n != nil && n.DOMNode != nil && IsReplacedElement(n.DOMNode)
 }
 
+// IsSemiReplaced reports whether the node is an <img> or a form control
+// other than <fieldset>. Mirrors LayoutBox::IsSemiReplaced (layout_box.cc:
+// 3203-3212 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (n *LayoutInputNode) IsSemiReplaced() bool {
+	if n == nil || n.DOMNode == nil {
+		return false
+	}
+	tag := n.DOMNode.TagName
+	return tag == "img" || tag == "output" || html.IsSemiReplacedElementTag(tag)
+}
+
 // Parent returns the node's parent in the layout input tree, which keeps
 // elements the box tree has no box for (a table's row groups), as Blink's
 // LayoutObject tree does (LayoutObject::Parent).
