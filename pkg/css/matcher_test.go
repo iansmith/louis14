@@ -1026,4 +1026,10 @@ func TestAttributeSelectorBadStringMatchesNothing(t *testing.T) {
 	if MatchesSelector(node, ParseSelector("[data-x=\"a\nb\"]")) {
 		t.Error(`[data-x="a<newline>b"] matched data-x=""`)
 	}
+	// A newline right before `]` ends the string too, bad, even where
+	// trimming would leave `"x` closed by end of input.
+	xnode := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"data-x": "x"}}
+	if MatchesSelector(xnode, ParseSelector("[data-x=\"x\n]")) {
+		t.Error(`[data-x="x<newline>] matched data-x="x"`)
+	}
 }
