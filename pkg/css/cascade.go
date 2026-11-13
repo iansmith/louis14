@@ -3324,7 +3324,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		ApplyInheritedProperties(node, style, styles)
 		resolveComputedTimeDeclarations(node, style, styles)
 		// Apply container query rules after base style (needs ancestor styles resolved)
-		if applyContainerQueryRules(node, stylesheets, styles, style, frame) {
+		if applyContainerQueryRules(node, stylesheets, styles, style, frame, viewportWidth, viewportHeight) {
 			resolveLateDeclarations(node, style, styles)
 		}
 		// The element's font properties are final here (@container rules
@@ -3505,15 +3505,20 @@ func applyDeclarationPass(style *Style, block *DeclarationResult, important bool
 // applyContainerQueryRules applies the @container rules matching node, whose
 // queries are evaluated against ancestor containers' computed sizes, after
 // the element's cascade and inheritance, and reports whether any matched.
-// Like the main cascade it runs a normal pass, which leaves the properties
+// A rule's @media queries gate it too (RuleMediaApplies), as they do in the
+// main cascade. Like the main cascade it runs a normal pass, which leaves the properties
 // the cascade set with !important, then an important pass, each applying a
 // rule's `all` before its other declarations.
-func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style, frame *styleScopeFrame) bool {
+func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style, frame *styleScopeFrame, viewportWidth, viewportHeight float64) bool {
 	var matched []Rule
 	for _, stylesheet := range stylesheets {
 		for _, rule := range stylesheet.Rules {
 			// @container rules for the element itself, not a pseudo-element.
 			if rule.ContainerQuery == nil || rule.Selector.PseudoElement != "" {
+				continue
+			}
+			// An @media around or inside the @container gates it too.
+			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
 				continue
 			}
 			if m, ok := matchRule(node, &rule, frame); ok && evaluateContainerQuery(node, rule.ContainerQuery, styles) {
@@ -3562,8 +3567,21 @@ func resolveComputedTimeDeclarations(node *html.Node, style *Style, styles map[*
 	}
 }
 
-// evaluateContainerQuery walks up the DOM to find a matching container and evaluates size conditions.
+// evaluateContainerQuery reports whether every level of cq's chain matches
+// (EvaluateAndAddContainerQueries, element_rule_collector.cc:288-316 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each level finds its own
+// container from node.
 func evaluateContainerQuery(node *html.Node, cq *ContainerQuery, styles map[*html.Node]*Style) bool {
+	for ; cq != nil; cq = cq.Parent {
+		if !evaluateContainerQueryLevel(node, cq, styles) {
+			return false
+		}
+	}
+	return true
+}
+
+// evaluateContainerQueryLevel walks up the DOM to find a matching container and evaluates size conditions.
+func evaluateContainerQueryLevel(node *html.Node, cq *ContainerQuery, styles map[*html.Node]*Style) bool {
 	// Walk up ancestors to find a container
 	ancestor := node.Parent
 	for ancestor != nil {
