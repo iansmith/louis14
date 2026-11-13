@@ -43,6 +43,11 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 	}
 
+	// :focus-visible's focus ring (applyFocusVisibleUserAgentStyles).
+	if MatchesFocusVisible(node) {
+		applyFocusVisibleUserAgentStyles(node, style)
+	}
+
 	// Default styles for <a> (anchor/link) elements. Gated on href presence:
 	// the Blink UA rule is `a:-webkit-any-link` (html.css:1683-1687 @
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f) and HTML §4.6.1 defines
@@ -4484,4 +4489,26 @@ func dimensionUnits(val string) []string {
 		}
 	}
 	return units
+}
+
+// applyFocusVisibleUserAgentStyles applies html.css's :focus-visible rules
+// (core/html/resources/html.css:1584-1586 and :1613-1640 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) to a focus-visible element:
+// `outline: auto 1px -webkit-focus-ring-color`, none for html, body, embed,
+// iframe and object, 2px offset for checkboxes and radios (the form
+// controls' 0 offset is the initial value). Types compare case-insensitively,
+// as the rules' [type="..." i] selectors do.
+func applyFocusVisibleUserAgentStyles(node *html.Node, style *Style) {
+	switch node.TagName {
+	case "html", "body", "embed", "iframe", "object":
+		return // outline: none, the initial value
+	}
+	style.Set("outline-style", "auto")
+	style.Set("outline-width", "1px")
+	style.Set("outline-color", "-webkit-focus-ring-color")
+	if node.TagName == "input" {
+		if t, _ := node.GetAttribute("type"); strings.EqualFold(t, "checkbox") || strings.EqualFold(t, "radio") {
+			style.Set("outline-offset", "2px")
+		}
+	}
 }
