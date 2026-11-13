@@ -1062,7 +1062,27 @@ func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string)
 	return
 }
 
-// EmHeightOverAdjustment is a stub; see TestEmHeightOverAdjustment.
+// EmHeightOverAdjustment is how far an emphasized text item's over edge moves
+// toward the baseline before its emphasis mark is placed: the primary font's
+// ascent less its normalized typo ascent, floored and never negative
+// (AdjustTextOverUnderOffsetsForEmHeight, core/layout/inline/ruby_utils.cc:
+// 36-79 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink stores it as the
+// item's negated annotation ascent (SetTextEmphasisAnnotationMetrics,
+// ruby_utils.cc:898-941), which TextPainter::SetEmphasisMark
+// (core/paint/text_painter.cc:529) and ComputeAnnotationOverflow
+// (ruby_utils.cc:775-776) both apply, with TextEmphasisAsRuby stable. On the
+// central baseline the ascent is Height() / 2 (font_metrics.cc:157-158) and
+// the normalized ascent em - em / 2 (simple_font_data.cc:345-347), both @ the
+// same SHA.
 func EmHeightOverAdjustment(fontSize float64, fontPath string, centralBaseline bool) float64 {
-	return 0
+	ascent := FontAscentFromFont(fontSize, fontPath, nil)
+	var normAscent float64
+	if centralBaseline {
+		ascent = (ascent + FontDescentFromFont(fontSize, fontPath, nil)) / 2
+		em := layoutunit.FromFloat64Round(fontSize)
+		normAscent = em.Sub(em.DivInt(2)).Float64()
+	} else {
+		normAscent, _ = NormalizedTypoAscentAndDescent(fontSize, fontPath)
+	}
+	return math.Floor(math.Max(0, ascent-normAscent))
 }

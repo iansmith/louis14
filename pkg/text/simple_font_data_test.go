@@ -176,7 +176,7 @@ func TestFontTest_IdeographicFullWidthUprightCjkVmtx(t *testing.T) {
 // to a LayoutUnit (1/64 px) and the descent the rest
 // (SimpleFontData::NormalizedTypoAscentAndDescent /
 // TrySetNormalizedTypoAscentAndDescent, platform/fonts/simple_font_data.cc:
-// 339-418 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). They come from the
+// 339-415 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). They come from the
 // OS/2 table whatever ascent and descent the font metrics use. Expected
 // values come from an independent read of each font's OS/2 table:
 //

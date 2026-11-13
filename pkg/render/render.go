@@ -5706,6 +5706,12 @@ func (r *Renderer) emphasisMarkAscentDescent(size float64, fontPath string) (asc
 	return text.NormalizedTypoAscentAndDescent(size, fontPath)
 }
 
+// emHeightOverAdjustment is text.EmHeightOverAdjustment for an emphasized
+// item on the alphabetic baseline.
+func (r *Renderer) emHeightOverAdjustment(size float64, fontPath string) float64 {
+	return text.EmHeightOverAdjustment(size, fontPath, false)
+}
+
 // drawTextEmphasis renders text emphasis marks (e.g., dots, circles, sesame)
 // above or below each character. The mark is drawn at ~50% of the text font
 // size, centered horizontally over each glyph.
@@ -5755,8 +5761,10 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) floors the over offset from
 	// the baseline: floor(-baseAscent - emphDescent). box.Y is the baseline
 	// less the rounded base ascent, so the mark baseline is
-	// box.Y + floor(-emphDescent).
-	emphY := box.Y + math.Floor(-emphDescent) - emphAscent
+	// box.Y + floor(-emphDescent), lowered by the item's em-height
+	// adjustment (emHeightOverAdjustment), which SetEmphasisMark adds
+	// back through the item's annotation ascent (text_painter.cc:529).
+	emphY := box.Y + r.emHeightOverAdjustment(layer.FontSize, fontPath) + math.Floor(-emphDescent) - emphAscent
 
 	// Iterate over each character and draw the mark centered above/below it.
 	x := box.X

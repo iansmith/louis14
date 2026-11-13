@@ -92,7 +92,7 @@ func typoAscenderAndDescender(os2 []byte) (ascender, descender int) {
 // descent the rest of emHeight rounded to a LayoutUnit. ok is false when
 // the pair cannot be normalized (a non-positive sum, or an ascent outside
 // [0, sum]). Mirrors SimpleFontData::TrySetNormalizedTypoAscentAndDescent
-// (platform/fonts/simple_font_data.cc:395-418 @
+// (platform/fonts/simple_font_data.cc:395-415 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func normalizedTypoAscentAndDescent(ascent, descent, emHeight float64) (normAscent, normDescent float64, ok bool) {
 	height := ascent + descent

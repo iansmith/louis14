@@ -210,6 +210,11 @@ func emphasisMarkAscentFromLine(
 			markAsc, markDesc := text.NormalizedTypoAscentAndDescent(markFontSize, fontPath)
 			markHeight = markAsc + markDesc
 		}
+		// ComputeAnnotationOverflow puts the mark above the item's over edge
+		// less its annotation ascent (ruby_utils.cc:775-776 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which lowers it by the
+		// em-height adjustment.
+		baseAsc -= text.EmHeightOverAdjustment(fontSize, resolveFontPath(style, fonts), centralBaseline)
 		if n := baseAsc + markHeight; n > needed {
 			needed = n
 		}
