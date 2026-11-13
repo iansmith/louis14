@@ -145,8 +145,7 @@ type TableTypesColumn struct {
 	HasPercent    bool
 	// PercentBorderPadding is the border+padding a fixed-layout content-box
 	// percentage cell adds (CreateCellInlineConstraint,
-	// table_layout_algorithm_types.cc:202-206); 0 for auto layout, the only
-	// layout computeColumnConstraints builds.
+	// table_layout_algorithm_types.cc:202-206); 0 for auto layout.
 	PercentBorderPadding float64
 	// IsConstrained is true if a <col> or any single-column cell gives the
 	// column a specified inline-size.

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 )
 
 // ComputeGridInlineMinMax returns the table grid's min/max inline-sizes,
@@ -289,6 +290,182 @@ func DistributeInlineSizeToComputedInlineSizeAuto(targetInlineSize float64, colu
 		}
 	}
 	return computedSizes
+}
+
+// SynchronizeAssignableTableInlineSizeAndColumns distributes the
+// assignable table inline size to the columns, by the fixed or the auto
+// layout algorithm; the column sizes then sum to it. Mirrors Blink's
+// SynchronizeAssignableTableInlineSizeAndColumns (table/
+// table_layout_utils.cc:1849-1864 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func SynchronizeAssignableTableInlineSizeAndColumns(assignableTableInlineSize float64, isFixedLayout bool, columnConstraints *TableTypesColumns) []float64 {
+	if len(columnConstraints.Data) == 0 {
+		return nil
+	}
+	if isFixedLayout {
+		return SynchronizeAssignableTableInlineSizeAndColumnsFixed(assignableTableInlineSize, columnConstraints)
+	}
+	return DistributeInlineSizeToComputedInlineSizeAuto(assignableTableInlineSize, columnConstraints.Data, true)
+}
+
+// SynchronizeAssignableTableInlineSizeAndColumnsFixed distributes a
+// fixed-layout table's inline size: fixed columns get their width, scaled
+// up to fill the space the percentage columns leave when there are no auto
+// columns and down when they overflow the table; percentage columns get
+// their share of the table, scaled the same way; auto columns share the
+// rest equally, and zero-width constrained columns only when every column
+// is one; the last column sized takes the rounding error. Mirrors Blink's
+// SynchronizeAssignableTableInlineSizeAndColumnsFixed (table/
+// table_layout_utils.cc:776-923 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func SynchronizeAssignableTableInlineSizeAndColumnsFixed(targetInlineSize float64, columnConstraints *TableTypesColumns) []float64 {
+	lu := func(v float64) float64 { return layoutunit.FromFloat64Trunc(v).Float64() }
+	// Columns of width 0 are treated as auto by all browsers.
+	treatAsFixed := func(c TableTypesColumn) bool { return c.IsFixed() && c.MaxInlineSize != 0 }
+	isZeroInlineSizeConstrained := func(c TableTypesColumn) bool { return c.IsConstrained && c.MaxInlineSize == 0 }
+
+	data := columnConstraints.Data
+	var percentCount, autoCount, fixedCount, zeroCount int
+	var totalPercent, totalFixed, assigned float64
+	for _, c := range data {
+		switch {
+		case c.HasPercent:
+			percentCount++
+			totalPercent += lu(c.ResolvePercentInlineSize(targetInlineSize))
+		case treatAsFixed(c):
+			fixedCount++
+			totalFixed += c.MaxInlineSize
+		case isZeroInlineSizeConstrained(c):
+			zeroCount++
+		default:
+			autoCount++
+		}
+	}
+	sizes := make([]float64, len(data))
+	last := -1
+
+	// Fixed columns grow if there are no auto columns, into the space the
+	// percentage columns leave.
+	if fixedCount > 0 {
+		scale, scaleAvailable := 1.0, true
+		targetFixed := max(0, targetInlineSize-totalPercent)
+		scaleUp := totalFixed < targetFixed && autoCount == 0
+		scaleDown := totalFixed > targetInlineSize
+		if scaleUp || scaleDown {
+			if totalFixed != 0 {
+				scale = targetFixed / totalFixed
+			} else {
+				scaleAvailable = false
+			}
+		}
+		for i, c := range data {
+			if !treatAsFixed(c) {
+				continue
+			}
+			last = i
+			if scaleAvailable {
+				sizes[i] = lu(scale * c.MaxInlineSize)
+			} else {
+				sizes[i] = lu(targetInlineSize / float64(fixedCount))
+			}
+			assigned += sizes[i]
+		}
+	}
+	if assigned >= targetInlineSize {
+		return sizes
+	}
+	// Percentage columns only grow if there are no auto columns.
+	if percentCount > 0 {
+		scale, scaleAvailable := 1.0, true
+		remaining := targetInlineSize - assigned
+		scaleUp := totalPercent < remaining && autoCount == 0
+		scaleDown := totalPercent > remaining
+		if scaleUp || scaleDown {
+			if totalPercent != 0 {
+				scale = remaining / totalPercent
+			} else {
+				scaleAvailable = false
+			}
+		}
+		for i, c := range data {
+			if !c.HasPercent {
+				continue
+			}
+			last = i
+			if scaleAvailable {
+				sizes[i] = lu(scale * c.ResolvePercentInlineSize(targetInlineSize))
+			} else {
+				sizes[i] = lu(remaining / float64(percentCount))
+			}
+			assigned += sizes[i]
+		}
+	}
+	// Auto columns, and zero-width columns when every column is one.
+	distributing := targetInlineSize - assigned
+	distributeZero := zeroCount == len(data)
+	for i, c := range data {
+		if c.HasPercent || treatAsFixed(c) {
+			continue
+		}
+		if isZeroInlineSizeConstrained(c) && !distributeZero {
+			continue
+		}
+		last = i
+		n := autoCount
+		if distributeZero {
+			n = zeroCount
+		}
+		sizes[i] = lu(distributing / float64(n))
+		assigned += sizes[i]
+	}
+	if last >= 0 {
+		sizes[last] += targetInlineSize - assigned
+	}
+	return sizes
+}
+
+// DistributeColspanCellToColumnsFixed spreads a colspan cell's min and max
+// inline-sizes, less the inner border spacing, evenly across the columns it
+// spans in a fixed-layout table, to those no cell or <col> sized
+// (hasSize), the last of them taking the rounding error; a percentage goes
+// to the unconstrained columns. Its min counts only when the cell is
+// constrained. Mirrors Blink's DistributeColspanCellToColumnsFixed
+// (table/table_layout_utils.cc:924-1005 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no mergeable
+// columns.
+func DistributeColspanCellToColumnsFixed(colspanCell TableTypesColspanCell, inlineBorderSpacing float64, columnConstraints *TableTypesColumns, hasSize []bool) {
+	end := min(colspanCell.StartColumn+colspanCell.Span, len(columnConstraints.Data))
+	span := end - colspanCell.StartColumn
+	if span <= 0 {
+		return
+	}
+	innerSpacing := inlineBorderSpacing * float64(span-1)
+	cell := colspanCell.CellInlineConstraint
+	minSize := 0.0
+	if cell.IsConstrained {
+		minSize = max(0, cell.MinInlineSize-innerSpacing)
+	}
+	maxSize := max(0, cell.MaxInlineSize-innerSpacing)
+	newMin := layoutunit.FromFloat64Trunc(minSize / float64(span)).Float64()
+	newMax := layoutunit.FromFloat64Trunc(maxSize / float64(span)).Float64()
+	roundingMin, roundingMax := minSize, maxSize
+	last := -1
+	for i := colspanCell.StartColumn; i < end; i++ {
+		column := &columnConstraints.Data[i]
+		last = i
+		roundingMin -= newMin
+		roundingMax -= newMax
+		if !hasSize[i] {
+			column.IsConstrained = column.IsConstrained || cell.IsConstrained
+			column.MinInlineSize, column.MaxInlineSize = newMin, newMax
+			hasSize[i] = true
+		}
+		// Percentages only get distributed over auto columns.
+		if !column.HasPercent && !column.IsConstrained && cell.HasPercent {
+			column.Percent, column.HasPercent = cell.Percent/float64(span), true
+		}
+	}
+	columnConstraints.Data[last].MinInlineSize += roundingMin
+	columnConstraints.Data[last].MaxInlineSize += roundingMax
 }
 
 // DistributeColspanCellToColumnsAuto spreads a colspan cell's min and max
