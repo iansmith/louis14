@@ -66,6 +66,25 @@ func ComputeContentAlignmentForBlock(style *css.Style) BlockContentAlignment {
 	return BlockContentAlignmentStart
 }
 
+// ComputeContentAlignmentForTableCell resolves a table cell's block-axis
+// content alignment from its vertical-align: top is start, middle center,
+// bottom end, and every other value baseline. Mirrors the table-cell half
+// of ComputeContentAlignment (block_layout_algorithm_utils.cc:79-104, called
+// as ComputeContentAlignmentForTableCell, :181-186 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a non-normal align-content on
+// the cell is not modelled.
+func ComputeContentAlignmentForTableCell(style *css.Style) BlockContentAlignment {
+	switch style.GetVerticalAlign() {
+	case css.VerticalAlignTop:
+		return BlockContentAlignmentStart
+	case css.VerticalAlignMiddle:
+		return BlockContentAlignmentSafeCenter
+	case css.VerticalAlignBottom:
+		return BlockContentAlignmentSafeEnd
+	}
+	return BlockContentAlignmentBaseline
+}
+
 // AlignBlockContent shifts a block container's content in the block axis by
 // its align-content (or the internal button centering), using the free
 // space between the fragment's block-size and contentBlockSize, the content's
