@@ -125,24 +125,6 @@ func NodeFragmentGeometry(node *LayoutInputNode, style *css.Style, wdm WritingDi
 	}
 }
 
-// geometryWithStyleScrollbars is node's borders and padding with the
-// style-only scrollbar reservation (ComputeScrollbarLogicalEdges: only
-// overflow:scroll), for the sites whose scrollbar term does not yet follow
-// Blink: the grid item and orthogonal contribution edges, where Blink's
-// clamp floor counts no scrollbar (LOU-973 PR B), and a fragmented
-// containing block, where Blink subtracts borders only (a TODO,
-// out_of_flow_layout_part.cc:870-874 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) but a scroll container is
-// monolithic, so the term is never non-zero there. PR B moves the grid and
-// orthogonal sites off it; it is not a permanent API.
-func geometryWithStyleScrollbars(node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode) FragmentGeometry {
-	return FragmentGeometry{
-		Border:    ComputeBorders(node, style, wdm),
-		Padding:   ComputePadding(node, style, wdm),
-		Scrollbar: ComputeScrollbarLogicalEdges(style, wdm),
-	}
-}
-
 // ComputeBorders is node's border widths in wdm: a border-collapse:collapse
 // table's are its own half of the outer collapsed edges, TableBorder().
 // Mirrors ComputeBorders' table branch (length_utils.cc:1487-1499 @

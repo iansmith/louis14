@@ -1033,7 +1033,11 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		// grid_layout_algorithm.cc:1460-1500); the additional column pass
 		// measures it again against its rows.
 		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space, Indefinite, Indefinite)
-		edges = geometryWithStyleScrollbars(node, cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
+		// edges, the auto minimum's floor, counts no scrollbar (see the
+		// parallel case); the contribution, the item's layout block size,
+		// does (BlockContributionSize).
+		edges = ComputeBorders(node, cs, containerWDM).InlineSum() + ComputePadding(node, cs, containerWDM).InlineSum() +
+			ResolveMargins(cs, containerWDM, 0).InlineSum()
 		return minContrib, maxContrib, edges
 	}
 	// Parallel: compute intrinsic sizes in the child's writing mode, then add
@@ -1041,8 +1045,9 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 	// contribution counts the item's scrollbars (its min/max-content
 	// sizes, ComputeScrollbarsForNonAnonymous); edges, the auto minimum's
 	// floor, does not: CalculateIntrinsicMinimumContribution resolves the
-	// min length against ComputeBorders + ComputePadding only
-	// (grid/grid_layout_utils.cc:537-538 @
+	// min length, and ClampIntrinsicMinSize's min_clamp_size is, against
+	// ComputeBorders + ComputePadding only (grid/grid_layout_utils.cc:
+	// 537-538, grid/grid_layout_algorithm.cc:787-796 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	margins := ResolveMargins(cs, childWDM, 0)
 	childGeom := NodeFragmentGeometry(node, cs, childWDM)
@@ -1054,8 +1059,8 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		SetPercentageResolutionInlineSize(space.PercentageResolutionInlineSize).
 		Build()
 	mm := ComputeMinMaxSizes(ctx, node, childSpace)
-	edges = childGeom.InlineBorderPadding() - childGeom.InlineScrollbarSum() + margins.InlineSum()
-	contribEdges := edges + childGeom.InlineScrollbarSum()
+	edges = childGeom.Border.InlineSum() + childGeom.Padding.InlineSum() + margins.InlineSum()
+	contribEdges := childGeom.InlineBorderPadding() + margins.InlineSum()
 	return mm.MinContent + contribEdges, mm.MaxContent + contribEdges, edges
 }
 

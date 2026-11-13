@@ -1058,15 +1058,19 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 	}
 	inlineSize := NewLogicalFragment(p.containingBlockWDM, cbFragment).InlineSize()
 	totalBlockSize := BoxTotalBlockSize(cbFragment.LayoutNode)
-	// The padding box: borders and scrollbars contracted
-	// (out_of_flow_layout_part.cc:870-878).
-	cbGeom := geometryWithStyleScrollbars(cbFragment.LayoutNode, cbFragment.Style, p.containingBlockWDM)
+	// The padding box: borders contracted (out_of_flow_layout_part.cc:
+	// 864-874 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink does not
+	// subtract scrollbars here (a TODO, crbug 1079031); louis14 subtracts
+	// the style-only overflow:scroll ones, which are never non-zero: a
+	// scroll container is monolithic, so it never holds a fragmented OOF.
+	node, style, wdm := cbFragment.LayoutNode, cbFragment.Style, p.containingBlockWDM
+	border, scrollbar := ComputeBorders(node, style, wdm), ComputeScrollbarLogicalEdges(style, wdm)
 	return containingBlockInfo{
 		size: LogicalSize{
-			InlineSize: max(0, inlineSize-cbGeom.Border.InlineStart-cbGeom.Border.InlineEnd-cbGeom.Scrollbar.InlineStart-cbGeom.Scrollbar.InlineEnd),
-			BlockSize:  max(0, totalBlockSize-cbGeom.Border.BlockStart-cbGeom.Border.BlockEnd-cbGeom.Scrollbar.BlockStart-cbGeom.Scrollbar.BlockEnd),
+			InlineSize: max(0, inlineSize-border.InlineSum()-scrollbar.InlineSum()),
+			BlockSize:  max(0, totalBlockSize-border.BlockSum()-scrollbar.BlockSum()),
 		},
-		padding:              cbGeom.Padding,
+		padding:              ComputePadding(node, style, wdm),
 		contentStackedOffset: d.ContainingBlock.Offset,
 	}, true
 }
