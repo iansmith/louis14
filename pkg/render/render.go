@@ -5846,13 +5846,11 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 	// goes on the over side: louis14 paints ruby-position: under as over, and
 	// the WPT references express under emphasis with ruby-position: under, so
 	// the two stay aligned until under ruby lands.
-	baseAscent, baseDescent := r.integerAscentDescent(layer.FontSize, fontPath)
 	screenX := sidewaysEmphasisGeometry{
 		boxLeft: box.X, boxWidth: box.Width,
-		ascent: baseAscent, descent: baseDescent,
 		markAscent: emphAscent, markDescent: emphDescent,
 		annotH: annotH,
-	}.screenX(true, layer.IsSidewaysRL)
+	}.screenX(layer.IsSidewaysRL)
 	screenXi := int(math.Round(screenX))
 
 	// Iterate characters and blit the (pre-rotated) mark at each non-whitespace
