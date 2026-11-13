@@ -175,7 +175,7 @@ func (f gridBaselineFragment) synthesizedLogicalBaseline(blockSize float64, cent
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no subgrid extra
 // margins.
 func (f gridBaselineFragment) extraMarginForBaseline(forColumns bool) float64 {
-	margins := ToLogicalEdges(ToPhysicalEdges(f.margins, f.item.wdm), f.wd)
+	margins := LogicalToLogical(f.margins, f.item.wdm, f.wd)
 	if f.item.axis(forColumns).alignment == AxisEdgeLastBaseline {
 		return margins.BlockEnd
 	}

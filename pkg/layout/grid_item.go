@@ -123,18 +123,22 @@ func axisEdgeFromItemPosition(forColumns, isReplaced bool, container *css.Style,
 	return edge, autoBehavior, isOverflowSafe
 }
 
-// selfAxisEdge is self-start's (or self-end's) edge in the grid's columns or
-// rows: the item's own start (end) edge in that axis, mapped through
-// physical space onto the grid's start or end. Mirrors the
-// LogicalToPhysical / PhysicalToLogical pair in AxisEdgeFromItemPosition
-// (grid_item.cc:90-111 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func selfAxisEdge(forColumns, isEnd bool, itemWDM, containerWDM WritingDirectionMode) AxisEdge {
-	// The item's start edges, both axes, in physical space.
-	phys := ToPhysicalEdges(LogicalEdges{InlineStart: 1, BlockStart: 1}, itemWDM)
-	// Read them back in the grid's logical space.
-	logical := ToLogicalEdges(phys, containerWDM)
+// selfAxisEdge is self-start's (or self-end's) edge in the container's
+// inline axis (a grid's columns, a column flex's cross axis) or block axis
+// (a grid's rows, a row flex's cross axis): the item's own start (end)
+// edge, mapped through its writing direction onto the container's. Grid
+// and flex share it. Mirrors the LogicalToPhysical / PhysicalToLogical
+// pair in AxisEdgeFromItemPosition (grid/grid_item.cc:90-111) and the
+// LogicalToLogical in FlexLayoutAlgorithm::ResolvedAlignSelf
+// (flex/flex_layout_algorithm.cc:317-326 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Abspos still resolves
+// self-start / self-end its own way (axesOppose in GetAlignmentInsetBias,
+// absolute_utils.go), not yet on this path.
+func selfAxisEdge(inlineAxis, isEnd bool, itemWDM, containerWDM WritingDirectionMode) AxisEdge {
+	// 1 marks the item's start edges.
+	logical := LogicalToLogical(LogicalEdges{InlineStart: 1, BlockStart: 1}, itemWDM, containerWDM)
 	startIsItemStart := logical.BlockStart == 1
-	if forColumns {
+	if inlineAxis {
 		startIsItemStart = logical.InlineStart == 1
 	}
 	if startIsItemStart != isEnd {
