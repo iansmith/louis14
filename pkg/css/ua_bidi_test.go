@@ -37,3 +37,17 @@ func TestUABidiRendering(t *testing.T) {
 		}
 	}
 }
+
+// A dir value is valid only as exactly ltr, rtl or auto, ASCII
+// case-insensitively: a padded value is invalid, so it sets no direction
+// and no isolate (IsValidDirAttribute, core/html/html_element.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestDirHintExactValue(t *testing.T) {
+	st := styleByID(t, cascadeHTML(t, `<span id="t" dir=" rtl "></span>`, nil), "t")
+	if got, ok := st.Get("direction"); ok && got != "ltr" {
+		t.Errorf(`dir=" rtl " direction = %q, want ltr`, got)
+	}
+	if got, ok := st.Get("unicode-bidi"); ok && got != "normal" {
+		t.Errorf(`dir=" rtl " unicode-bidi = %q, want normal`, got)
+	}
+}
