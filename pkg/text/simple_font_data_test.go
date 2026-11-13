@@ -202,3 +202,44 @@ func TestNormalizedTypoAscentAndDescent(t *testing.T) {
 		}
 	}
 }
+
+// TestEmHeightOverAdjustment pins how far an emphasized text item's over edge
+// moves toward the baseline before its emphasis mark is placed: Blink's
+// AdjustTextOverUnderOffsetsForEmHeight takes floor(max(0, ascent -
+// normalized typo ascent)) for the item's baseline (core/layout/inline/
+// ruby_utils.cc:36-79 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which
+// SetTextEmphasisAnnotationMetrics stores as the negated annotation ascent
+// (:898-941) and TextPainter::SetEmphasisMark adds back (core/paint/
+// text_painter.cc:529, same SHA; TextEmphasisAsRuby is stable). On the
+// central baseline the ascent is Height() / 2 (font_metrics.cc:157-158) and
+// the normalized ascent em - em / 2 (simple_font_data.cc:345-347). Expected
+// values come from the font tables with LOU-920's hhea metrics (mazarin
+// #125); Liberation Serif: hhea 1825/-443, sTypo 1420/-442, upem 2048.
+//
+//   - 16px: round(14.26) = 14 - 12.203125 = 1.797 -> 1
+//   - 13px: 12 - 9.921875 -> 2; 32px: 29 - 24.40625 -> 4
+//   - central 20px: (18 + 4) / 2 = 11 - (20 - 10) -> 1
+//   - Ahem 16px: 13 - 12.796875 -> 0
+func TestEmHeightOverAdjustment(t *testing.T) {
+	serif := DefaultFontConfig().resolveBuiltinFamily("serif", false, false)
+	for _, tc := range []struct {
+		name    string
+		path    string
+		size    float64
+		central bool
+		want    float64
+	}{
+		{"LiberationSerif 10px", serif, 10, false, 1},
+		{"LiberationSerif 13px", serif, 13, false, 2},
+		{"LiberationSerif 16px", serif, 16, false, 1},
+		{"LiberationSerif 20px", serif, 20, false, 2},
+		{"LiberationSerif 24px", serif, 24, false, 2},
+		{"LiberationSerif 32px", serif, 32, false, 4},
+		{"LiberationSerif 20px central", serif, 20, true, 1},
+		{"Ahem 16px", "../../fonts/Ahem.ttf", 16, false, 0},
+	} {
+		if got := EmHeightOverAdjustment(tc.size, tc.path, tc.central); got != tc.want {
+			t.Errorf("%s: EmHeightOverAdjustment = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

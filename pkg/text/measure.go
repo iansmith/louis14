@@ -1061,3 +1061,8 @@ func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string)
 	}
 	return
 }
+
+// EmHeightOverAdjustment is a stub; see TestEmHeightOverAdjustment.
+func EmHeightOverAdjustment(fontSize float64, fontPath string, centralBaseline bool) float64 {
+	return 0
+}
