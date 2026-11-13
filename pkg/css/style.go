@@ -8914,7 +8914,34 @@ type GridTrack struct {
 	AutoFitExpanded bool        // true if this track was expanded from an auto-fit repetition
 	AutoTemplate    []GridTrack // template tracks for auto-fill/auto-fit
 	IsSubgrid       bool        // true if this represents a "subgrid" keyword
+	// MinBreadthType and MaxBreadthType are a minmax() track's minimum and
+	// maximum sizing functions when they are not lengths: auto,
+	// min-content or max-content. The zero value, GridTrackBreadthFixed,
+	// means the bound is what the fields above say (MinSize; MaxSize,
+	// MaxFr or MaxAuto).
+	MinBreadthType GridTrackBreadthType
+	MaxBreadthType GridTrackBreadthType
 }
+
+// GridTrackBreadthType is the kind of a grid track's minimum or maximum
+// breadth. Blink keeps each breadth as a Length (GridTrackSize::
+// MinTrackBreadth / MaxTrackBreadth, core/style/grid_track_size.h:132-133)
+// whose type is one of Length::Type's (platform/geometry/length.h:116-126 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); these are the ones a minmax()
+// bound can take besides a flexible maximum, which MaxFr holds.
+type GridTrackBreadthType uint8
+
+const (
+	// GridTrackBreadthFixed is Length::kFixed: the bound is the track's
+	// length fields.
+	GridTrackBreadthFixed GridTrackBreadthType = iota
+	// GridTrackBreadthAuto is Length::kAuto.
+	GridTrackBreadthAuto
+	// GridTrackBreadthMinContent is Length::kMinContent.
+	GridTrackBreadthMinContent
+	// GridTrackBreadthMaxContent is Length::kMaxContent.
+	GridTrackBreadthMaxContent
+)
 
 // GetGridTemplateColumns parses grid-template-columns and returns track sizes
 func (s *Style) GetGridTemplateColumns() []GridTrack {
