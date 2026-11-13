@@ -41,6 +41,11 @@ type Font struct {
 	XHeight float64
 	// CapHeight is the cap-height in px; 0 = none (cap falls back to 0.7em).
 	CapHeight float64
+	// LineSpacing is the primary font's line spacing in px, what
+	// line-height: normal computes to (FontMetrics::FixedLineSpacing,
+	// platform/fonts/font_metrics.h:152-154 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); 0 = not measured.
+	LineSpacing float64
 	// IdeographicInlineSize is the advance of 水 in px; valid only when
 	// HasIdeographicInlineSize, so a measured 0 is a real zero advance.
 	IdeographicInlineSize float64
@@ -58,7 +63,8 @@ type Font struct {
 // writing-mode and text-orientation, which set the font's orientation (Blink
 // ComputeFontOrientation) — and stores the metrics the font-relative units
 // read (Style.UsedFontSize, ChWidth, XHeight, CapHeight, IcWidth /
-// HasIdeographicInlineSize). A non-nil fs becomes s's selector; with nil, s
+// HasIdeographicInlineSize) and the line spacing line-height: normal
+// computes to (Style.LineSpacing). A non-nil fs becomes s's selector; with nil, s
 // keeps the selector it carries (set by the cascade, inherited by pseudo and
 // anonymous styles and clones); with none, s keeps the unmeasured fallbacks.
 // Mirrors StyleResolverState::UpdateFont (core/css/resolver/
@@ -78,6 +84,7 @@ func (s *Style) UpdateFont(fs FontSelector) {
 	s.SetZeroWidth(f.ZeroWidth)
 	s.XHeight = f.XHeight
 	s.CapHeight = f.CapHeight
+	s.LineSpacing = f.LineSpacing
 	s.IcWidth, s.HasIdeographicInlineSize = f.IdeographicInlineSize, f.HasIdeographicInlineSize
 }
 

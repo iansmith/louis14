@@ -17,7 +17,7 @@ type fakeFontSelector struct{}
 func (fakeFontSelector) CreateFont(s *Style) Font {
 	fs := s.GetFontSize()
 	f := Font{AdjustedSize: fs, ZeroWidth: 0.6 * fs, XHeight: 0.4 * fs, CapHeight: 0.8 * fs,
-		IdeographicInlineSize: 0.9 * fs, HasIdeographicInlineSize: true}
+		IdeographicInlineSize: 0.9 * fs, HasIdeographicInlineSize: true, LineSpacing: 1.25 * fs}
 	switch fam, _ := s.Get("font-family"); strings.TrimSpace(fam) {
 	case "b":
 		f.XHeight = 0.3 * fs
@@ -207,5 +207,28 @@ func TestTextDecorationInset_ChResolvedAtCascade(t *testing.T) {
 	}
 	if got := div.AppliedTextDecorations[0].Inset; got != (TextDecorationInset{InlineStart: 12, InlineEnd: 12}) {
 		t.Errorf("inset = %+v, want 12px each side (2 × 0.6em \"0\" advance at 10px)", got)
+	}
+}
+
+// TestLineHeight_NormalIsFontLineSpacing (LOU-981): line-height: normal
+// computes to each element's own primary-font line spacing, and the lh unit
+// reads it (ComputedStyle::ComputedLineHeightAsFixed → FixedLineSpacing,
+// core/style/computed_style.cc:2440-2449 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The keyword inherits, so a
+// 40px child spaces its own lines 50px apart.
+func TestLineHeight_NormalIsFontLineSpacing(t *testing.T) {
+	doc, _ := html.Parse(`<style>div { font-size: 10px; } span { font-size: 40px; }
+		p { font-size: 10px; width: 2lh; }</style><div><span>x</span><p>y</p></div>`)
+	styles := ApplyStylesToDocumentWithFontSelector(doc, 800, 600, fakeFontSelector{})
+	for _, tc := range []struct {
+		tag  string
+		want float64
+	}{{"div", 12.5}, {"span", 50}, {"p", 12.5}} {
+		if got := styleByTag(t, styles, tc.tag).GetLineHeight(); got != tc.want {
+			t.Errorf("<%s> line-height = %v, want %v (1.25em line spacing)", tc.tag, got, tc.want)
+		}
+	}
+	if got := styleByTag(t, styles, "p").LhSize; got != 12.5 {
+		t.Errorf("<p> lh = %v, want 12.5", got)
 	}
 }

@@ -66,6 +66,12 @@ type Style struct {
 	// Style.UpdateFont, like XHeight.
 	CapHeight float64
 
+	// LineSpacing is the measured line spacing in pixels of the element's
+	// primary font at the used font-size, what line-height: normal computes
+	// to (0 = not measured; GetLineHeight then falls back to 1.2em). Filled
+	// at cascade time by Style.UpdateFont, like XHeight.
+	LineSpacing float64
+
 	// LhSize is the computed line-height in pixels of the element (0 = not
 	// computed; lh unit then falls back to 1.2em). CSS Values 4 §6.1: the lh
 	// unit equals the element's computed line-height. Mirrors Blink's
@@ -7399,6 +7405,7 @@ func copyStyleResolutionContext(dst, src *Style) {
 	dst.UsedFontSizeSet = src.UsedFontSizeSet
 	dst.XHeight = src.XHeight
 	dst.CapHeight = src.CapHeight
+	dst.LineSpacing = src.LineSpacing
 	dst.LhSize = src.LhSize
 	dst.IcWidth = src.IcWidth
 	dst.HasIdeographicInlineSize = src.HasIdeographicInlineSize
@@ -7832,13 +7839,8 @@ func (s *Style) GetVerticalAlignOffset() float64 {
 	return 0
 }
 
-// GetLineHeight returns the line-height in pixels (default: 1.2 * font-size).
-// CSS line-height accepts unitless numbers (e.g., "1.5") meaning a multiplier
-// of the current font-size, unlike other CSS length properties where bare
-// numbers are invalid.
 // IsLineHeightNormal returns true when line-height is 'normal' (the initial value).
-// When true, the used line-height should come from the font's own metrics
-// (ascent + descent) rather than a fixed multiplier.
+// When true, the used line-height is the font's line spacing (GetLineHeight).
 func (s *Style) IsLineHeightNormal() bool {
 	val, ok := s.Get("line-height")
 	if !ok {
@@ -7847,11 +7849,22 @@ func (s *Style) IsLineHeightNormal() bool {
 	return strings.EqualFold(strings.TrimSpace(val), "normal")
 }
 
+// GetLineHeight returns the computed line-height in pixels. line-height:
+// normal is the primary font's line spacing (Style.LineSpacing), falling
+// back to 1.2 * font-size when no font was measured; Blink's
+// ComputedStyle::ComputedLineHeightAsFixed (core/style/computed_style.cc:
+// 2440-2449 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). CSS line-height
+// accepts unitless numbers (e.g., "1.5") meaning a multiplier of the
+// current font-size, unlike other CSS length properties where bare numbers
+// are invalid.
 func (s *Style) GetLineHeight() float64 {
-	val, ok := s.Get("line-height")
-	if !ok {
+	if s.IsLineHeightNormal() {
+		if s.LineSpacing > 0 {
+			return s.LineSpacing
+		}
 		return s.GetFontSize() * 1.2
 	}
+	val, _ := s.Get("line-height")
 	// Try as a standard CSS length first (px, em, etc.)
 	// Use writing-mode-aware ch scale for vertical writing modes.
 	if lh, ok := s.GetLengthForVal(val); ok {
