@@ -105,7 +105,7 @@ func (c *focusRingRectCollector) addLineItems(items []*layout.Box, inline *html.
 		}
 		own := item.Node == inline
 		if inline == nil {
-			own = !isNonAtomicInline(item.Style, item.Node)
+			own = !layout.IsLayoutInline(item.Style, item.Node)
 		}
 		if own {
 			c.add(boxRectF(item))
@@ -147,14 +147,7 @@ func isTextFragment(b *layout.Box) bool {
 // isInlineBoxFragment reports whether b is a fragment of a non-atomic inline
 // box (Blink's LayoutInline): an element box that is a non-atomic inline.
 func isInlineBoxFragment(b *layout.Box) bool {
-	return b != nil && !b.IsLineBox && !isTextFragment(b) && b.Node != nil && isNonAtomicInline(b.Style, b.Node)
-}
-
-// isNonAtomicInline is layout's PhysicalFragment::IsInlineBox test for a
-// style and its node: display inline, ruby or ruby-text on an element that
-// is neither replaced nor a form control, or an inline list-item.
-func isNonAtomicInline(s *css.Style, n *html.Node) bool {
-	return s != nil && (!layout.IsTransformableBox(s, n) || s.IsInlineBoxListItem())
+	return b != nil && !b.IsLineBox && !isTextFragment(b) && b.Node != nil && layout.IsLayoutInline(b.Style, b.Node)
 }
 
 // isInclusiveAncestor reports whether a is n or one of its ancestors (an
