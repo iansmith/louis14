@@ -221,7 +221,9 @@ func isOutOfFlow(b *layout.Box) bool {
 // whose computed style is positioned. Transforms, filters, backdrop
 // filters, will-change and containment also make a container; layout
 // resolves the real one (OutOfFlowCandidate's container) but does not carry
-// it onto the out-of-flow box, so they are not considered here.
+// it onto the out-of-flow box, so they are not considered here (LOU-990
+// carries the container onto the box; this function and elementStyle then
+// go away).
 func (r *Renderer) absoluteContainer(n *html.Node) *html.Node {
 	for a := n; a != nil && a.Parent != nil; {
 		a = a.Parent
