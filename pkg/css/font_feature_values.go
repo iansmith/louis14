@@ -206,6 +206,11 @@ func mergeFeatureMap(dst, src map[string][]int, maxIndexes int) {
 	}
 }
 
+// isCSSNewline reports whether c is a CSS newline byte (Syntax §4).
+func isCSSNewline(c byte) bool {
+	return c == '\n' || c == '\r' || c == '\f'
+}
+
 // isCSSWhitespace reports whether c is a CSS whitespace byte (Syntax §4).
 func isCSSWhitespace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f'
