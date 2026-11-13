@@ -405,3 +405,29 @@ func TestDecorationLine_SpansFragmentInlineSize(t *testing.T) {
 		assertPixel(t, img, 100, 115, white, "font-size-adjust: "+adjust+": and no further")
 	}
 }
+
+// A selection splits a text fragment into segments that paint separately,
+// but its decorations still span the fragment's inline size once, unbroken
+// at the selection's edges and no further, letter-spacing included
+// (TextDecorationPainter::UpdateDecorationInfo,
+// core/paint/text_decoration_painter.cc:86-96 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Chrome 2026-11-13: 20px
+// "XXXX" with letter-spacing: 10px and characters 1-3 selected is
+// underlined x 100-219 without a break. louis14's fragment ends at x 209,
+// short of the last character's letter-spacing (LOU-1071), so the end is
+// checked there (LOU-1071 re-pins it to x 219); the edges at x 130 and
+// 190 are this test's point.
+func TestDecorationLine_SelectionSegmentsKeepOneUnderline(t *testing.T) {
+	img, _ := renderScripted(t, `<!DOCTYPE html><style>
+	body { margin: 0 }
+	#d { position: absolute; left: 100px; top: 10px; font: 20px/20px Ahem; color: transparent; letter-spacing: 10px;
+	     text-decoration: underline solid black; text-decoration-thickness: 4px; text-underline-offset: 2px; text-decoration-skip-ink: none }
+	#d::selection { background: transparent; color: black }
+</style><div id="d">XXXX</div>
+<script>const t = document.getElementById("d").firstChild; const r = document.createRange(); r.setStart(t, 1); r.setEnd(t, 3); getSelection().removeAllRanges(); getSelection().addRange(r);</script>`,
+		300, 80, render.WithEditingState())
+	for _, x := range []int{100, 129, 130, 131, 189, 190, 191, 209} {
+		assertPixel(t, img, x, 31, black, "the underline runs on across the selection's edges")
+	}
+	assertPixel(t, img, 225, 31, white, "and doesn't overshoot the fragment")
+}
