@@ -179,3 +179,33 @@ func TestFocusRing_AnchorOutOfFlowChildren(t *testing.T) {
 			}},
 	}, 200, 80)
 }
+
+// TestFocusRing_TransformedDescendant: a descendant with a layer adds its
+// rects in its own space, mapped to the focused element's through its
+// transform (AddOutlineRectsForDescendant's HasLayer branch,
+// core/layout/physical_box_fragment.cc:1499-1510 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; VectorOutlineRectCollector::
+// Combine maps each rect through LocalToAncestorRect,
+// core/layout/outline_rect_collector.cc:49-61, same SHA), so the ring
+// reaches where a translated or scaled child paints, and nested transforms
+// compose before one bounding box is taken.
+func TestFocusRing_TransformedDescendant(t *testing.T) {
+	blue := color.RGBA{0, 0, 255, 255}
+	black := color.RGBA{0, 0, 0, 255}
+	runRingCases(t, []ringCase{
+		{"translated child", `<div style="position:absolute;left:20px;top:20px;width:50px;height:20px;outline:auto 1px blue"><div style="width:20px;height:20px;transform:translateX(80px)"></div></div>`,
+			[]ringProbe{
+				{45, 19, blue, "guard: the block's own top edge"},
+				{110, 19, blue, "the translated child's top edge"},
+			}},
+		{"translated and scaled child", `<div style="position:absolute;left:20px;top:20px;width:50px;height:20px;outline:auto 1px blue"><div style="width:20px;height:20px;transform:translateX(80px) scale(2)"></div></div>`,
+			[]ringProbe{
+				{125, 9, blue, "the scaled child's top edge, x 90-130 at y 10"},
+			}},
+		{"nested rotations", `<div style="position:absolute;left:50px;top:50px;width:20px;height:20px;outline:auto 1px blue"><div style="width:20px;height:20px;transform:rotate(45deg)"><div style="width:20px;height:20px;transform:rotate(45deg)"></div></div></div>`,
+			[]ringProbe{
+				{60, 45, blue, "the 45° child's bounding box top, y 45.86 snapped to 46"},
+				{60, 40, black, "the grandchild turns 90° in all, staying 20×20; no 40×40 box of a box"},
+			}},
+	}, 200, 120)
+}
