@@ -88,13 +88,21 @@ func (c *focusRingRectCollector) addNormalChildren(b *layout.Box) {
 }
 
 // addLineItems is AddOutlineRectsForCursor (:1419-1477) over one line's
-// items. With inline nil the cursor is a block's: a text item counts unless
-// it lies inside an inline box, whose descendants Blink reaches through
-// the legacy LayoutInline::AddOutlineRectsForNormalChildren that skips text
-// (layout_box_model_object.cc:386-429). With inline set the cursor is that
-// focused inline's descendants: only items of its subtree count, and of its
-// text only its own.
+// items. A text item counts unless an inline box fragment on the line
+// encloses it: Blink reaches such an inline box's descendants through the
+// legacy LayoutInline::AddOutlineRectsForNormalChildren, which skips text
+// (layout_box_model_object.cc:386-429), while a culled inline box (no box
+// fragment, LayoutInline::ComputeInitialShouldCreateBoxFragment,
+// layout_inline.cc:179-227) leaves its text items on the line. With inline
+// set the cursor is that focused inline's descendants: only items of its
+// subtree count, and only inline boxes inside it enclose.
 func (c *focusRingRectCollector) addLineItems(items []*layout.Box, inline *html.Node) {
+	boxes := map[*html.Node]bool{}
+	for _, item := range items {
+		if item != nil && isInlineBoxFragment(item) {
+			boxes[item.Node] = true
+		}
+	}
 	for _, item := range items {
 		if item == nil || (inline != nil && !isInclusiveAncestor(inline, item.Node)) {
 			continue
@@ -103,14 +111,21 @@ func (c *focusRingRectCollector) addLineItems(items []*layout.Box, inline *html.
 			c.addDescendant(item)
 			continue
 		}
-		own := item.Node == inline
-		if inline == nil {
-			own = !layout.IsLayoutInline(item.Style, item.Node)
-		}
-		if own {
+		if !enclosedByInlineBox(item.Node, inline, boxes) {
 			c.add(boxRectF(item))
 		}
 	}
+}
+
+// enclosedByInlineBox reports whether one of boxes is n or an ancestor of n
+// below stop (the focused inline, nil for a block's cursor).
+func enclosedByInlineBox(n, stop *html.Node, boxes map[*html.Node]bool) bool {
+	for ; n != nil && n != stop; n = n.Parent {
+		if boxes[n] {
+			return true
+		}
+	}
+	return false
 }
 
 // addDescendant is AddOutlineRectsForDescendant (:1479-1532) behind
