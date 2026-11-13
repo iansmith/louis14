@@ -131,14 +131,17 @@ func TestLookupFontFeatureValues_FamilyMismatch(t *testing.T) {
 // does not open the rule's block.
 func TestFontFeatureValuesFamilyStrings(t *testing.T) {
 	for _, tc := range []struct {
-		css  string
-		want []string
+		name, css string
+		want      []string
 	}{
-		{`@font-feature-values "Foo{" { @swash { fancy: 1 } }`, []string{"Foo{"}},
-		{`@font-feature-values "Fo\"o", Bar { @swash { fancy: 1 } }`, []string{`Fo"o`, "Bar"}},
-		{`@font-feature-values 'a,b', "c" { @swash { fancy: 1 } }`, []string{"a,b", "c"}},
+		{"brace in string", `@font-feature-values "Foo{" { @swash { fancy: 1 } }`, []string{"Foo{"}},
+		{"close brace in string", `@font-feature-values "Foo}" { @swash { fancy: 1 } }`, []string{"Foo}"}},
+		{"escaped quote", `@font-feature-values "Fo\"o", Bar { @swash { fancy: 1 } }`, []string{`Fo"o`, "Bar"}},
+		{"escaped brace", `@font-feature-values "Foo\{" { @swash { fancy: 1 } }`, []string{"Foo{"}},
+		{"hex escape", `@font-feature-values "\66oo" { @swash { fancy: 1 } }`, []string{"foo"}},
+		{"comma in string", `@font-feature-values 'a,b', "c" { @swash { fancy: 1 } }`, []string{"a,b", "c"}},
 	} {
-		t.Run(tc.css, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			ss := mustParseSheet(t, tc.css, nil)
 			if len(ss.FontFeatureValues) != 1 {
 				t.Fatalf("%d @font-feature-values rules, want 1", len(ss.FontFeatureValues))
