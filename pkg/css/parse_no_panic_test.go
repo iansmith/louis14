@@ -99,7 +99,7 @@ func TestBraceInStringDoesNotOpenBlock(t *testing.T) {
 		} {
 			want := sel
 			if css[0] == '.' {
-				want = `.p ` + sel
+				want = `:is(.p) ` + sel
 			}
 			t.Run(css, func(t *testing.T) {
 				sheet := mustParseSheet(t, css, nil)
