@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"image"
+	"image/color"
 	"testing"
 
 	"louis14/pkg/render"
@@ -341,4 +342,33 @@ func TestDecorationLine_MixedVerticalSkipsInk(t *testing.T) {
 	upright := render.RenderPage(t, page("upright"), 250, 160)
 	assertPixel(t, upright, 111, 30, black, "upright: no skip across the glyph")
 	assertPixel(t, upright, 111, 70, black, "upright: beside the space too")
+}
+
+// A vertical run's under- and overlines paint before its glyphs and its
+// line-through after (TextFragmentPainter::Paint, core/paint/
+// text_fragment_painter.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+// PaintDecorationsExceptLineThrough before the text, PaintDecorationLineThrough
+// after), so green glyphs cover an underline pulled into them. Chrome
+// 2026-11-13: the line at x 109-114 stays green over the glyphs, mixed or
+// upright.
+func TestDecorationLine_VerticalUnderlinePaintsBeneathGlyphs(t *testing.T) {
+	green := color.RGBA{0, 255, 0, 255}
+	for _, orientation := range []string{"mixed", "upright"} {
+		img := render.RenderPage(t, `<!DOCTYPE html><html lang="en"><body style="margin:0">`+
+			`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:`+orientation+`;font:40px/40px Ahem;color:#0f0;`+
+			`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:-15px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
+		assertPixel(t, img, 111, 30, green, orientation+": the glyph covers the underline")
+		assertPixel(t, img, 111, 70, green, orientation+": and again over the second glyph")
+	}
+}
+
+// A rotated run's decoration spans its inline extent, letter-spacing
+// included (the text fragment's inline size). Chrome 2026-11-13: with
+// letter-spacing: 10px "XXX" runs y 10-159.
+func TestDecorationLine_MixedDecorationSpansLetterSpacing(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html lang="en"><body style="margin:0">`+
+		`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:mixed;font:40px/40px Ahem;color:transparent;letter-spacing:10px;`+
+		`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 260)
+	assertPixel(t, img, 85, 159, black, "the underline reaches y 159")
+	assertPixel(t, img, 85, 160, white, "and stops there")
 }
