@@ -2960,8 +2960,8 @@ func createLineBoxEx(
 			blockPos := maxAscent - ascent
 
 			// CSS 2.1 §10.8.1: if this text is inside a vertical-align:top or
-			// bottom aligned subtree, shift the fragment so the subtree's top
-			// (bottom) edge lines up with the line-top (line-bottom), while
+			// bottom aligned subtree, shift the fragment so the subtree's
+			// line-over (line-under) edge lines up with the line box's, while
 			// preserving baseline-alignment internally to the subtree root.
 			// Innermost enclosing subtree wins. For text whose direct parent
 			// carries vertical-align:top/bottom but has no enclosing OpenTag
@@ -2979,7 +2979,7 @@ func createLineBoxEx(
 					rootAsc, rootDesc = inlineBoxAsDesc(rStyle)
 				}
 			}
-			switch effectiveVA {
+			switch wdm.lineToBlockVerticalAlign(effectiveVA) {
 			case css.VerticalAlignTop:
 				blockPos = rootAsc - ascent
 			case css.VerticalAlignBottom:
@@ -3158,14 +3158,15 @@ func createLineBoxEx(
 					va = r.Item.Style.GetVerticalAlign()
 				}
 
-				switch va {
+				switch wdm.lineToBlockVerticalAlign(va) {
 				case css.VerticalAlignTop:
-					// CSS 2.1 §10.8.1: Align the top of the margin-box with the
-					// top of the line box. The border-box starts below the block-start margin.
+					// CSS 2.1 §10.8.1: align the margin box's block-start edge
+					// with the line box's (line-over, or line-under in
+					// vertical-lr). The border box starts after the block-start margin.
 					blockPos = r.Margins.BlockStart
 				case css.VerticalAlignBottom:
-					// CSS 2.1 §10.8.1: Align the bottom of the margin-box with the
-					// bottom of the line box. Subtract margin-box height from line height.
+					// CSS 2.1 §10.8.1: align the margin box's block-end edge with
+					// the line box's (line-under, or line-over in vertical-lr).
 					blockPos = lineHeight - blockSize - r.Margins.BlockEnd
 					if blockPos < 0 {
 						blockPos = 0

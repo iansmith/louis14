@@ -111,6 +111,26 @@ func (wdm WritingDirectionMode) lineToBlock(over, under float64) (blockStart, bl
 	return over, under
 }
 
+// lineToBlockVerticalAlign maps vertical-align top / bottom, which align to
+// the line box's line-over / line-under edge, onto louis14's block-start
+// (VerticalAlignTop) / block-end (VerticalAlignBottom) placement. Blink aligns
+// them to line-relative ascent / descent (InlineLayoutStateStack::
+// ApplyPendingPositions, core/layout/inline/inline_box_state.cc:1185-1209 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); in block terms they swap in
+// flipped lines, as lineToBlock does. Other values pass through.
+func (wdm WritingDirectionMode) lineToBlockVerticalAlign(va css.VerticalAlign) css.VerticalAlign {
+	if !wdm.IsFlippedLines() {
+		return va
+	}
+	switch va {
+	case css.VerticalAlignTop:
+		return css.VerticalAlignBottom
+	case css.VerticalAlignBottom:
+		return css.VerticalAlignTop
+	}
+	return va
+}
+
 // IsSideways returns true for sideways-rl and sideways-lr writing modes.
 // Per CSS Writing Modes 3 §5.1, these modes force text-orientation: sideways
 // regardless of the computed value: all glyphs are rotated 90° from the
