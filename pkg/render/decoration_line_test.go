@@ -235,11 +235,12 @@ func firstDarkColumn(img image.Image, from, to, y int) int {
 	return -1
 }
 
-// assertWaveInk checks that the pixel at (x, y) is wave ink: Chrome paints
-// these pixels black, and the stroker may leave up to 16 levels of the
-// background where the pixel touches the ink's outer edge (Skia offsets
-// the curve; textshape offsets a flattening of it). A stroke join that
-// misses the outer side of a turn leaves ~100.
+// assertWaveInk checks that the pixel at (x, y) is wave ink. Chrome paints
+// it black; louis14 may leave up to 16 levels of background at the ink's
+// outer edge, since textshape strokes a 32-segment flattening where Skia
+// offsets the curve: a real divergence, tracked by MAZ-222 — tighten to an
+// exact match when it lands. A stroke join missing the outer side of a
+// turn (MAZ-221) leaves ~100.
 func assertWaveInk(t *testing.T, img image.Image, x, y int, why string) {
 	t.Helper()
 	if r, _, _, _ := img.At(x, y).RGBA(); r>>8 > 16 {
