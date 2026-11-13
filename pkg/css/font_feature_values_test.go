@@ -140,9 +140,17 @@ func TestFontFeatureValuesFamilyStrings(t *testing.T) {
 		{"escaped brace", `@font-feature-values "Foo\{" { @swash { fancy: 1 } }`, []string{"Foo{"}},
 		{"hex escape", `@font-feature-values "\66oo" { @swash { fancy: 1 } }`, []string{"foo"}},
 		{"comma in string", `@font-feature-values 'a,b', "c" { @swash { fancy: 1 } }`, []string{"a,b", "c"}},
+		// A bad string is no family name, so the rule is invalid.
+		{"bad string", "@font-feature-values \"Foo,Bar\n { @swash { fancy: 1 } }", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ss := mustParseSheet(t, tc.css, nil)
+			if tc.want == nil {
+				if len(ss.FontFeatureValues) != 0 {
+					t.Errorf("@font-feature-values rules = %+v, want none", ss.FontFeatureValues)
+				}
+				return
+			}
 			if len(ss.FontFeatureValues) != 1 {
 				t.Fatalf("%d @font-feature-values rules, want 1", len(ss.FontFeatureValues))
 			}
