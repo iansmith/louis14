@@ -157,27 +157,23 @@ func (op *svgObjectPainter) applyStroke() svgPaintResolution {
 		op.dc.SetLineJoin(textshape.LineJoinBevel)
 	}
 
-	dashes := op.style.GetStrokeDashArray()
-	if len(dashes) > 0 {
-		// SVG 2 §13.4.4: an odd-element list is duplicated to
-		// make the pattern even.
-		if len(dashes)%2 == 1 {
-			dashes = append(append([]float64(nil), dashes...), dashes...)
-		}
-		op.dc.SetDash(dashes...)
-	} else {
-		// Reset any prior dash.
-		op.dc.SetDash()
-	}
-
-	// stroke-dashoffset is not yet plumbed through DrawContext;
-	// mazarin's SetDash does not currently take an offset. Phase 4+
-	// will follow up if a reftest in scope exercises a non-zero
-	// dashoffset.
-	_ = op.style.GetStrokeDashOffset()
+	setLineDash(op.dc, op.style.GetStrokeDashArray(), op.style.GetStrokeDashOffset())
 
 	opacity := op.style.GetStrokeOpacity()
 	return op.resolvePaint(paint, opacity, false)
+}
+
+// setLineDash is StrokeData::SetLineDash (platform/geometry/
+// stroke_data.cc:35-50 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an
+// odd-length dash array repeats to make it even, and dashOffset is the
+// dash effect's phase. An empty array clears the dash. louis14 has no
+// StrokeData; this sets the dash straight onto dc.
+func setLineDash(dc textshape.DrawContext, dashes []float64, dashOffset float64) {
+	if len(dashes)%2 == 1 {
+		dashes = append(append([]float64(nil), dashes...), dashes...)
+	}
+	dc.SetDash(dashes...)
+	dc.SetDashPhase(dashOffset)
 }
 
 // resolvePaint reduces a parsed css.SVGPaint to an svgPaintResolution.
