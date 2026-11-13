@@ -292,6 +292,67 @@ func DistributeInlineSizeToComputedInlineSizeAuto(targetInlineSize float64, colu
 	return computedSizes
 }
 
+// RowBaselineTabulator gathers a row's baseline from its cells: the
+// largest ascent and descent of the baseline-aligned cells with a baseline,
+// or, when there are none, the smallest block-end border and padding of the
+// cells, the baseline then being the row's content end. Mirrors Blink's
+// RowBaselineTabulator (table/table_layout_utils.cc:1680-1733 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), less the
+// percentage-descendant tracking louis14 has no use for.
+type RowBaselineTabulator struct {
+	maxCellAscent, maxCellDescent float64
+	hasMaxCellAscent              bool
+	fallbackCellDescent           float64
+	hasFallbackCellDescent        bool
+}
+
+// ProcessCell adds a cell's measured fragment: its block size, its first
+// baseline (hasBaseline), the block-end border and padding, whether it has
+// in-flow content (Blink's HasDescendantsForTablePart), its content
+// alignment, and whether it spans rows (which then adds no descent).
+func (t *RowBaselineTabulator) ProcessCell(blockSize, baseline float64, hasBaseline bool, blockEndBorderPadding float64, hasDescendants bool, align BlockContentAlignment, isRowspanned bool) {
+	if align == BlockContentAlignmentBaseline && hasDescendants && hasBaseline {
+		if !t.hasMaxCellAscent || baseline > t.maxCellAscent {
+			t.maxCellAscent = baseline
+		}
+		// A row-spanning cell adds no descent (it stays 0 if it is the
+		// first).
+		if !isRowspanned && (!t.hasMaxCellAscent || blockSize-baseline > t.maxCellDescent) {
+			t.maxCellDescent = blockSize - baseline
+		}
+		t.hasMaxCellAscent = true
+	}
+	// css-tables-3 #row-layout: "If there is no such line box or
+	// table-row, the baseline is the bottom of content edge of the cell box."
+	if !t.hasMaxCellAscent {
+		if !t.hasFallbackCellDescent || blockEndBorderPadding < t.fallbackCellDescent {
+			t.fallbackCellDescent = blockEndBorderPadding
+		}
+		t.hasFallbackCellDescent = true
+	}
+}
+
+// ComputeRowBlockSize grows maxCellBlockSize to fit the baseline-aligned
+// cells' largest ascent plus largest descent.
+func (t *RowBaselineTabulator) ComputeRowBlockSize(maxCellBlockSize float64) float64 {
+	if t.hasMaxCellAscent {
+		return max(maxCellBlockSize, t.maxCellAscent+t.maxCellDescent)
+	}
+	return maxCellBlockSize
+}
+
+// ComputeBaseline returns the row's baseline for a row rowBlockSize tall;
+// an empty row's is its top.
+func (t *RowBaselineTabulator) ComputeBaseline(rowBlockSize float64) float64 {
+	if t.hasMaxCellAscent {
+		return t.maxCellAscent
+	}
+	if t.hasFallbackCellDescent {
+		return max(0, rowBlockSize-t.fallbackCellDescent)
+	}
+	return 0
+}
+
 // SynchronizeAssignableTableInlineSizeAndColumns distributes the
 // assignable table inline size to the columns, by the fixed or the auto
 // layout algorithm; the column sizes then sum to it. Mirrors Blink's

@@ -127,6 +127,13 @@ type ConstraintSpace struct {
 	// IsRestrictedBlockSizeTableCellChild (constraint_space.h:481).
 	IsRestrictedBlockSizeTableCellChild bool
 
+	// TableCellAlignmentBaseline is the row baseline a baseline-aligned
+	// table cell aligns its content to, when HasTableCellAlignmentBaseline.
+	// Mirrors ConstraintSpace::TableCellAlignmentBaseline (constraint_space.h
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	TableCellAlignmentBaseline    float64
+	HasTableCellAlignmentBaseline bool
+
 	// IsContentSuggestionLayout is true when this layout is performed for §4.5
 	// content size suggestion. The element's own explicit CSS block-size must
 	// be ignored — only content determines the block-size.
@@ -622,6 +629,14 @@ func (b *ConstraintSpaceBuilder) SetIsBlockSizeOverride(v bool) *ConstraintSpace
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (b *ConstraintSpaceBuilder) SetIsRestrictedBlockSizeTableCell(v bool) *ConstraintSpaceBuilder {
 	b.space.IsRestrictedBlockSizeTableCell = v
+	return b
+}
+
+// SetTableCellAlignmentBaseline mirrors ConstraintSpaceBuilder::
+// SetTableCellAlignmentBaseline (constraint_space_builder.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *ConstraintSpaceBuilder) SetTableCellAlignmentBaseline(v float64) *ConstraintSpaceBuilder {
+	b.space.TableCellAlignmentBaseline, b.space.HasTableCellAlignmentBaseline = v, true
 	return b
 }
 

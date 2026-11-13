@@ -2038,13 +2038,14 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	// CSS 2.1 §17.5.4 — table-cell vertical-align within the cell's own
 	// block-size. Mirrors Blink FinalizeTableCellLayout
 	// (core/layout/table/table_layout_utils.cc:1575-1640 @
-	// d4ecdfed88f962439247c2ad36b8fe47805b1520), which
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which
 	// BlockLayoutAlgorithm::FinishLayout runs for every table cell
 	// (core/layout/block_layout_algorithm.cc:1457-1458, gated on
 	// ConstraintSpace::IsTableCell()): the free space between the cell's
 	// block-size (e.g. an explicit `height` above its content) and its
 	// intrinsic block-size moves the children by free/2 (middle) or free
-	// (bottom). louis14's IsTableCell() signal is a non-nil
+	// (bottom); a baseline cell's children move to the row's alignment
+	// baseline. louis14's IsTableCell() signal is a non-nil
 	// TableSectionData, which only TableLayoutAlgorithm sets on a cell's
 	// space. Table parts outside a table are wrapped in an anonymous table
 	// at tree-build time (generateMissingTableParents), so a display
@@ -2062,22 +2063,31 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	if hasExplicitBlock {
 		cellContentBlockSize = max(cellContentBlockSize, clearedBlock)
 	}
-	if bla.style.GetDisplay() == css.DisplayTableCell &&
-		bla.space.TableSectionData != nil && finalBlockSize > cellContentBlockSize {
-		va := bla.style.GetVerticalAlign()
-		var vaShift float64
-		switch va {
-		case css.VerticalAlignMiddle:
-			vaShift = (finalBlockSize - cellContentBlockSize) / 2
-		case css.VerticalAlignBottom:
-			vaShift = finalBlockSize - cellContentBlockSize
-		}
-		if vaShift > 0 {
-			for i := range bla.containerBuilder.children {
-				bla.containerBuilder.children[i].offset.BlockOffset += vaShift
+	if bla.style.GetDisplay() == css.DisplayTableCell && bla.space.TableSectionData != nil {
+		switch ComputeContentAlignmentForTableCell(bla.style) {
+		case BlockContentAlignmentSafeCenter:
+			if finalBlockSize > cellContentBlockSize {
+				bla.containerBuilder.MoveChildrenInBlockDirection((finalBlockSize - cellContentBlockSize) / 2)
 			}
-			for i := range bla.containerBuilder.outOfFlowCandidates {
-				bla.containerBuilder.outOfFlowCandidates[i].StaticPosition.Offset.BlockOffset += vaShift
+		case BlockContentAlignmentSafeEnd:
+			if finalBlockSize > cellContentBlockSize {
+				bla.containerBuilder.MoveChildrenInBlockDirection(finalBlockSize - cellContentBlockSize)
+			}
+		case BlockContentAlignmentBaseline:
+			// A baseline-aligned cell always has a baseline: the end of its
+			// content when its content has none (or it has layout
+			// containment); its in-flow content moves to the row's
+			// alignment baseline (FinalizeTableCellLayout, table/
+			// table_layout_utils.cc:1609-1628 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			if _, ok := bla.containerBuilder.Baseline(); !ok || bla.style.ShouldApplyLayoutContainment() {
+				contentEnd := geom.Border.BlockStart + geom.Padding.BlockStart + cellContentBlockSize
+				bla.containerBuilder.SetBaseline(contentEnd)
+				bla.containerBuilder.SetLastBaseline(contentEnd)
+			}
+			if bla.space.HasTableCellAlignmentBaseline && len(bla.containerBuilder.children) > 0 {
+				firstBaseline, _ := bla.containerBuilder.Baseline()
+				bla.containerBuilder.MoveChildrenInBlockDirection(bla.space.TableCellAlignmentBaseline - firstBaseline)
 			}
 		}
 	}

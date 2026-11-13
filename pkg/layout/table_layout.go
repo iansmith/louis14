@@ -400,7 +400,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// cell's percentage insets resolve against its row instead
 			// (Phase 3, relativeCellOffset).
 			isRestrictedBlockSize := isTableBlockSizeSpecified || cellHasSpecifiedBlockSize(cell.style, cellWDM)
-			cellSpace := tla.tableCellConstraintSpace(cellWDM, layoutWidth, Indefinite, true, isRestrictedBlockSize, tableData)
+			cellSpace := tla.tableCellConstraintSpace(cellWDM, layoutWidth, Indefinite, true, isRestrictedBlockSize, nil, tableData)
 
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
 			cellLogical := NewLogicalFragment(wdm, cellResult.Fragment)
@@ -461,18 +461,21 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			})
 		}
 
-		// Track cell baselines for this row (CSS 2.1 §17.5.2).
-		// The row baseline is the max cell first-baseline across all cells
-		// that have a baseline, mirroring Blink's RowBaselineTabulator.
-		rowBaseline := 0.0
+		// The row's baseline, from its baseline-aligned cells, and its
+		// block size grown to fit their largest ascent plus descent
+		// (RowBaselineTabulator in ComputeMinimumRowBlockSize, table/
+		// table_layout_utils.cc:258-262, :308-312 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		var tabulator RowBaselineTabulator
 		for _, cl := range cellLayouts {
-			if cl.result.Baseline > 0 && cl.result.Baseline > rowBaseline {
-				rowBaseline = cl.result.Baseline
-			}
+			frag := cl.result.Fragment
+			tabulator.ProcessCell(NewLogicalFragment(wdm, frag).BlockSize(), cl.result.Baseline, cl.result.HasBaseline,
+				fragmentBorderPadding(frag, wdm).BlockEnd, len(frag.Children) > 0, ComputeContentAlignmentForTableCell(cl.cell.style), cl.cell.rowSpan > 1)
 		}
+		rowHeight = tabulator.ComputeRowBlockSize(rowHeight)
 
 		measured[rowIdx].intrinsic = rowHeight
-		measured[rowIdx].baseline = rowBaseline
+		measured[rowIdx].baseline = tabulator.ComputeBaseline(rowHeight)
 		measured[rowIdx].cells = cellLayouts
 		for _, cl := range cellLayouts {
 			if cl.cell.rowSpan > 1 {
@@ -770,7 +773,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			cellBlockSize, initialIndefinite := computeCellBlockSize(spRows, rowIdx, 1, blockSpacing,
 				cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-			result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, cl.isRestrictedBlockSize, tableData)
+			result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, cl.isRestrictedBlockSize, spRows[rowIdx].Baseline, tableData)
 			cellFrag := result.Fragment
 			cellFrag.HasCollapsedBorders = borderCollapse
 
@@ -927,7 +930,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// the cell will continue to show") and is clipped to the border box.
 		spannedBlock, initialIndefinite := computeCellBlockSize(spRows, rowIdx, cl.cell.rowSpan, blockSpacing,
 			cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-		result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, spannedBlock, initialIndefinite, cl.isRestrictedBlockSize, tableData)
+		result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, spannedBlock, initialIndefinite, cl.isRestrictedBlockSize, spRows[rowIdx].Baseline, tableData)
 		cellFrag := result.Fragment
 		cellFrag.HasCollapsedBorders = borderCollapse
 		if spansCollapsedRow {
@@ -1504,9 +1507,11 @@ func specifiedBlockSize(style *css.Style, wdm WritingDirectionMode) float64 {
 // IsFixedBlockSizeIndefinite is Blink's IsInitialBlockSizeIndefinite.
 // isRestrictedBlockSize marks a cell whose table has a specified block size
 // or that has a fixed one (:1418-1419); its scrollable percentage-height
-// children then size to their min block size. Not ported: the alignment
-// baseline (LOU-948).
-func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirectionMode, inlineSize, blockSize float64, isInitialBlockSizeIndefinite, isRestrictedBlockSize bool, tableData *TableConstraintSpaceData) ConstraintSpace {
+// children then size to their min block size. alignmentBaseline, for the
+// final layout, is the row baseline a baseline-aligned cell aligns its
+// content to (SetTableCellAlignmentBaseline, :1416); nil in the measure
+// pass.
+func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirectionMode, inlineSize, blockSize float64, isInitialBlockSizeIndefinite, isRestrictedBlockSize bool, alignmentBaseline *float64, tableData *TableConstraintSpaceData) ConstraintSpace {
 	wdm := tla.space.WritingDirection
 	b := NewConstraintSpaceBuilder(wdm, cellWDM, true).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(cellWDM, tla.ctx)).
@@ -1518,6 +1523,9 @@ func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirecti
 		SetTableSectionData(tableData).
 		SetTableSectionIndex(0).
 		SetIsRestrictedBlockSizeTableCell(isRestrictedBlockSize)
+	if alignmentBaseline != nil {
+		b.SetTableCellAlignmentBaseline(*alignmentBaseline)
+	}
 	if blockSize != Indefinite {
 		b.SetIsFixedBlockSize(true)
 		if wdm.IsVertical() == cellWDM.IsVertical() {
@@ -1532,21 +1540,25 @@ func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirecti
 }
 
 // layoutCellAtFinalSize lays a cell out again at its final block size,
-// unless that is the block size it measured at: then the final space lays
-// it out as the measure space did (its children see the same percentage
-// base, an indefinite one or the cell's own fixed block size, and there is
-// no free space to align), so the measure result stands. Blink gets the
+// unless that is the block size it measured at and, for a baseline-aligned
+// cell, its baseline is already the row's (rowBaseline): then the final
+// space lays it out as the measure space did (its children see the same
+// percentage base, an indefinite one or the cell's own fixed block size,
+// and there is no free space or baseline offset to align), so the measure
+// result stands. Blink gets the
 // same reuse from its layout cache (BlockNode::Layout → CachedLayoutResult,
 // layout_result_caching.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
 // without it each level of nested tables lays its cells out twice, which
 // is exponential in the nesting depth.
-func (tla *TableLayoutAlgorithm) layoutCellAtFinalSize(cell *LayoutInputNode, cellWDM WritingDirectionMode, inlineSize float64, measure *LayoutResult, cellBlockSize float64, initialIndefinite, isRestrictedBlockSize bool, tableData *TableConstraintSpaceData) *LayoutResult {
+func (tla *TableLayoutAlgorithm) layoutCellAtFinalSize(cell *LayoutInputNode, cellWDM WritingDirectionMode, inlineSize float64, measure *LayoutResult, cellBlockSize float64, initialIndefinite, isRestrictedBlockSize bool, rowBaseline float64, tableData *TableConstraintSpaceData) *LayoutResult {
 	measured := NewLogicalFragment(tla.space.WritingDirection, measure.Fragment).BlockSize()
-	if layoutunit.FromFloat64Round(measured) == layoutunit.FromFloat64Round(cellBlockSize) {
+	baselineMoves := ComputeContentAlignmentForTableCell(cell.Style()) == BlockContentAlignmentBaseline &&
+		layoutunit.FromFloat64Round(measure.Baseline) != layoutunit.FromFloat64Round(rowBaseline)
+	if !baselineMoves && layoutunit.FromFloat64Round(measured) == layoutunit.FromFloat64Round(cellBlockSize) {
 		return measure
 	}
 	return layoutElement(tla.ctx, cell,
-		tla.tableCellConstraintSpace(cellWDM, inlineSize, cellBlockSize, initialIndefinite, isRestrictedBlockSize, tableData))
+		tla.tableCellConstraintSpace(cellWDM, inlineSize, cellBlockSize, initialIndefinite, isRestrictedBlockSize, &rowBaseline, tableData))
 }
 
 // computeCellBlockSize returns a table cell's final block size, the sum of
@@ -1602,17 +1614,27 @@ func cellCSSBlockSize(style *css.Style, wdm WritingDirectionMode, frag *Physical
 	if !ok {
 		return 0, false
 	}
-	borderPadding := 0.0
-	if frag.BoxData != nil {
-		borderPadding = ToLogicalEdges(frag.BoxData.Border, wdm).BlockSum() +
-			ToLogicalEdges(frag.BoxData.Padding, wdm).BlockSum()
-	}
+	borderPadding := fragmentBorderPadding(frag, wdm).BlockSum()
 	// Snap the length to a LayoutUnit, as ResolveBlockSize does.
 	size = layoutunit.FromFloat64Round(size).Float64()
 	if style.GetBoxSizing() == "border-box" {
 		return max(borderPadding, size), true
 	}
 	return borderPadding + size, true
+}
+
+// fragmentBorderPadding returns a laid-out fragment's border plus padding
+// in wdm, as its layout resolved them (a cell's collapsed borders
+// included); zero without box data.
+func fragmentBorderPadding(frag *PhysicalFragment, wdm WritingDirectionMode) LogicalEdges {
+	if frag == nil || frag.BoxData == nil {
+		return LogicalEdges{}
+	}
+	b, p := ToLogicalEdges(frag.BoxData.Border, wdm), ToLogicalEdges(frag.BoxData.Padding, wdm)
+	return LogicalEdges{
+		InlineStart: b.InlineStart + p.InlineStart, InlineEnd: b.InlineEnd + p.InlineEnd,
+		BlockStart: b.BlockStart + p.BlockStart, BlockEnd: b.BlockEnd + p.BlockEnd,
+	}
 }
 
 // relativeCellOffset returns a table cell's relative offset in the table's
@@ -2196,8 +2218,9 @@ type tableRowIntrinsic struct {
 	// the commit message.
 	hasRowspanStart bool
 
-	// baseline is the max cell first-baseline across baseline-aligned
-	// cells in this row (Blink's RowBaselineTabulator result).
+	// baseline is the row's baseline: RowBaselineTabulator.ComputeBaseline
+	// over its cells (the largest baseline-aligned ascent, else the content
+	// end).
 	baseline float64
 
 	// row points to the underlying tableRow (for style access when
