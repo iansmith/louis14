@@ -41,21 +41,14 @@ func resolveTreeCountingFunctions(node *html.Node, style *Style) {
 func replaceTreeCountingFunctions(v string, index, count int) string {
 	var b strings.Builder
 	b.Grow(len(v))
-	var quote byte
 	for i := 0; i < len(v); {
 		c := v[i]
 		switch {
-		case quote != 0:
-			if c == '\\' && i+1 < len(v) {
-				b.WriteString(v[i : i+2])
-				i += 2
-				continue
-			}
-			if c == quote {
-				quote = 0
-			}
 		case c == '"' || c == '\'':
-			quote = c
+			end, _ := stringTokenEnd(v, i)
+			b.WriteString(v[i : end+1])
+			i = end + 1
+			continue
 		case (c == 's' || c == 'S') && (i == 0 || !isIdentContinue(v[i-1])):
 			if n, value, ok := matchTreeCountingFunction(v[i:], index, count); ok {
 				b.WriteString(strconv.Itoa(value))
