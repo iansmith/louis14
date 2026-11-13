@@ -30,12 +30,14 @@ func blockLeadingSpace(lineHeight, fontHeight float64, wdm WritingDirectionMode)
 }
 
 // usedLineHeight is style's line height for a run at fontSize: the
-// computed line-height, or, for line-height: normal outside a central
-// baseline, the font's line spacing (text.FontHeightFromFont) of the font
-// fontPath resolves.
-func usedLineHeight(style *css.Style, fontSize float64, fonts text.FontConfig, centralBaseline bool, fontPath func() string) float64 {
-	if style.IsLineHeightNormal() && !centralBaseline {
-		return text.FontHeightFromFont(fontSize, fontPath(), fonts.Registry)
+// computed line-height, or, for line-height: normal, the line spacing
+// (text.FontHeightFromFont) of the font at fontPath, whatever the
+// baseline (ComputedStyle::ComputedLineHeightAsFixed →
+// FontMetrics::FixedLineSpacing, core/style/computed_style.cc:2440-2449 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func usedLineHeight(style *css.Style, fontSize float64, fontPath string, reg *text.FontRegistry) float64 {
+	if style.IsLineHeightNormal() {
+		return text.FontHeightFromFont(fontSize, fontPath, reg)
 	}
 	return style.GetLineHeight()
 }
