@@ -170,15 +170,14 @@ func (r *Renderer) caretAtTextOffset(t *html.Node, offset int) *frameCaret {
 	}
 
 	// The caret's inline position, and its block extent: the text
-	// fragment's (cursor_block_size, caret_rect.cc:172-176). louis14's text
-	// box is em-box sized; selectionBackgroundRectCrossAxis gives the
-	// fragment extent the ::selection / ::highlight background paints, the
-	// same rect Blink's caret and highlight share.
+	// fragment's (cursor_block_size, caret_rect.cc:172-176). caretBlockExtent
+	// keeps the extent the caret has used since LOU-344 until LOU-960 moves
+	// it to the text fragment's own block size.
 	inlineLen := tb.Width
 	if vertical {
 		inlineLen = tb.Height
 	}
-	blockStart, blockSize := selectionBackgroundRectCrossAxis(tb, vertical)
+	blockStart, blockSize := caretBlockExtent(tb, vertical)
 	advance := r.measureSegmentAdvance(logical[:local], fontID, layer)
 	caretLeft := advance
 	if !ltr {
@@ -199,7 +198,7 @@ func (r *Renderer) caretAtTextOffset(t *html.Node, offset int) *frameCaret {
 			if nextFont := r.fontIDForLayer(nextLayer); nextFont >= 0 {
 				inlineSize = r.measureSegmentVisualWidth(firstGrapheme(next.Text), nextFont, nextLayer)
 			}
-			blockStart, blockSize = selectionBackgroundRectCrossAxis(next, vertical)
+			blockStart, blockSize = caretBlockExtent(next, vertical)
 		}
 		if inlineSize == 0 {
 			inlineSize = r.measureTextStr("0", fontID, layer.featureInputs())
@@ -419,4 +418,30 @@ func firstGrapheme(s string) string {
 // vertical-lr and sideways-lr.
 func isFlippedLinesWritingMode(tb *layout.Box) bool {
 	return tb.IsWritingModeVerticalLR || tb.IsSidewaysLR
+}
+
+// caretBlockExtent returns the caret's block-direction (origin, extent):
+// the rule ::selection backgrounds used before LOU-959, kept for the caret
+// until LOU-960 replaces it with Blink's text-fragment block size
+// (cursor_block_size, core/layout/inline/caret_rect.cc:85-110 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It prefers the originating
+// element's own inline background-fragment sibling, else a
+// line-height: normal block ancestor sharing the node, else textBox's own
+// box (LOU-344 / LOU-347 history; obsolete once LOU-960 lands).
+func caretBlockExtent(textBox *layout.Box, vertical bool) (origin, extent float64) {
+	if textBox == nil {
+		return 0, 0
+	}
+	if textBox.Parent != nil && textBox.Node != nil {
+		for _, sibling := range textBox.Parent.Children {
+			if sibling != textBox && sibling.Node == textBox.Node && sibling.Text == "" {
+				return crossAxisOriginExtent(sibling, vertical)
+			}
+		}
+		if ancestor := textBox.Parent.Parent; ancestor != nil && ancestor.Node == textBox.Node && ancestor.Text == "" &&
+			textBox.Style != nil && textBox.Style.IsLineHeightNormal() {
+			return crossAxisOriginExtent(ancestor, vertical)
+		}
+	}
+	return crossAxisOriginExtent(textBox, vertical)
 }

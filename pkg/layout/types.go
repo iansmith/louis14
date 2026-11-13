@@ -134,6 +134,11 @@ type Box struct {
 	// time fragmentainer behaviour. Default false on all other boxes.
 	IsColumnBox bool
 
+	// IsLineBox marks a line box fragment's box (Blink's
+	// PhysicalLineBoxFragment, kFragmentLineBox), the parent of the text and
+	// inline boxes on that line.
+	IsLineBox bool
+
 	// IsMulticolContainer forwards PhysicalFragment.IsMulticolContainer
 	// (Blink's LayoutObject::IsMulticolContainer): the paint layer paints
 	// column rules for it.

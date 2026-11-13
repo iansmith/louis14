@@ -164,7 +164,12 @@ func TestSelectionOverlapForTextNode_NestedAncestorContainer(t *testing.T) {
 	}
 }
 
-// TestSelectionBackgroundRectY_UsesSiblingBackgroundFragment reproduces
+// The TestCaretBlockExtent_ tests lock the caret's block extent, which is
+// the ::selection rule from before LOU-959, until LOU-960 moves the caret to
+// Blink's text-fragment block size. Their history is the ::selection bugs
+// that rule was written for.
+//
+// TestCaretBlockExtent_UsesSiblingBackgroundFragment reproduces
 // selection-contenteditable-011.html's ~3px red sliver: a
 // `display: inline` div with `background-color: red` (own background) and
 // `font-size: 300%` (so line-height: normal's 1.2x default exceeds the
@@ -174,9 +179,9 @@ func TestSelectionOverlapForTextNode_NestedAncestorContainer(t *testing.T) {
 // and starting higher than, the text fragment's own (always em-box-sized)
 // box. Using the text fragment's own (Y, Height) for the ::selection
 // background rect left a gap at the top where the originating red
-// background showed through. selectionBackgroundRectY must return the
+// background showed through. caretBlockExtent must return the
 // SIBLING background fragment's (Y, Height), not the text box's own.
-func TestSelectionBackgroundRectY_UsesSiblingBackgroundFragment(t *testing.T) {
+func TestCaretBlockExtent_UsesSiblingBackgroundFragment(t *testing.T) {
 	divNode := &html.Node{Type: html.ElementNode, TagName: "div"}
 	parent := &layout.Box{Node: nil} // anonymous block, like the real tree
 
@@ -184,32 +189,32 @@ func TestSelectionBackgroundRectY_UsesSiblingBackgroundFragment(t *testing.T) {
 	textBox := &layout.Box{Node: divNode, Parent: parent, Y: 11.92, Height: 48.00, Text: "Selected Text"}
 	parent.Children = []*layout.Box{bgBox, textBox}
 
-	y, height := selectionBackgroundRectY(textBox)
+	y, height := caretBlockExtent(textBox, false)
 	if y != bgBox.Y || height != bgBox.Height {
-		t.Errorf("selectionBackgroundRectY = (%v, %v), want the sibling background fragment's (%v, %v) — using the text box's own (%v, %v) leaves the top sliver of the originating background exposed",
+		t.Errorf("caretBlockExtent = (%v, %v), want the sibling background fragment's (%v, %v) — using the text box's own (%v, %v) leaves the top sliver of the originating background exposed",
 			y, height, bgBox.Y, bgBox.Height, textBox.Y, textBox.Height)
 	}
 }
 
-// TestSelectionBackgroundRectY_NoSiblingBackgroundFallsBackToOwnBox covers
+// TestCaretBlockExtent_NoSiblingBackgroundFallsBackToOwnBox covers
 // the common case (no inline background-fragment sibling exists, e.g. the
 // originating element has no background-color of its own — most LOU-344
-// target tests): selectionBackgroundRectY must fall back to the text
+// target tests): caretBlockExtent must fall back to the text
 // box's own (Y, Height) rather than panicking or returning zero.
-func TestSelectionBackgroundRectY_NoSiblingBackgroundFallsBackToOwnBox(t *testing.T) {
+func TestCaretBlockExtent_NoSiblingBackgroundFallsBackToOwnBox(t *testing.T) {
 	divNode := &html.Node{Type: html.ElementNode, TagName: "div"}
 	parent := &layout.Box{Node: nil}
 	textBox := &layout.Box{Node: divNode, Parent: parent, Y: 11.92, Height: 48.00, Text: "Selected Text"}
 	parent.Children = []*layout.Box{textBox}
 
-	y, height := selectionBackgroundRectY(textBox)
+	y, height := caretBlockExtent(textBox, false)
 	if y != textBox.Y || height != textBox.Height {
-		t.Errorf("selectionBackgroundRectY = (%v, %v), want the text box's own (%v, %v) when no background-fragment sibling exists",
+		t.Errorf("caretBlockExtent = (%v, %v), want the text box's own (%v, %v) when no background-fragment sibling exists",
 			y, height, textBox.Y, textBox.Height)
 	}
 }
 
-// TestSelectionBackgroundRectY_LineHeightNormalFallsBackToBlockAncestor
+// TestCaretBlockExtent_LineHeightNormalFallsBackToBlockAncestor
 // mirrors LOU-354's selection-over-highlight-001.html: a block-level
 // originating <div> with `line-height: normal` (the UA default — style is
 // either unset or literally "normal") and no own background-color, so
@@ -217,11 +222,11 @@ func TestSelectionBackgroundRectY_NoSiblingBackgroundFallsBackToOwnBox(t *testin
 // is div(line-box height) -> anonymous line box(same height) -> text(em
 // box, shorter and lower) — reproduced here with the div's own box as
 // textBox.Parent.Parent, sharing textBox.Node. Before this fix,
-// selectionBackgroundRectY fell all the way through to the text's own
+// caretBlockExtent fell all the way through to the text's own
 // shorter/lower em box, leaving a 1px sliver at the top of the highlight
 // overlay uncovered (confirmed against the WPT reference, whose real
 // `background-color: lightblue` <div> covers the full line-box height).
-func TestSelectionBackgroundRectY_LineHeightNormalFallsBackToBlockAncestor(t *testing.T) {
+func TestCaretBlockExtent_LineHeightNormalFallsBackToBlockAncestor(t *testing.T) {
 	divNode := &html.Node{Type: html.ElementNode, TagName: "div"}
 	blockBox := &layout.Box{Node: divNode, Y: 8.000, Height: 16.938}
 	anonLineBox := &layout.Box{Node: nil, Parent: blockBox, Y: 8.000, Height: 16.938}
@@ -230,23 +235,23 @@ func TestSelectionBackgroundRectY_LineHeightNormalFallsBackToBlockAncestor(t *te
 	blockBox.Children = []*layout.Box{anonLineBox}
 	anonLineBox.Children = []*layout.Box{textBox}
 
-	y, height := selectionBackgroundRectY(textBox)
+	y, height := caretBlockExtent(textBox, false)
 	if y != blockBox.Y || height != blockBox.Height {
-		t.Errorf("selectionBackgroundRectY = (%v, %v), want the block ancestor box's (%v, %v) under line-height:normal — using the text box's own (%v, %v) leaves a top sliver uncovered",
+		t.Errorf("caretBlockExtent = (%v, %v), want the block ancestor box's (%v, %v) under line-height:normal — using the text box's own (%v, %v) leaves a top sliver uncovered",
 			y, height, blockBox.Y, blockBox.Height, textBox.Y, textBox.Height)
 	}
 }
 
-// TestSelectionBackgroundRectY_ExplicitLineHeightDoesNotUseBlockAncestor
+// TestCaretBlockExtent_ExplicitLineHeightDoesNotUseBlockAncestor
 // guards the regression the block-ancestor fallback above must NOT
 // reintroduce: active-selection-014/025/027.html's `line-height: 1` case,
 // where pkg/layout's block box is taller than its own text's em-box for
 // unrelated reasons (a pre-existing line-height/block-height computation
-// gap — see selectionBackgroundRectY's doc comment) — falling back to that
+// gap — see caretBlockExtent's doc comment) — falling back to that
 // taller block box over-extends the highlighted background above the text.
-// With an explicit (non-"normal") line-height, selectionBackgroundRectY
+// With an explicit (non-"normal") line-height, caretBlockExtent
 // must keep using the text box's own (Y, Height), not the block ancestor.
-func TestSelectionBackgroundRectY_ExplicitLineHeightDoesNotUseBlockAncestor(t *testing.T) {
+func TestCaretBlockExtent_ExplicitLineHeightDoesNotUseBlockAncestor(t *testing.T) {
 	divNode := &html.Node{Type: html.ElementNode, TagName: "div"}
 	blockBox := &layout.Box{Node: divNode, Y: 48.938, Height: 50.828}
 	anonLineBox := &layout.Box{Node: nil, Parent: blockBox, Y: 48.938, Height: 50.828}
@@ -256,21 +261,21 @@ func TestSelectionBackgroundRectY_ExplicitLineHeightDoesNotUseBlockAncestor(t *t
 	blockBox.Children = []*layout.Box{anonLineBox}
 	anonLineBox.Children = []*layout.Box{textBox}
 
-	y, height := selectionBackgroundRectY(textBox)
+	y, height := caretBlockExtent(textBox, false)
 	if y != textBox.Y || height != textBox.Height {
-		t.Errorf("selectionBackgroundRectY = (%v, %v), want the text box's own (%v, %v) under an explicit line-height — using the block ancestor's (%v, %v) over-extends the highlight",
+		t.Errorf("caretBlockExtent = (%v, %v), want the text box's own (%v, %v) under an explicit line-height — using the block ancestor's (%v, %v) over-extends the highlight",
 			y, height, textBox.Y, textBox.Height, blockBox.Y, blockBox.Height)
 	}
 }
 
-// TestSelectionBackgroundRectY_NilBox guards the nil-safety the rest of
-// computeSelectionSegments relies on (it's only ever called with a
+// TestCaretBlockExtent_NilBox guards the nil-safety the rest of
+// the caret relies on (it's only ever called with a
 // non-nil box in practice, but defends against the zero value the same
 // way selectionOverlapForTextNode's nil-Range case does).
-func TestSelectionBackgroundRectY_NilBox(t *testing.T) {
-	y, height := selectionBackgroundRectY(nil)
+func TestCaretBlockExtent_NilBox(t *testing.T) {
+	y, height := caretBlockExtent(nil, false)
 	if y != 0 || height != 0 {
-		t.Errorf("selectionBackgroundRectY(nil) = (%v, %v), want (0, 0)", y, height)
+		t.Errorf("caretBlockExtent(nil, false) = (%v, %v), want (0, 0)", y, height)
 	}
 }
 
@@ -842,5 +847,36 @@ func TestHighlightLayerStackColors_BackgroundCurrentColorUsesLayerColor(t *testi
 	hc = r.highlightLayerStackColors(div, []highlightLayerName{{kind: "selection"}})
 	if hc.background == nil || *hc.background != black {
 		t.Errorf("selection alone: background = %v, want the originating color %v", hc.background, black)
+	}
+}
+
+// TestSelectionRectCrossAxis_UnitesTextAndLineBox pins Blink's selection
+// rect in the block direction: the text fragment's rect united with its
+// containing line box's, min of the tops and max of the bottoms
+// (InlineCursor::CurrentLocalSelectionRectForText → ExpandSelectionRectToLineHeight,
+// core/layout/inline/inline_cursor.cc:520-546 and :57-79 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which HighlightPainter paints
+// (SelectionPaintState::ComputeSelectionRectIfNeeded,
+// core/paint/highlight_painter.cc:317-324, same SHA).
+func TestSelectionRectCrossAxis_UnitesTextAndLineBox(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		line, text           layout.Box
+		vertical             bool
+		wantOrigin, wantSize float64
+	}{
+		{"line taller than text", layout.Box{Y: 0, Height: 40}, layout.Box{Y: 11, Height: 17}, false, 0, 40},
+		{"text taller than line", layout.Box{Y: 5, Height: 8}, layout.Box{Y: 0, Height: 17}, false, 0, 17},
+		{"text overhangs the line's end", layout.Box{Y: 0, Height: 10}, layout.Box{Y: 4, Height: 17}, false, 0, 21},
+		{"vertical: X and Width", layout.Box{X: 0, Width: 40}, layout.Box{X: 11, Width: 17}, true, 0, 40},
+	} {
+		line, text := tc.line, tc.text
+		line.IsLineBox = true
+		text.Text = "x"
+		text.Parent = &line
+		line.Children = []*layout.Box{&text}
+		if o, s := selectionRectCrossAxis(&text, tc.vertical); o != tc.wantOrigin || s != tc.wantSize {
+			t.Errorf("%s: selection cross axis = (%v, %v), want (%v, %v)", tc.name, o, s, tc.wantOrigin, tc.wantSize)
+		}
 	}
 }
