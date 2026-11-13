@@ -555,7 +555,7 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 			continue
 		}
 
-		sel := strings.TrimSpace(part[:bracePos])
+		sel := trimCSSSpace(part[:bracePos])
 		body := part[bracePos+1 : closePos]
 
 		// Handle conditional at-rules nested inside a selector block. Per CSS
@@ -1326,7 +1326,7 @@ func splitRulesAt(css string, starts *[]int) []string {
 // isValidSelector checks if a selector string looks valid enough to parse.
 // Returns false for clearly malformed selectors that should cause the rule to be skipped.
 func isValidSelector(s string) bool {
-	s = strings.TrimSpace(s)
+	s = trimCSSSpace(s)
 	if s == "" {
 		return false
 	}
@@ -1334,21 +1334,27 @@ func isValidSelector(s string) bool {
 	if s[0] == '}' || s[0] == ';' || s[0] == '{' {
 		return false
 	}
-	// Check for unbalanced brackets
-	bracketDepth, parenDepth := 0, 0
+	// Blocks stack as the token stream stacks them (walkTopLevel): a closer
+	// matching no open block is a plain token. At the top level, or in an
+	// unforgiving argument, that token voids the selector; inside an :is()
+	// or :where() argument only that argument, the forgiving list keeping
+	// the selector valid (CSSSelectorParser::ConsumePseudo kPseudoIs /
+	// kPseudoWhere, css_selector_parser.cc:1666-1749 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	type frame struct {
+		closer    byte
+		forgiving bool
+	}
+	var frames []frame
+	inForgiving := func() bool {
+		return slices.ContainsFunc(frames, func(f frame) bool { return f.forgiving })
+	}
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
+		switch c := s[i]; c {
 		case '\\':
-			i++ // an escaped `;`, `{`, ... is ident text
-		case '(':
-			parenDepth++
-		case ')':
-			parenDepth = max(parenDepth-1, 0)
-		case ';':
-			// A top-level `;` is no selector token. One in a functional
-			// pseudo-class's argument is left to that argument's parse.
-			if parenDepth == 0 {
-				return false
+			// An escaped `;`, `{`, ... is ident text.
+			if n := escapeLen(s, i); n > 0 {
+				i += n - 1
 			}
 		case '"', '\'':
 			// A bad string makes the selector invalid; a `{` or `}` in a
@@ -1357,11 +1363,21 @@ func isValidSelector(s string) bool {
 			if i, end = stringTokenEnd(s, i); end != stringClosed {
 				return false
 			}
+		case '(':
+			name := strings.ToLower(functionNameBefore(s, i))
+			frames = append(frames, frame{closer: ')', forgiving: name == "is" || name == "where"})
 		case '[':
-			bracketDepth++
-		case ']':
-			bracketDepth--
-			if bracketDepth < 0 {
+			frames = append(frames, frame{closer: ']'})
+		case ')', ']':
+			if len(frames) > 0 && frames[len(frames)-1].closer == c {
+				frames = frames[:len(frames)-1]
+			} else if !inForgiving() {
+				return false
+			}
+		case ';':
+			// A `;` is no selector token. One in a functional
+			// pseudo-class's argument is left to that argument's parse.
+			if !slices.ContainsFunc(frames, func(f frame) bool { return f.closer == ')' }) {
 				return false
 			}
 		case '{', '}':
@@ -1369,7 +1385,7 @@ func isValidSelector(s string) bool {
 			return false
 		}
 	}
-	if bracketDepth != 0 {
+	if slices.ContainsFunc(frames, func(f frame) bool { return f.closer == ']' }) {
 		return false
 	}
 	// :has() disallows pseudo-elements in its unforgiving argument.
@@ -1472,7 +1488,7 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		return nil, fmt.Errorf("no opening brace found")
 	}
 
-	selectorStr := strings.TrimSpace(ruleStr[:bracePos])
+	selectorStr := trimCSSSpace(ruleStr[:bracePos])
 
 	// Split the selector list at its top-level commas
 	selectors := SplitTopLevelCommas(selectorStr)
@@ -1518,7 +1534,7 @@ func parseRule(ruleStr string) (Rule, error) {
 	}
 
 	// Extract selector
-	selectorStr := strings.TrimSpace(ruleStr[:bracePos])
+	selectorStr := trimCSSSpace(ruleStr[:bracePos])
 
 	// Validate selector — skip entire rule if invalid
 	if !isValidSelector(selectorStr) {
@@ -2574,7 +2590,7 @@ func evaluateSupportsSelector(sel string) bool {
 	if len(parts) != 1 {
 		return false
 	}
-	return isValidComplexSelector(strings.TrimSpace(parts[0]))
+	return isValidComplexSelector(trimCSSSpace(parts[0]))
 }
 
 // isValidComplexSelector reports whether s is a syntactically valid CSS
@@ -2591,7 +2607,7 @@ func evaluateSupportsSelector(sel string) bool {
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f which only consumes a leading
 // combinator when invoked in nesting / forgiving-nested mode.
 func isValidComplexSelector(s string) bool {
-	s = strings.TrimSpace(s)
+	s = trimCSSSpace(s)
 	if s == "" {
 		return false
 	}
@@ -2609,7 +2625,7 @@ func isValidComplexSelector(s string) bool {
 	// We don't need a full AST — just validate each compound's tokens.
 	tokens := tokenizeSelector(s)
 	for _, t := range tokens {
-		t = strings.TrimSpace(t)
+		t = trimCSSSpace(t)
 		if t == "" || t == ">" || t == "+" || t == "~" {
 			continue
 		}
@@ -2688,11 +2704,9 @@ func isValidCompoundSelector(s string) bool {
 			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 			i++
 		case c == '.' || c == '#':
-			// class or id — read until next selector boundary
-			i++
-			for i < len(s) && !isSelectorBoundary(s[i]) {
-				i++
-			}
+			// class or id — read until next selector boundary outside an
+			// escape
+			i = identEnd(s, i+1, isSelectorBoundary)
 		case c == '[':
 			// Attribute selector — find matching `]`.
 			j := i + 1
@@ -2762,13 +2776,9 @@ func isValidCompoundSelector(s string) bool {
 				}
 			}
 			i = j
-		case isElementIdentChar(c):
-			// Element identifier.
-			j := i
-			for j < len(s) && isElementIdentChar(s[j]) {
-				j++
-			}
-			i = j
+		case isElementIdentChar(c) || escapeLen(s, i) > 0:
+			// Element identifier, escapes included.
+			i = identEnd(s, i, func(c byte) bool { return !isElementIdentChar(c) && c != '\\' })
 		default:
 			// Unexpected character — fail validation.
 			return false
@@ -3046,12 +3056,33 @@ func blockBounds(rule string) (openPos, closePos int, ok bool) {
 // values inside its prelude (e.g. `@supports not unknown(!@#% { ... })`);
 // with `,` the end of a comma-separated list item.
 func indexTopLevel(s string, target byte) int {
+	idx := -1
+	walkTopLevel(s, func(i int) bool {
+		if s[i] == target {
+			idx = i
+			return false
+		}
+		return true
+	})
+	return idx
+}
+
+// walkTopLevel calls f with the index of each top-level byte of s, outside
+// every (), [] and {} block (an opener or a stray closer included), until f
+// returns false. A string or escape at the top level is reported at its
+// first byte (its quote or backslash) only; f sees none of the bytes inside
+// it. Blocks stack as
+// Blink's tokenizer stacks them (CSSTokenizer::BlockStart / BlockEnd,
+// core/css/parser/css_tokenizer.cc:66-87 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a closer that does not match
+// the innermost block is a plain token.
+func walkTopLevel(s string, f func(i int) bool) {
 	var buf [16]byte
 	blocks := buf[:0]
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c == target && len(blocks) == 0 {
-			return i
+		if len(blocks) == 0 && !f(i) {
+			return
 		}
 		switch c {
 		case '\\':
@@ -3068,7 +3099,6 @@ func indexTopLevel(s string, target byte) int {
 			}
 		}
 	}
-	return -1
 }
 
 // consumeSupportsDecl reports whether inner is a valid <declaration> for
@@ -3762,45 +3792,21 @@ func orResult(a, b supportsResult) supportsResult {
 }
 
 // findTopLevelPseudoElement returns the byte index of the first occurrence of
-// token in s that is NOT inside parentheses or brackets, or -1 if none exists.
-// For the ":before" (single-colon) tokens, the preceding character must not be
-// ':' (which would make it a "::before" already matched on a prior pass) or an
-// identifier character (avoids matching ":beforexyz" by chance).
+// token in s outside every block, string and escape (walkTopLevel), or -1 if
+// none exists. For the ":before" (single-colon) tokens, the preceding
+// character must not be ':' (the ":before" tail of a "::before" the caller's
+// ordered list already extracted).
 func findTopLevelPseudoElement(s, token string) int {
-	depth := 0
-	tlen := len(token)
 	singleColon := strings.HasPrefix(token, ":") && !strings.HasPrefix(token, "::")
-	for i := 0; i+tlen <= len(s); i++ {
-		ch := s[i]
-		switch ch {
-		case '"', '\'':
-			i, _ = stringTokenEnd(s, i)
-			continue
-		case '(', '[':
-			depth++
-			continue
-		case ')', ']':
-			depth--
-			continue
+	idx := -1
+	walkTopLevel(s, func(i int) bool {
+		if !strings.HasPrefix(s[i:], token) || (singleColon && i > 0 && s[i-1] == ':') {
+			return true
 		}
-		if depth != 0 {
-			continue
-		}
-		if s[i:i+tlen] != token {
-			continue
-		}
-		// For single-colon legacy form, guard against matching ":beforexyz"
-		// or matching the ":before" tail of "::before". The double-colon form
-		// is matched first by the caller's ordered list, so by the time we
-		// look for ":before" any "::before" has already been extracted.
-		if singleColon {
-			if i > 0 && s[i-1] == ':' {
-				continue
-			}
-		}
-		return i
-	}
-	return -1
+		idx = i
+		return false
+	})
+	return idx
 }
 
 // Phase 17: parseSelector parses a complex CSS selector
@@ -3858,7 +3864,7 @@ var pseudoElementTokens = []struct {
 }
 
 func parseSelector(selectorStr string) Selector {
-	selectorStr = strings.TrimSpace(selectorStr)
+	selectorStr = trimCSSSpace(selectorStr)
 
 	if selectorStr == "" {
 		return Selector{Raw: "", Parts: []SelectorPart{}, Specificity: 0}
@@ -3887,7 +3893,7 @@ func parseSelector(selectorStr string) Selector {
 			pseudoElementForDescendants = true
 		}
 		selectorStr = selectorStr[:idx] + selectorStr[idx+len(pe.token):]
-		selectorStr = strings.TrimSpace(selectorStr)
+		selectorStr = trimCSSSpace(selectorStr)
 		break
 	}
 	// `::highlight(NAME)` — CSS Custom Highlight API. The functional notation
@@ -3914,13 +3920,13 @@ func parseSelector(selectorStr string) Selector {
 				end++
 			}
 			if depth == 0 && end < len(selectorStr) {
-				name := strings.TrimSpace(selectorStr[idx+len(hlTok) : end])
+				name := trimCSSSpace(selectorStr[idx+len(hlTok) : end])
 				pseudoElement = "highlight(" + name + ")"
 				if idx > 0 && selectorStr[idx-1] == ' ' {
 					pseudoElementForDescendants = true
 				}
 				selectorStr = selectorStr[:idx] + selectorStr[end+1:]
-				selectorStr = strings.TrimSpace(selectorStr)
+				selectorStr = trimCSSSpace(selectorStr)
 			}
 		}
 	}
@@ -4074,59 +4080,30 @@ func parseSelector(selectorStr string) Selector {
 // tokenizeSelector splits a selector into tokens (handling combinators)
 func tokenizeSelector(s string) []string {
 	tokens := make([]string, 0)
-	current := ""
-	inBracket := false
-	parenDepth := 0
-
-	for i := 0; i < len(s); i++ {
+	start := 0
+	walkTopLevel(s, func(i int) bool {
 		ch := s[i]
-
-		if n := escapeLen(s, i); n > 0 {
-			// An escape is part of its ident: an escaped space, `>`, `+`
-			// or `~` is no combinator, and a hex escape's trailing space
-			// is the escape's own.
-			current += s[i : i+n]
-			i += n - 1
-		} else if ch == '(' {
-			parenDepth++
-			current += string(ch)
-		} else if ch == ')' {
-			parenDepth--
-			current += string(ch)
-		} else if ch == '[' {
-			inBracket = true
-			current += string(ch)
-		} else if ch == ']' {
-			inBracket = false
-			current += string(ch)
-		} else if !inBracket && parenDepth == 0 && (ch == '>' || ch == '+' || ch == '~' || ch == ' ') {
-			if current != "" {
-				tokens = append(tokens, current)
-				current = ""
-			}
-			if ch != ' ' || (ch == ' ' && len(tokens) > 0) {
-				// Only add space if it's a meaningful separator
-				if ch == ' ' {
-					// Check if last token was a combinator
-					if len(tokens) > 0 {
-						lastToken := tokens[len(tokens)-1]
-						if lastToken != ">" && lastToken != "+" && lastToken != "~" && lastToken != " " {
-							tokens = append(tokens, " ")
-						}
-					}
-				} else {
-					tokens = append(tokens, string(ch))
-				}
-			}
-		} else {
-			current += string(ch)
+		if ch != '>' && ch != '+' && ch != '~' && ch != ' ' {
+			return true
 		}
+		if start < i {
+			tokens = append(tokens, s[start:i])
+		}
+		start = i + 1
+		if ch != ' ' {
+			tokens = append(tokens, string(ch))
+		} else if len(tokens) > 0 {
+			// Only a meaningful descendant separator: not right after a
+			// combinator or another space.
+			if last := tokens[len(tokens)-1]; last != ">" && last != "+" && last != "~" && last != " " {
+				tokens = append(tokens, " ")
+			}
+		}
+		return true
+	})
+	if start < len(s) {
+		tokens = append(tokens, s[start:])
 	}
-
-	if current != "" {
-		tokens = append(tokens, current)
-	}
-
 	return tokens
 }
 
@@ -4153,10 +4130,19 @@ func escapeLen(s string, i int) int {
 // selectorIdentEnd returns the end of the type, class or id name that
 // starts at s[i]: the next compound delimiter outside an escape.
 func selectorIdentEnd(s string, i int) int {
-	for i < len(s) && !isCompoundDelimiter(s[i]) {
+	return identEnd(s, i, isCompoundDelimiter)
+}
+
+// identEnd returns the index of the first byte at or after s[i] that isEnd
+// accepts and no escape covers.
+func identEnd(s string, i int, isEnd func(byte) bool) int {
+	for i < len(s) {
 		if n := escapeLen(s, i); n > 0 {
 			i += n
 			continue
+		}
+		if isEnd(s[i]) {
+			break
 		}
 		i++
 	}

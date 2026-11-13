@@ -1050,6 +1050,7 @@ func TestSelectorScannersFollowTokenStream(t *testing.T) {
 		{`:is(.a]), #t`, `<div id="t"></div>`, "t", true},
 		{`:not(.a]), #t`, `<div id="t"></div>`, "t", false},
 		{`.a), #t`, `<div id="t"></div>`, "t", false},
+		{`[x;y], #t`, `<div id="t"></div>`, "t", false},
 		{`#a\ `, `<div id="a "></div>`, "a ", true},
 		{`:is(#a\ ) b`, `<div id="a "><b id="t"></b></div>`, "t", true},
 	} {
