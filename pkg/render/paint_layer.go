@@ -468,14 +468,10 @@ func (l *PaintLayer) outlineFragments() []*layout.Box {
 	return []*layout.Box{l.Box}
 }
 
-// outlineRects returns the rects the layer's outline is drawn around
-// (Blink's outline rects, LayoutObject::CollectOutlineRects): for
-// outline-style: auto the rects of its ink overflow (focusRingOutlineRects),
-// otherwise its fragments' boxes.
+// outlineRects returns the rects a non-auto outline is drawn around
+// (Blink's outline rects, LayoutObject::CollectOutlineRects): its
+// fragments' boxes. A focus ring's come from Renderer.focusRingOutlineRects.
 func (l *PaintLayer) outlineRects() []geometry.RectF {
-	if l.OutlineStyle == "auto" {
-		return focusRingOutlineRects(l)
-	}
 	frags := l.outlineFragments()
 	rects := make([]geometry.RectF, 0, len(frags))
 	for _, f := range frags {

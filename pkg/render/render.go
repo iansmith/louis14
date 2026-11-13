@@ -2765,10 +2765,7 @@ func isAtomicInlineForPaint(layer *PaintLayer) bool {
 // isOutOfFlowForPaint reports whether layer's box is absolutely or fixed
 // positioned.
 func isOutOfFlowForPaint(layer *PaintLayer) bool {
-	if layer == nil || layer.Box == nil {
-		return false
-	}
-	return layer.Box.Position == css.PositionAbsolute || layer.Box.Position == css.PositionFixed
+	return layer != nil && layer.Box != nil && isOutOfFlow(layer.Box)
 }
 
 // isPureInlineForPaint returns true for display: inline — a
@@ -4038,10 +4035,9 @@ func unionEvenIfEmpty(rects []image.Rectangle) image.Rectangle {
 	return u
 }
 
-// pixelSnappedOutlineRects returns the layer's outline rects pixel-snapped
-// (Blink's per-rect ToPixelSnappedRect in OutlinePainter::PaintOutline).
-func pixelSnappedOutlineRects(layer *PaintLayer) []image.Rectangle {
-	rects := layer.outlineRects()
+// pixelSnappedOutlineRects returns outline rects pixel-snapped (Blink's
+// per-rect ToPixelSnappedRect in OutlinePainter::PaintOutline).
+func pixelSnappedOutlineRects(rects []geometry.RectF) []image.Rectangle {
 	out := make([]image.Rectangle, 0, len(rects))
 	for _, r := range rects {
 		x, y, w, h := pixelSnap(r.Origin.X, r.Origin.Y, r.Size.Width, r.Size.Height)
@@ -4083,7 +4079,7 @@ func (r *Renderer) drawFocusRing(layer *PaintLayer) {
 	// Blink drops empty pixel-snapped rects from a focus ring and paints
 	// nothing when none is left (OutlinePainter::PaintOutlineRects,
 	// outline_painter.cc:956-967).
-	rects := slices.DeleteFunc(pixelSnappedOutlineRects(layer), image.Rectangle.Empty)
+	rects := slices.DeleteFunc(pixelSnappedOutlineRects(r.focusRingOutlineRects(layer)), image.Rectangle.Empty)
 	if len(rects) == 0 {
 		return
 	}
@@ -4174,7 +4170,7 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 	// outline_painter.cc:1018-1031 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the rest paint around one
 	// rect below.
-	if rects := pixelSnappedOutlineRects(layer); unionEvenIfEmpty(rects) != rects[0] {
+	if rects := pixelSnappedOutlineRects(layer.outlineRects()); unionEvenIfEmpty(rects) != rects[0] {
 		r.complexOutline(layer, rects)
 		return
 	}

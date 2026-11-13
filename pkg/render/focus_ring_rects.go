@@ -16,27 +16,36 @@ import (
 // inlines are siblings on the line — so the cursor walks filter line items
 // by DOM node instead of descending into the inline box's children.
 //
+// With anchor (OutlineType::kIncludeBlockInkOverflowForAnchor, a focused
+// <a>, :1232-1235) out-of-flow descendants count too: a block's own
+// (:1290-1300) and, for an inline anchor, its container's whose containing
+// block it is (:1372-1386).
+//
 // rects[:own] are the focused element's own rects. With prune, a
 // descendant rect inside one of them is skipped: it leaves the union, and
 // so the ring, unchanged when outline-offset outsets every rect alike (a
 // negative offset is clamped per rect by AdjustedOutlineOffset, so then
 // every rect counts).
 type focusRingRectCollector struct {
-	rects []geometry.RectF
-	own   int
-	prune bool
+	r      *Renderer
+	rects  []geometry.RectF
+	own    int
+	prune  bool
+	anchor bool
+	// toFocused maps rects of the descendant being walked to the focused
+	// element's space: the composed transforms of the transformed boxes
+	// between them (nil when there are none).
+	toFocused *geometry.Transform
 }
 
 // focusRingOutlineRects returns the outline rects of an outline-style: auto
 // layer: for a block (or atomic inline) its self outline rects
 // (AddSelfOutlineRects, :1220-1239), for an inline box the rects of every
 // non-empty fragment plus each fragment's descendants
-// (AddOutlineRectsForInlineBox, :1306-1386). Not ported: an <a>'s
-// out-of-flow descendants (kIncludeBlockInkOverflowForAnchor, :1232-1235),
-// form controls' control clip (HasControlClip), and transforms on layered
-// descendants (Blink maps them through LocalToAncestorRects).
-func focusRingOutlineRects(l *PaintLayer) []geometry.RectF {
-	c := focusRingRectCollector{prune: l.OutlineOffset >= 0}
+// (AddOutlineRectsForInlineBox, :1306-1386). HasControlClip needs no port: with SelectUsesUAClip stable
+// (runtime_enabled_features.json5:5533-5535) it is always false.
+func (r *Renderer) focusRingOutlineRects(l *PaintLayer) []geometry.RectF {
+	c := focusRingRectCollector{r: r, prune: l.OutlineOffset >= 0, anchor: l.Box.Node.IsHTMLAnchorElement()}
 	if !isInlineBoxFragment(l.Box) {
 		c.addOwnRect(l.Box)
 		c.own = len(c.rects)
@@ -57,6 +66,23 @@ func focusRingOutlineRects(l *PaintLayer) []geometry.RectF {
 			c.addLineItems(line.Children, l.Box.Node)
 		}
 	}
+	// AddOutlineRectsForInlineBox returns before the anchor's out-of-flow
+	// pass when the inline collected no rects (:1362-1364).
+	if c.anchor && len(c.rects) > 0 && !l.Box.HasNonVisibleOverflow() {
+		containers := map[*layout.Box]bool{}
+		for _, f := range frags {
+			if f.Parent == nil || f.Parent.Parent == nil || containers[f.Parent.Parent] {
+				continue
+			}
+			container := f.Parent.Parent
+			containers[container] = true
+			for _, oof := range container.Children {
+				if oof != nil && isOutOfFlow(oof) && r.absoluteContainer(oof.Node) == l.Box.Node {
+					c.addDescendantBox(oof)
+				}
+			}
+		}
+	}
 	return c.rects
 }
 
@@ -70,20 +96,24 @@ func (c *focusRingRectCollector) addOwnRect(b *layout.Box) {
 
 // addNormalChildren adds b's children's rects unless b clips its overflow
 // (:1275-1276; AddOutlineRectsForNormalChildren, :1388-1417): a line box's
-// items through the cursor walk, any other child as a descendant.
+// items through the cursor walk, any other in-flow child as a descendant,
+// and for an anchor the out-of-flow children too (:1290-1300).
 func (c *focusRingRectCollector) addNormalChildren(b *layout.Box) {
 	if b.HasNonVisibleOverflow() {
 		return
 	}
 	for _, child := range b.Children {
-		if child == nil {
-			continue
-		}
-		if child.IsLineBox {
+		switch {
+		case child == nil:
+		case child.IsLineBox:
 			c.addLineItems(child.Children, nil)
-			continue
+		case isOutOfFlow(child):
+			if c.anchor {
+				c.addDescendantBox(child)
+			}
+		default:
+			c.addDescendant(child)
 		}
-		c.addDescendant(child)
 	}
 }
 
@@ -129,20 +159,47 @@ func enclosedByInlineBox(n, stop *html.Node, boxes map[*html.Node]bool) bool {
 }
 
 // addDescendant is AddOutlineRectsForDescendant (:1479-1532) behind
-// AddOutlineRectsForNormalChildren's out-of-flow skip (:1409-1413): list
-// markers add nothing; an inline box adds only its non-text descendants,
-// which sit on the line beside it and the line walk reaches; any other box
-// adds its own rect and its children's.
+// AddOutlineRectsForNormalChildren's out-of-flow skip (:1409-1413).
 func (c *focusRingRectCollector) addDescendant(d *layout.Box) {
-	if d.Position == css.PositionAbsolute || d.Position == css.PositionFixed ||
-		(d.LayoutNode != nil && d.LayoutNode.IsMarkerNode()) || isInlineBoxFragment(d) {
+	if !isOutOfFlow(d) {
+		c.addDescendantBox(d)
+	}
+}
+
+// addDescendantBox is AddOutlineRectsForDescendant: list markers add
+// nothing; an inline box adds only its non-text descendants, which sit on
+// the line beside it and the line walk reaches; any other box adds its own
+// rect and its children's.
+func (c *focusRingRectCollector) addDescendantBox(d *layout.Box) {
+	if (d.LayoutNode != nil && d.LayoutNode.IsMarkerNode()) || isInlineBoxFragment(d) {
 		return
 	}
+	if d.Style == nil || !d.Style.HasTransform() {
+		c.addOwnRect(d)
+		c.addNormalChildren(d)
+		return
+	}
+	// A transformed descendant (its layer's HasLayer branch, :1499-1510)
+	// collects its rects in its own space and maps each to the focused
+	// element's (VectorOutlineRectCollector::Combine → LocalToAncestorRect,
+	// core/layout/outline_rect_collector.cc:49-61), which composes every
+	// transform on the way before taking one bounding box. Box geometry is
+	// untransformed and localTransformMatrix works in those coordinates.
+	outer := c.toFocused
+	m := localTransformMatrix(d)
+	if outer != nil {
+		m = outer.Mul(m)
+	}
+	c.toFocused = &m
 	c.addOwnRect(d)
 	c.addNormalChildren(d)
+	c.toFocused = outer
 }
 
 func (c *focusRingRectCollector) add(r geometry.RectF) {
+	if c.toFocused != nil {
+		r = c.toFocused.MapRect(r)
+	}
 	if c.prune {
 		for _, o := range c.rects[:c.own] {
 			if o.Union(r) == o {
@@ -151,6 +208,43 @@ func (c *focusRingRectCollector) add(r geometry.RectF) {
 		}
 	}
 	c.rects = append(c.rects, r)
+}
+
+// isOutOfFlow reports whether b is absolutely or fixed positioned.
+func isOutOfFlow(b *layout.Box) bool {
+	return b.Position == css.PositionAbsolute || b.Position == css.PositionFixed
+}
+
+// absoluteContainer approximates LayoutObject::ContainerForAbsolutePosition
+// (core/layout/layout_object.cc:1752-1758 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for n: its nearest ancestor
+// whose computed style is positioned. Transforms, filters, backdrop
+// filters, will-change and containment also make a container; layout
+// resolves the real one (OutOfFlowCandidate's container) but does not carry
+// it onto the out-of-flow box, so they are not considered here (LOU-990
+// carries the container onto the box; this function and elementStyle then
+// go away).
+func (r *Renderer) absoluteContainer(n *html.Node) *html.Node {
+	for a := n; a != nil && a.Parent != nil; {
+		a = a.Parent
+		if s := elementStyle(r.nodeBoxIndex[a]); s != nil && s.GetPosition() != css.PositionStatic {
+			return a
+		}
+	}
+	return nil
+}
+
+// elementStyle is the computed style of b's element. A positioned inline's
+// box fragments paint with an in-flow clone of it (position static,
+// CloneInFlowFragment); its paint group item keeps the element's own.
+func elementStyle(b *layout.Box) *css.Style {
+	if b == nil {
+		return nil
+	}
+	if b.IsOwnPaintGroupFragment() {
+		return b.PaintGroup.Style
+	}
+	return b.Style
 }
 
 // isTextFragment reports whether b is a text fragment's box: no layout node
