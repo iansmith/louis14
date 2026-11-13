@@ -9,8 +9,11 @@ import "testing"
 // ratio (a viewBox-only SVG, 2:1) stretches to the available inline size
 // (StretchFit, length_utils.cc:1173-1196): 100 wide in a 100px column
 // flexbox, so 50 tall (css-flexbox/align-items-007).
+// ratioOnlySVG is an image with only a 2:1 aspect ratio (a viewBox-only SVG).
+const ratioOnlySVG = `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"><rect width="200" height="100"/></svg>`
+
 func TestFlexReplacedItemSize(t *testing.T) {
-	const ratioOnly = `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100"><rect width="200" height="100"/></svg>`
+	const ratioOnly = ratioOnlySVG
 	const sized = `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10"/></svg>`
 	flex := func(style, src string) string {
 		return `<div style="display:flex;width:100px;height:100px;` + style + `"><img id="i" src='` + src + `'></div>`
