@@ -12483,9 +12483,10 @@ var willChangeBroadTransformSet = map[string]bool{
 
 // propertyAliases maps a property name to the property it is an alias for
 // (alias_for entries, third_party/blink/renderer/core/css/
-// css_properties.json5 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The
-// declaration parser resolves them, as Blink's does, and so do the
-// will-change idents and keyframe properties. Partial: not every Blink
+// css_properties.json5 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// resolved through ResolveCSSPropertyID wherever a property is named: the
+// declaration parser, the CSSOM, @supports, getComputedStyle,
+// transition-property, will-change and keyframes. Partial: not every Blink
 // alias is listed.
 var propertyAliases = map[string]string{
 	"-webkit-perspective": "perspective",
@@ -12501,9 +12502,12 @@ var propertyAliases = map[string]string{
 	// untouched here.
 }
 
-// resolvePropertyAlias returns name's alias_for target when name is an
-// alias (propertyAliases), and name itself otherwise.
-func resolvePropertyAlias(name string) string {
+// ResolveCSSPropertyID returns name's alias_for target when name is an
+// alias (propertyAliases), and name itself otherwise: Blink's
+// ResolveCSSPropertyID, which the parser and the CSSOM apply to an
+// unresolved property (e.g. core/css/parser/css_parser.cc:197 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func ResolveCSSPropertyID(name string) string {
 	if target, isAlias := propertyAliases[name]; isAlias {
 		return target
 	}
@@ -12595,7 +12599,7 @@ func (s *Style) GetWillChangeData() *WillChange {
 			wc.HasScrollPosition = true
 			continue
 		}
-		ident = resolvePropertyAlias(ident)
+		ident = ResolveCSSPropertyID(ident)
 		// Shorthand expansion: replace the shorthand ident with its
 		// SC/CB-relevant longhand set.
 		if longs, isShorthand := willChangeShorthandExpansion[ident]; isShorthand {

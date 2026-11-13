@@ -116,7 +116,7 @@ func BuildKeyframeEffect(frames []KeyframeRule, defaultEasing TimingFunction) *K
 		for p, v := range r.decls {
 			// A script's keyframes skip the declaration parser, which
 			// resolves a stylesheet's aliases.
-			p = resolvePropertyAlias(p)
+			p = ResolveCSSPropertyID(p)
 			kf.Declarations[p] = v
 			eff.Properties[p] = true
 			eff.currentAnimations |= currentAnimationFlagsByProperty[p]

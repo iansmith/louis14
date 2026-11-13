@@ -1357,6 +1357,7 @@ func setTextContent(node *html.Node, text string) {
 // A value carrying a priority annotation (`red !important`) is invalid: the
 // priority comes only through setProperty's third argument.
 func cssomValueAccepted(property, value string) bool {
+	property = css.ResolveCSSPropertyID(property)
 	// A comment is not syntax: `5px /* !important */` is 5px.
 	value = css.StripComments(value)
 	if _, important, ok := css.SplitPriority(value); !ok || important {
@@ -1549,7 +1550,11 @@ func parseDeclarationList(s string) cssDeclarations {
 }
 
 // get returns the declaration named name, the zero declaration when absent.
+// Every cssDeclarations method resolves an alias name to its target, as
+// Blink's CSSOM does (CssPropertyID, abstract_property_set_css_style_
+// declaration.cc:76-191 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (d cssDeclarations) get(name string) cssDeclaration {
+	name = css.ResolveCSSPropertyID(name)
 	for _, decl := range d {
 		if decl.name == name {
 			return decl
@@ -1560,6 +1565,7 @@ func (d cssDeclarations) get(name string) cssDeclaration {
 
 // set replaces the declaration named name in place, or appends it.
 func (d cssDeclarations) set(name, value string, important bool) cssDeclarations {
+	name = css.ResolveCSSPropertyID(name)
 	for i := range d {
 		if d[i].name == name {
 			d[i].value, d[i].important = value, important
@@ -1571,6 +1577,7 @@ func (d cssDeclarations) set(name, value string, important bool) cssDeclarations
 
 // remove drops the declaration named name.
 func (d cssDeclarations) remove(name string) cssDeclarations {
+	name = css.ResolveCSSPropertyID(name)
 	return slices.DeleteFunc(d, func(decl cssDeclaration) bool { return decl.name == name })
 }
 
