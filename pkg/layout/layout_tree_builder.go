@@ -91,18 +91,17 @@ func linkLayoutParents(n *LayoutInputNode) {
 // table, as Blink LayoutObject::AddChild does at layout_object.cc:715-728 @
 // d4ecdfed88f962439247c2ad36b8fe47805b1520) runs earlier, per child list in
 // buildNode (generateMissingTableParents), which also fills each anonymous
-// table it creates, so this pass only has authored tables left to fix up.
+// table it creates, so this pass only fixes up authored tables. It walks the
+// whole tree: wrapAnonymousTableBoxes stops at a table's cells and
+// captions, and tables nested in them need fixing up too.
 func (b *LayoutTreeBuilder) normalizeTableSubtrees(node *LayoutInputNode) {
 	if node == nil {
 		return
 	}
-	if s := node.Style(); s != nil {
+	if s := node.Style(); s != nil && !node.IsAnonymous() {
 		switch s.GetDisplay() {
 		case css.DisplayTable, css.DisplayInlineTable:
 			node.children = b.wrapAnonymousTableBoxes(node.children, s)
-			// wrapAnonymousTableBoxes recurses through the proper-table
-			// subtree for us, so no further walk is needed here.
-			return
 		}
 	}
 	for _, c := range node.children {
@@ -816,8 +815,8 @@ func (b *LayoutTreeBuilder) wrapAnonymousTableBoxes(
 			flush()
 			// Recurse through authored descendants too, so a real
 			// <tbody> gets its <tr>s normalized and real <tr>s get
-			// their cells normalized. Without this the post-pass
-			// would only traverse into synthesized wrappers.
+			// their cells normalized: normalizeTableSubtrees acts on
+			// tables only.
 			if cs := child.Style(); cs != nil {
 				child.children = b.wrapAnonymousTableBoxes(child.children, cs)
 			}
