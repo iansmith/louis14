@@ -64,6 +64,11 @@ type textDecorationInfo struct {
 	// These are the default zero values — newTextDecorationInfo sets neither.
 	axis     decorationAxis
 	underDir blockUnderDir
+
+	// flipUnderlineAndOverline puts an upright vertical run's underline on
+	// the over side and its overline on the under side
+	// (shouldFlipUnderlineAndOverline; Blink's flip_underline_and_overline_).
+	flipUnderlineAndOverline bool
 }
 
 // newTextDecorationInfo constructs the geometry helper for a single text run.
@@ -251,12 +256,57 @@ func (t textDecorationInfo) computeLineThroughLineY(thickness float64) float64 {
 // rotation: floor(central ascent - the em box's bottom +
 // text-underline-offset) + 1 (core/layout/text_decoration_offset.cc:52-89),
 // where the central ascent is half the font's height and the em box's
-// bottom is half the em below the central baseline. Not ported: the
-// Japanese/Korean-script and `right` cases that resolve to over (LOU-1032).
-// Every upright path builds its info with blockUnderLeft.
-func (t textDecorationInfo) computeUnderlinePerpX(td css.AppliedTextDecoration) float64 {
-	offset := math.Floor((t.ascent+t.descent)/2+t.fontSize/2+td.UnderlineOffset) + 1
+// bottom is half the em below the central baseline. Every upright path
+// builds its info with blockUnderLeft. underlineOffset is the
+// text-underline-offset (0 for an overline flipped to the under side).
+func (t textDecorationInfo) computeUnderlinePerpX(underlineOffset float64) float64 {
+	offset := math.Floor((t.ascent+t.descent)/2+t.fontSize/2+underlineOffset) + 1
 	return t.box.X + t.box.Width - offset
+}
+
+// overDir is the side opposite underDir: the overline's block-start side.
+func (t textDecorationInfo) overDir() blockUnderDir {
+	if t.underDir == blockUnderRight {
+		return blockUnderLeft
+	}
+	return blockUnderRight
+}
+
+// underlineRectLeft is the physical left edge of an upright vertical run's
+// underline: on the under side underlineOffset out (computeUnderlinePerpX),
+// or on the over side when flipUnderlineAndOverline
+// (computeOverSideUnderlineRectLeft). side is the side it lands on.
+func (t textDecorationInfo) underlineRectLeft(underlineOffset, thickness float64) (rectLeft float64, side blockUnderDir) {
+	if t.flipUnderlineAndOverline {
+		return t.computeOverSideUnderlineRectLeft(underlineOffset, thickness), t.overDir()
+	}
+	return vertDecorationRectLeft(t.computeUnderlinePerpX(underlineOffset), thickness, t.underDir), t.underDir
+}
+
+// overlineRectLeft is the physical left edge of an upright vertical run's
+// overline: at the over edge, or, when flipUnderlineAndOverline, where an
+// underline without text-underline-offset sits (ComputeUnderlineLineData's
+// flipped branch, core/paint/text_decoration_info.cc:335-355 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). side is the side it lands on.
+func (t textDecorationInfo) overlineRectLeft(thickness float64) (rectLeft float64, side blockUnderDir) {
+	if t.flipUnderlineAndOverline {
+		return vertDecorationRectLeft(t.computeUnderlinePerpX(0), thickness, t.underDir), t.underDir
+	}
+	return vertDecorationRectLeft(t.computeOverlinePerpX(), thickness, t.overDir()), t.overDir()
+}
+
+// computeOverSideUnderlineRectLeft returns the physical left edge of an
+// upright vertical underline that resolves to the over side, painted with
+// the overline's geometry: TextDecorationOffset::ComputeUnderlineOffsetForUnder
+// with TopOfEmHeight (core/layout/text_decoration_offset.cc:52-89 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, from ComputeOverlineLineData's
+// flipped branch, core/paint/text_decoration_info.cc:357-377) places the
+// rect's top floor(central ascent - em/2 - text-underline-offset) - 1 -
+// floor(thickness) in from the line-over edge (physical right), so it grows
+// outward past the em box's top by the offset.
+func (t textDecorationInfo) computeOverSideUnderlineRectLeft(underlineOffset, thickness float64) float64 {
+	top := math.Floor((t.ascent+t.descent)/2-t.fontSize/2-underlineOffset) - 1 - math.Floor(thickness)
+	return t.box.X + t.box.Width - top - thickness
 }
 
 // computeOverlinePerpX returns the perpendicular physical X coordinate of the

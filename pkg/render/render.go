@@ -4529,78 +4529,40 @@ func (r *Renderer) familyDeclaredViaFontFace(family string) bool {
 	return false
 }
 
-// shouldFlipUnderlineAndOverline reports whether the underline/overline
-// bits on this run's AppliedTextDecorations must be swapped before painting.
-// Mirrors Blink's `flip_underline_and_overline_` logic at
-// third_party/blink/renderer/core/paint/text_decoration_info.cc:223-237
-// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which keys on:
-//
-//	original_underline_position_ == ResolvedUnderlinePosition::kOver
-//
-// Per CSS Text Decor 3 §3.5: `text-underline-position: left|right` names a
-// physical side, but the underline must always stay on the LINE-RELATIVE
-// under-side of the text content. If the named physical side IS the over-
-// side (relative to the inline-axis), the underline/overline lines swap
-// sides so the underline still ends up on the under-side.
-//
-// For central-baseline vertical runs (IsUprightVertical), non-CJK:
-//   - `position:right` triggers a flip in vertical-rl (RIGHT = over-side,
-//     because block-start direction is RIGHT in vertical-rl) but NOT in
-//     vertical-lr (RIGHT = under-side, since block-end direction is RIGHT).
-//   - `position:left` triggers a flip in vertical-lr (LEFT = over-side)
-//     but NOT in vertical-rl (LEFT = under-side).
-//
-// For central-baseline vertical runs (IsUprightVertical), CJK (TextLangIsCJK):
-// Per CSS Text Decor 3 §3.5 the default underline placement flips to the
-// over-side. Mirrors Blink's ResolveUnderlinePosition() CJK branch which
-// returns kOver for any position other than explicit `kLeft`
-// (text_decoration_info.cc:42-47 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f):
-//   - position: auto / from-font / under / right → kOver → flip
-//   - position: left → kUnder → no flip (explicit override of CJK default)
+// shouldFlipUnderlineAndOverline reports whether a central-baseline
+// (upright or mixed vertical) run's underline resolves to the over side,
+// which swaps its underline and overline: Blink's ResolveUnderlinePosition
+// central branch (core/paint/text_decoration_info.cc:23-53 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and flip_underline_and_overline_
+// (:224-235). Japanese (Katakana/Hiragana) or Korean script resolves over
+// unless text-underline-position has left; any other script only when it has
+// right. left and right name the same sides in vertical-rl and vertical-lr:
+// Blink rotates both clockwise, so line-over is physical right in both.
 func shouldFlipUnderlineAndOverline(layer *PaintLayer) bool {
 	if !layer.IsUprightVertical {
 		return false
 	}
 	pos := layer.TextUnderlinePosition
-	// `position:right` is the over-side in vertical-rl (and only there).
-	if strings.Contains(pos, "right") && !layer.IsWritingModeVerticalLR {
-		return true
+	if layer.TextScriptIsKanaOrHangul {
+		return !strings.Contains(pos, "left")
 	}
-	// `position:left` is the over-side in vertical-lr (and only there).
-	if strings.Contains(pos, "left") && layer.IsWritingModeVerticalLR {
-		return true
-	}
-	// CJK script default: position resolves to kOver unless the author
-	// explicitly opted out with `left`. Independent of writing-mode (rl/lr)
-	// — Blink's CJK branch doesn't condition on the inline direction.
-	if layer.TextLangIsCJK && !strings.Contains(pos, "left") {
-		return true
-	}
-	return false
+	return strings.Contains(pos, "right")
 }
 
-// isCJKLocale reports whether the given BCP47 language tag has a primary
-// language subtag that triggers the CSS Text Decor 3 §3.5 vertical-default
-// flip (Chinese, Japanese, Korean). Mirrors the script check in Blink's
-// ResolveUnderlinePosition() at third_party/blink/renderer/core/paint/
-// text_decoration_info.cc:42 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
-// (USCRIPT_KATAKANA_OR_HIRAGANA / USCRIPT_HANGUL), promoted here to a locale
-// prefix check because louis14 doesn't yet derive script from the font's
-// Unicode coverage. Mongolian (`mn`) is also included per CSS Text Decor 3
-// §3.5's explicit enumeration; Chinese (`zh`) covers both Han variants.
-//
-// Matching is case-insensitive and tolerates region/script subtags
-// (`ja-JP`, `zh-Hant`, etc.) by checking only the primary subtag prefix
-// up to the first hyphen.
-func isCJKLocale(lang string) bool {
-	if lang == "" {
-		return false
-	}
+// isKanaOrHangulLocale reports whether a BCP47 language tag's primary
+// subtag maps to USCRIPT_KATAKANA_OR_HIRAGANA (ja) or USCRIPT_HANGUL (ko),
+// the scripts ResolveUnderlinePosition flips for
+// (core/paint/text_decoration_info.cc:41-47 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); Blink takes the script from
+// the content language (FontDescription::GetScript). Han (zh) and
+// Mongolian (mn) don't flip: Chrome keeps a lang=zh underline on the under
+// side. Case-insensitive; region and script subtags are ignored.
+func isKanaOrHangulLocale(lang string) bool {
 	if i := strings.IndexByte(lang, '-'); i >= 0 {
 		lang = lang[:i]
 	}
 	switch strings.ToLower(lang) {
-	case "zh", "ja", "ko", "mn":
+	case "ja", "ko":
 		return true
 	}
 	return false
@@ -4694,8 +4656,8 @@ func sidewaysUnderlineGoesRight(layer *PaintLayer) bool {
 	// auto / from-font / empty (and left|right when ignored): follow rotation
 	// direction. CCW (IsSidewaysLR) → RIGHT; CW (everything else) → LEFT.
 	//
-	// Note: the CSS Text Decor 3 §3.5 CJK-default flip (underline auto-resolves
-	// to kOver for ja/ko/zh in upright vertical) is realized through
+	// Note: the Japanese/Korean default flip (underline auto-resolves to
+	// kOver for ja/ko in vertical text) is realized through
 	// shouldFlipUnderlineAndOverline + flipUnderlineOverlineBits — the
 	// decoration bits swap upstream, then sidewaysUnderlineGoesRight reports
 	// the post-flip placement (still kUnder side). The "RIGHT = over-side"
@@ -5374,12 +5336,11 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		descent := float64(metrics.Descent) / 64.0
 		textWidth := r.measureTextStr(text, fontID, layer.featureInputs())
 
-		// CSS Text Decor 3 §3.5: for non-CJK upright/mixed vertical text,
-		// `text-underline-position: right` resolves to kOver, which in Blink
-		// triggers flip_underline_and_overline_ — the underline/overline bits
-		// on each AppliedTextDecoration are swapped, then the underline is
-		// painted at the kUnder side. Mirrors text_decoration_info.cc:223-237
-		// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f. We apply the swap to
+		// A central-baseline run whose underline resolves to the over side
+		// (shouldFlipUnderlineAndOverline) swaps its underline and overline
+		// bits, as Blink's flip_underline_and_overline_ does
+		// (core/paint/text_decoration_info.cc:224-235 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). We apply the swap to
 		// a local copy and substitute it on the layer for the duration of the
 		// sideways paint so the downstream painters see the flipped lines.
 		if shouldFlipUnderlineAndOverline(layer) && len(layer.AppliedTextDecorations) > 0 {
@@ -5590,13 +5551,14 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		// upward from text-top, so srcY < textOff). After rotation:
 		//   CW (vertical-rl/-lr mixed, sideways-rl): above-text → physical RIGHT
 		//   CCW (sideways-lr): above-text → physical LEFT
-		// This matches the non-CJK default. For CJK upright vertical
-		// (TextLangIsCJK), shouldFlipUnderlineAndOverline swaps the
+		// This matches the non-CJK default. For Japanese/Korean vertical
+		// (TextScriptIsKanaOrHangul), shouldFlipUnderlineAndOverline swaps the
 		// underline/overline bits upstream, so a `text-decoration: overline`
 		// reaches this branch as underline (painted on physical LEFT in
 		// vertical-rl, matching the lang=en underline reference), and a
 		// `text-decoration: underline` reaches the overline-painting path
-		// (physical RIGHT in vertical-rl, the CJK over-side default).
+		// (physical RIGHT in vertical-rl, the Japanese/Korean over-side
+		// default).
 		if hasDecor {
 			origDC := r.dc
 			r.dc = childDC
@@ -6957,12 +6919,13 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, ad
 	// Upright text's line-under side is physical left in vertical-rl and
 	// vertical-lr alike: Blink rotates both clockwise (TextFragmentPainter::
 	// Paint, core/paint/text_fragment_painter.cc:369-379 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as Chrome draws them. The
-	// cases that put the underline on the over side are not ported
-	// (LOU-1032).
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as Chrome draws them. flip
+	// swaps the underline to the over side and the overline to the under
+	// side (shouldFlipUnderlineAndOverline).
 	dir := blockUnderLeft
 
 	info := newVerticalTextDecorationInfo(box, inlineLen, layer.FontSize, ascent, descent, 0, dir)
+	info.flipUnderlineAndOverline = shouldFlipUnderlineAndOverline(layer)
 
 	if len(layer.AppliedTextDecorations) > 0 {
 		for _, td := range layer.AppliedTextDecorations {
@@ -6978,18 +6941,9 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, ad
 	var rectLeft float64
 	switch layer.TextDecoration {
 	case css.TextDecorationUnderline:
-		perpX := info.computeUnderlinePerpX(css.AppliedTextDecoration{
-			UnderlineOffset: layer.TextUnderlineOffset,
-		})
-		rectLeft = vertDecorationRectLeft(perpX, thickness, dir)
+		rectLeft, _ = info.underlineRectLeft(layer.TextUnderlineOffset, thickness)
 	case css.TextDecorationOverline:
-		perpX := info.computeOverlinePerpX()
-		// Overline is on block-start = opposite side from underDir.
-		overDir := blockUnderRight
-		if dir == blockUnderRight {
-			overDir = blockUnderLeft
-		}
-		rectLeft = vertDecorationRectLeft(perpX, thickness, overDir)
+		rectLeft, _ = info.overlineRectLeft(thickness)
 	case css.TextDecorationLineThrough:
 		perpX := info.computeLineThroughPerpX()
 		rectLeft = perpX - thickness/2
@@ -7003,7 +6957,8 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, ad
 // drawOneAppliedVerticalDecoration paints a single AppliedTextDecoration entry
 // for an upright vertical text run. Perpendicular coordinate (physical X) is
 // derived from textDecorationInfo with axis=decorationAxisVertical; the line
-// itself paints line-relative (see paintLine).
+// itself paints line-relative (see paintLine), each line on the side
+// underlineRectLeft / overlineRectLeft resolve.
 func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration, info textDecorationInfo) {
 	if td.Lines.IsNone() {
 		return
@@ -7053,20 +7008,17 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 		}
 	}
 
+	// A double or wavy line's offset leads away from the text on the side
+	// the line lands on.
+	paintOnSide := func(rectLeft float64, side blockUnderDir) {
+		offset := awayFromText(side) * doubleOffsetFromThickness(thickness)
+		paintLine(rectLeft, offset, offset)
+	}
 	if td.Lines.Has(css.TextDecorationLineUnderline) {
-		perpX := info.computeUnderlinePerpX(td)
-		offset := awayFromText(info.underDir) * doubleOffsetFromThickness(thickness)
-		paintLine(vertDecorationRectLeft(perpX, thickness, info.underDir), offset, offset)
+		paintOnSide(info.underlineRectLeft(td.UnderlineOffset, thickness))
 	}
 	if td.Lines.Has(css.TextDecorationLineOverline) {
-		perpX := info.computeOverlinePerpX()
-		// Overline is on block-start = opposite side from underDir.
-		overDir := blockUnderRight
-		if info.underDir == blockUnderRight {
-			overDir = blockUnderLeft
-		}
-		offset := awayFromText(overDir) * doubleOffsetFromThickness(thickness)
-		paintLine(vertDecorationRectLeft(perpX, thickness, overDir), offset, offset)
+		paintOnSide(info.overlineRectLeft(thickness))
 	}
 	if td.Lines.Has(css.TextDecorationLineLineThrough) {
 		paintLine(info.computeLineThroughPerpX()-thickness/2, awayFromText(info.underDir)*math.Floor(doubleOffsetFromThickness(thickness)), 0)
