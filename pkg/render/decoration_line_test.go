@@ -42,6 +42,6 @@ func TestDecorationLine_DottedFitsDots(t *testing.T) {
 	img := render.RenderPage(t, decorationLinePage("dotted", "6px"), 130, 40)
 	assertPixel(t, img, 13, 29, black, "first dot, centre x 3")
 	assertPixel(t, img, 19, 29, white, "gap between the dots at x 3 and 14.74")
-	assertPixel(t, img, 104, 29, black, "last dot, centre x 96.92")
+	assertPixel(t, img, 106, 29, black, "last dot, centre x 96.92")
 	assertPixel(t, img, 111, 29, white, "past the last dot, which ends at x 99.92")
 }
