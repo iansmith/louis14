@@ -1083,6 +1083,17 @@ func emHeightAscents(fontSize float64, fontPath string, centralBaseline bool) (a
 		normAscent, _ = NormalizedTypoAscentAndDescent(fontSize, fontPath)
 		return ascent, normAscent
 	}
+	normAscent, _ = CentralNormalizedTypoAscentAndDescent(fontSize)
+	return (ascent + FontDescentFromFont(fontSize, fontPath, nil)) / 2, normAscent
+}
+
+// CentralNormalizedTypoAscentAndDescent is a font's normalized typo ascent
+// and descent on the central baseline: the font size rounded to a
+// LayoutUnit, split height - height/2 over height/2
+// (SimpleFontData::NormalizedTypoAscentAndDescent,
+// platform/fonts/simple_font_data.cc:346-348 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func CentralNormalizedTypoAscentAndDescent(fontSize float64) (ascent, descent float64) {
 	em := layoutunit.FromFloat64Round(fontSize)
-	return (ascent + FontDescentFromFont(fontSize, fontPath, nil)) / 2, em.Sub(em.DivInt(2)).Float64()
+	return em.Sub(em.DivInt(2)).Float64(), em.DivInt(2).Float64()
 }

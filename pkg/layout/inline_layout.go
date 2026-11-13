@@ -2253,7 +2253,7 @@ func createLineBoxEx(
 			}
 		}
 		if len(activeRubyColumns) > 0 {
-			rbpc.PlaceLines(activeRubyColumns, wdm, fonts, centralBaseline)
+			rbpc.PlaceLines(activeRubyColumns, wdm, fonts, centralBaseline, itemsData.TextContent)
 			// AnnotationMetrics returns (ascent, 0): the descent half is
 			// a Phase 11 stub (`ruby-position: under` not yet supported)
 			// and intentionally ignored here.
