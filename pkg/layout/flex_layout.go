@@ -672,7 +672,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) {
 				replacedSpace := cs
-				if fla.stretchesToDefiniteCross(item.style, item.wdm, isRow, fla.hasDefiniteCross) {
+				if fla.stretchesToDefiniteCross(item.style, isRow, fla.hasDefiniteCross) {
 					if item.mainIsItemInline {
 						replacedSpace.BlockAutoBehavior = AutoSizeBehaviorStretchExplicit
 					} else {
@@ -1943,10 +1943,10 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 			// If no explicit cross-size, check stretch alignment.
 			// Skip stretch prediction for replaced elements.
 			if !hasItemCross && hasDefiniteCross && !isReplacedB {
-				stretches := fla.itemStretchesInCrossAxis(style, childWDM, isRow)
+				stretches := fla.itemStretchesInCrossAxis(style, isRow)
 				hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
 				if stretches && !hasExplCross {
-					crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+					crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
 					if mainIsItemInline {
 						itemCrossContent = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
 					} else {
@@ -2137,7 +2137,7 @@ func (fla *FlexLayoutAlgorithm) contentFlexBasis(
 		// content dimensions should be used when no explicit cross-size
 		// forces a different proportion via aspect ratio.
 		if !hasItemCross && hasDefiniteCross && !isReplaced {
-			stretches := fla.itemStretchesInCrossAxis(style, childWDM, isRow)
+			stretches := fla.itemStretchesInCrossAxis(style, isRow)
 			hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
 			if stretches && !hasExplCross {
 				if mainIsItemInline {
@@ -2219,7 +2219,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 			// (BuildSpaceForLayout's inline auto behaviour); a centered item
 			// is fit-content, so a natural size stays.
 			autoBehavior := AutoSizeBehaviorFitContent
-			if fla.itemStretchesInCrossAxis(style, childWDM, isRow) {
+			if fla.itemStretchesInCrossAxis(style, isRow) {
 				autoBehavior = AutoSizeBehaviorStretchImplicit
 			}
 			basisSpace := fla.crossConstraintSpace(parentWDM, childWDM,
@@ -2240,7 +2240,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 		// and no block size stretches to the available inline size
 		// (StretchFit, length_utils.cc:1173-1196).
 		blockAuto := AutoSizeBehaviorFitContent
-		if fla.stretchesToDefiniteCross(style, childWDM, isRow, hasDefiniteCross) {
+		if fla.stretchesToDefiniteCross(style, isRow, hasDefiniteCross) {
 			blockAuto = AutoSizeBehaviorStretchExplicit
 		}
 		basisSpace := fla.crossConstraintSpace(parentWDM, childWDM,
@@ -2276,7 +2276,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 	// size is used for laying out descendants when determining flex base size."
 	stretchedCrossForBasis := Indefinite
 	if hasDefiniteCross {
-		stretches := fla.itemStretchesInCrossAxis(style, childWDM, isRow)
+		stretches := fla.itemStretchesInCrossAxis(style, isRow)
 		hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
 		if stretches && !hasExplCross {
 			stretchedCrossForBasis = containerCrossSize
@@ -2292,7 +2292,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 		// shrink-to-fit width so that percentage padding on descendants
 		// resolves against the item's actual width rather than the container's
 		// cross-axis size.
-		stretches := fla.itemStretchesInCrossAxis(style, childWDM, isRow)
+		stretches := fla.itemStretchesInCrossAxis(style, isRow)
 		willStretch := stretches
 		if !willStretch {
 			if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
@@ -3392,13 +3392,16 @@ func (fla *FlexLayoutAlgorithm) getAlignItems() string {
 // to stretch with no auto margin in the cross axis: the alignment half of
 // Blink's DoesItemStretch (flex/flex_layout_algorithm.cc:648-654 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); callers that need it add the
-// auto cross size check (DoesItemComputedCrossSizeHaveAuto).
-func (fla *FlexLayoutAlgorithm) itemStretchesInCrossAxis(style *css.Style, childWDM WritingDirectionMode, isRow bool) bool {
+// auto cross size check (DoesItemComputedCrossSizeHaveAuto). The auto
+// margins are the container's cross-axis pair, whatever the item's writing
+// mode (ResolvedAlignSelf, flex/flex_layout_algorithm.cc:265-278 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (fla *FlexLayoutAlgorithm) itemStretchesInCrossAxis(style *css.Style, isRow bool) bool {
 	alignItems := "stretch"
 	if v, ok := fla.style.Get("align-items"); ok {
 		alignItems = strings.TrimSpace(v)
 	}
-	_, _, crossAS, crossAE := getItemAutoMargins(style, childWDM, isRow)
+	_, _, crossAS, crossAE := getItemAutoMargins(style, fla.space.WritingDirection, isRow)
 	return fla.getAlignSelf(style, alignItems) == "stretch" && !crossAS && !crossAE
 }
 
@@ -3407,8 +3410,8 @@ func (fla *FlexLayoutAlgorithm) itemStretchesInCrossAxis(style *css.Style, child
 // with a definite cross size and a stretched item (BuildSpaceForLayout,
 // flex/flex_layout_algorithm.cc:767-776 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (fla *FlexLayoutAlgorithm) stretchesToDefiniteCross(style *css.Style, childWDM WritingDirectionMode, isRow, hasDefiniteCross bool) bool {
-	return hasDefiniteCross && fla.getFlexWrap() == "nowrap" && fla.itemStretchesInCrossAxis(style, childWDM, isRow)
+func (fla *FlexLayoutAlgorithm) stretchesToDefiniteCross(style *css.Style, isRow, hasDefiniteCross bool) bool {
+	return hasDefiniteCross && fla.getFlexWrap() == "nowrap" && fla.itemStretchesInCrossAxis(style, isRow)
 }
 
 // getAlignSelf returns the effective align-self for an item.
@@ -3706,7 +3709,7 @@ func (fla *FlexLayoutAlgorithm) flexItemMinMain(
 		// Only use shrink-to-fit for items that won't stretch to the container
 		// cross-size. Stretch items use the full container width, so their
 		// content suggestion should be computed at that width.
-		stretches := fla.itemStretchesInCrossAxis(style, childWDM, isRow)
+		stretches := fla.itemStretchesInCrossAxis(style, isRow)
 		willStretch := stretches
 		if !willStretch {
 			if _, hasExplicitInline := ResolveInlineSize(style, childWDM,
