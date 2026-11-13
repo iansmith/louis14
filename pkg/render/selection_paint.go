@@ -930,3 +930,9 @@ func isCurrentColorKeyword(style *css.Style) bool {
 	cv, ok := style.Get("color")
 	return ok && strings.EqualFold(cv, "currentColor")
 }
+
+// selectionRectCrossAxis is a stub; see
+// TestSelectionRectCrossAxis_UnitesTextAndLineBox.
+func selectionRectCrossAxis(textBox *layout.Box, vertical bool) (origin, extent float64) {
+	return crossAxisOriginExtent(textBox, vertical)
+}

@@ -844,3 +844,34 @@ func TestHighlightLayerStackColors_BackgroundCurrentColorUsesLayerColor(t *testi
 		t.Errorf("selection alone: background = %v, want the originating color %v", hc.background, black)
 	}
 }
+
+// TestSelectionRectCrossAxis_UnitesTextAndLineBox pins Blink's selection
+// rect in the block direction: the text fragment's rect united with its
+// containing line box's, min of the tops and max of the bottoms
+// (InlineCursor::CurrentLocalSelectionRectForText → ExpandSelectionRectToLineHeight,
+// core/layout/inline/inline_cursor.cc:520-546 and :57-79 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which HighlightPainter paints
+// (SelectionPaintState::ComputeSelectionRectIfNeeded,
+// core/paint/highlight_painter.cc:317-324, same SHA).
+func TestSelectionRectCrossAxis_UnitesTextAndLineBox(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		line, text           layout.Box
+		vertical             bool
+		wantOrigin, wantSize float64
+	}{
+		{"line taller than text", layout.Box{Y: 0, Height: 40}, layout.Box{Y: 11, Height: 17}, false, 0, 40},
+		{"text taller than line", layout.Box{Y: 5, Height: 8}, layout.Box{Y: 0, Height: 17}, false, 0, 17},
+		{"text overhangs the line's end", layout.Box{Y: 0, Height: 10}, layout.Box{Y: 4, Height: 17}, false, 0, 21},
+		{"vertical: X and Width", layout.Box{X: 0, Width: 40}, layout.Box{X: 11, Width: 17}, true, 0, 40},
+	} {
+		line, text := tc.line, tc.text
+		line.IsLineBox = true
+		text.Text = "x"
+		text.Parent = &line
+		line.Children = []*layout.Box{&text}
+		if o, s := selectionRectCrossAxis(&text, tc.vertical); o != tc.wantOrigin || s != tc.wantSize {
+			t.Errorf("%s: selection cross axis = (%v, %v), want (%v, %v)", tc.name, o, s, tc.wantOrigin, tc.wantSize)
+		}
+	}
+}
