@@ -927,22 +927,26 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 		if it.start < 0 || it.end <= it.start || (!a.spansIntrinsic(it) && !a.spansFlexible(it)) {
 			continue
 		}
+		// edges, the auto minimum's floor, counts no scrollbar; the
+		// contributions do (see gridItemInlineContribution).
 		var edges float64
 		childWDM := NewWritingDirectionMode(item.style)
 		if wdm.IsOrthogonalTo(childWDM) {
-			geom := geometryWithStyleScrollbars(item.node, item.style, childWDM)
+			geom := NodeFragmentGeometry(item.node, item.style, childWDM)
 			margins := ResolveMargins(item.style, childWDM, 0)
-			edges = geom.InlineBorderPadding() + margins.InlineSum()
+			edges = geom.Border.InlineSum() + geom.Padding.InlineSum() + margins.InlineSum()
+			contribEdges := geom.InlineBorderPadding() + margins.InlineSum()
 			space := NewConstraintSpaceBuilder(wdm, childWDM, true).
 				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, gla.ctx)).
 				SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 				Build()
 			mm := ComputeMinMaxSizes(gla.ctx, item.node, space)
-			it.minContent, it.maxContent = mm.MinContent+edges, mm.MaxContent+edges
+			it.minContent, it.maxContent = mm.MinContent+contribEdges, mm.MaxContent+contribEdges
 		} else {
 			blockSize, margins := parallelBlock(item)
-			edges = geometryWithStyleScrollbars(item.node, item.style, wdm).BlockBorderPadding() + margins.BlockStart + margins.BlockEnd
+			edges = ComputeBorders(item.node, item.style, wdm).BlockSum() + ComputePadding(item.node, item.style, wdm).BlockSum() +
+				margins.BlockStart + margins.BlockEnd
 			block := blockSize + margins.BlockStart + margins.BlockEnd
 			it.minContent, it.maxContent = block, block
 		}
