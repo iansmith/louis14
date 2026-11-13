@@ -102,9 +102,15 @@ func (wdm WritingDirectionMode) IsFlippedLines() bool {
 }
 
 // lineToBlock maps a line-relative pair (over, under) onto the line's
+// block-start and block-end sides (lineToBlockSides).
+func (wdm WritingDirectionMode) lineToBlock(over, under float64) (blockStart, blockEnd float64) {
+	return lineToBlockSides(wdm, over, under)
+}
+
+// lineToBlockSides maps a line-relative pair (over, under) onto the line's
 // block-start and block-end sides: over is block-start except in the
 // flipped-lines mode, where it is block-end.
-func (wdm WritingDirectionMode) lineToBlock(over, under float64) (blockStart, blockEnd float64) {
+func lineToBlockSides[T any](wdm WritingDirectionMode, over, under T) (blockStart, blockEnd T) {
 	if wdm.IsFlippedLines() {
 		return under, over
 	}
