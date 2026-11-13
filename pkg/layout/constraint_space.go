@@ -139,6 +139,13 @@ type ConstraintSpace struct {
 	// be ignored — only content determines the block-size.
 	IsContentSuggestionLayout bool
 
+	// BaselineAlgorithm selects how the box computes its baselines:
+	// BaselineAlgorithmTypeInlineBlock when it is laid out for an
+	// inline-block's baseline, which tables do not contribute to. Mirrors
+	// ConstraintSpace::GetBaselineAlgorithmType (constraint_space.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	BaselineAlgorithm BaselineAlgorithmType
+
 	// OrthogonalFallbackInlineSize is the ICB size used when an orthogonal
 	// child would otherwise get Indefinite as its available inline-size.
 	// Per CSS Writing Modes §10.3.2, when the parent's block-size is indefinite,
@@ -644,6 +651,25 @@ func (b *ConstraintSpaceBuilder) SetTableCellAlignmentBaseline(v float64) *Const
 // SetIsRestrictedBlockSizeTableCellChild (constraint_space_builder.h:518).
 func (b *ConstraintSpaceBuilder) SetIsRestrictedBlockSizeTableCellChild() *ConstraintSpaceBuilder {
 	b.space.IsRestrictedBlockSizeTableCellChild = true
+	return b
+}
+
+// BaselineAlgorithmType mirrors Blink's BaselineAlgorithmType
+// (constraint_space.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type BaselineAlgorithmType uint8
+
+const (
+	// BaselineAlgorithmTypeDefault computes the first and last baselines.
+	BaselineAlgorithmTypeDefault BaselineAlgorithmType = iota
+	// BaselineAlgorithmTypeInlineBlock computes the baseline of an
+	// inline-block (atomic inline).
+	BaselineAlgorithmTypeInlineBlock
+)
+
+// SetBaselineAlgorithmType mirrors ConstraintSpaceBuilder::
+// SetBaselineAlgorithmType.
+func (b *ConstraintSpaceBuilder) SetBaselineAlgorithmType(t BaselineAlgorithmType) *ConstraintSpaceBuilder {
+	b.space.BaselineAlgorithm = t
 	return b
 }
 

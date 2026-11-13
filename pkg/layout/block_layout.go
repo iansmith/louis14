@@ -1252,6 +1252,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 
 				b.SetInlineAutoBehavior(childInlineAutoBehavior)
+				// Children compute baselines as this box does
+				// (CreateConstraintSpaceForChild, block_layout_algorithm.cc:
+				// 3555 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				b.SetBaselineAlgorithmType(bla.space.BaselineAlgorithm)
 
 				// A scrollable percentage-height child of a restricted table
 				// cell is sized to its min block size while the percentage
@@ -1730,15 +1734,12 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Flex/grid containers that don't set LastBaseline fall back to
 			// Baseline (first baseline): they export content-derived baseline
 			// regardless of overflow per CSS Align §4.3.
-			// A table gives an inline-block no baseline: Blink skips table
-			// children when computing an inline-block's baseline
+			// A table gives an inline-block no baseline: when computing an
+			// inline-block's baseline, Blink skips table children
 			// (PropagateBaselineFromBlockChild, block_layout_algorithm.cc:
-			// 3740-3745 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the
-			// last baseline here doubles as louis14's inline-block baseline.
-			// TODO(LOU-957): Blink skips it only in kInlineBlock mode; this
-			// also drops a trailing table from flex/fieldset last-baseline
-			// alignment, which reads the same LastBaseline.
-			if !isOrthogonal && !child.IsTable() {
+			// 3740-3745 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			skipTable := child.IsTable() && bla.space.BaselineAlgorithm == BaselineAlgorithmTypeInlineBlock
+			if !isOrthogonal && !skipTable {
 				childLastBL := childResult.LastBaseline
 				if childLastBL == 0 && childStyle != nil {
 					d := childStyle.GetDisplay()

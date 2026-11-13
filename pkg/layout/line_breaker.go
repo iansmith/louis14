@@ -1765,7 +1765,12 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 			// The parent line's whole percentage resolution size, whatever
 			// its block-size: BlockNode::LayoutAtomicInline
 			// (block_node.cc:1477-1481 @ a9f50e522efa).
-			SetPercentageResolutionSize(geomLogicalToOld(lb.atomicPercentageResolutionSize(item)))
+			SetPercentageResolutionSize(geomLogicalToOld(lb.atomicPercentageResolutionSize(item))).
+			// An atomic inline computes an inline-block's baseline
+			// (inline/line_breaker.cc:3110-3115 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no
+			// baseline-source property, so baseline-source is always auto.
+			SetBaselineAlgorithmType(BaselineAlgorithmTypeInlineBlock)
 		childSpace := csb.Build()
 
 		result = layoutElement(lb.ctx, item.LayoutNode, childSpace)

@@ -2406,8 +2406,9 @@ func (mla *MulticolLayoutAlgorithm) constrainColumnBlockSize(size, outerRemainin
 // otherwise (cla.cc:1871-1876). louis14's fallback is the ICB size, as for
 // block and flex children.
 //
-// Not ported: the baseline algorithm type and text-box-trim (cla.cc:
-// 1880-1886); louis14's ConstraintSpace carries neither.
+// The baseline algorithm type is the multicol's (cla.cc:1880-1881). Not
+// ported: text-box-trim (:1883-1886); louis14's ConstraintSpace does not
+// carry it.
 func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *LayoutInputNode, blockOffset float64, breakToken *BlockBreakToken) ConstraintSpace {
 	wdm := mla.space.WritingDirection
 	spannerWDM := NewWritingDirectionMode(spanner.Style())
@@ -2415,7 +2416,8 @@ func (mla *MulticolLayoutAlgorithm) CreateConstraintSpaceForSpanner(spanner *Lay
 		InlineSize: mla.contentInlineSize,
 		BlockSize:  mla.containerPercentResolutionBlockSize,
 	}
-	b := NewConstraintSpaceBuilder(wdm, spannerWDM, true)
+	b := NewConstraintSpaceBuilder(wdm, spannerWDM, true).
+		SetBaselineAlgorithmType(mla.space.BaselineAlgorithm)
 	if wdm.IsOrthogonalTo(spannerWDM) {
 		b.SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(spannerWDM, mla.ctx))
 	} else if ShouldBlockContainerChildStretchAutoInlineSize(spanner) {
@@ -2480,7 +2482,9 @@ func (mla *MulticolLayoutAlgorithm) createConstraintSpaceForColumn(
 		SetShouldPropagateChildBreakValues(true).
 		SetBlockFragmentationType(FragmentColumn).
 		SetIsInsideBalancedColumns(balanceColumns).
-		SetMinBreakAppeal(minBreakAppeal)
+		SetMinBreakAppeal(minBreakAppeal).
+		// fragmentation_utils.cc:1403-1404 @ a9f50e522efa.
+		SetBaselineAlgorithmType(mla.space.BaselineAlgorithm)
 
 	// An auto-height row with no content leaves the fragmentainer block-size
 	// Indefinite: fragmentation stays on (spanner detection) with no boundary.
