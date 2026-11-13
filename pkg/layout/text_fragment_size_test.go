@@ -11,7 +11,7 @@ import (
 // the em box: the fragment's block size is int ascent + int descent and its
 // line-over edge is the baseline's ascent away from the baseline
 // (InlineBoxState::ComputeTextMetrics, core/layout/inline/inline_box_state.cc:
-// 131-136 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b: text_top = -ascent,
+// 130-136 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b: text_top = -ascent,
 // text_height = text_metrics.LineHeight(); placed by LogicalLineBuilder,
 // core/layout/inline/logical_line_builder.cc:262-266 @ same SHA). The height
 // is FontMetrics::Height() = int_ascent_ + int_descent_ for every baseline
@@ -77,7 +77,7 @@ func TestTextFragment_SidewaysVerticalLRMatchesRL(t *testing.T) {
 // baseline splits FontMetrics::Height() as Height() - Height() / 2 over the
 // baseline and Height() / 2 under it, for the line box's metrics as well as
 // the text fragment (InlineBoxState::ComputeTextMetrics takes both from
-// GetFontHeight(kCentralBaseline), inline_box_state.cc:131-136;
+// GetFontHeight(kCentralBaseline), inline_box_state.cc:130-136;
 // FontMetrics::IntAscentInternal, font_metrics.cc:193-194 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Ahem at 25px is 20 + 5 = 25
 // tall, an odd height: with line-height 1 the line box and the fragment are

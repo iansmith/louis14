@@ -3301,7 +3301,7 @@ func needsSidewaysVLRBaselineSwap(wdm WritingDirectionMode, centralBaseline bool
 // (FontMetrics::IntAscentInternal, platform/fonts/font_metrics.cc:193-194 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the split InlineBoxState::
 // ComputeTextMetrics uses for both the line box and the text fragment
-// (core/layout/inline/inline_box_state.cc:131-136 @ same SHA). Line-over is
+// (core/layout/inline/inline_box_state.cc:130-136 @ same SHA). Line-over is
 // block-end in vertical-lr, so there the two swap.
 func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistry, wdm WritingDirectionMode, centralBaseline bool) (ascent, descent float64) {
 	ascent = text.FontAscentFromFont(fontSize, fontPath, reg)
@@ -3333,7 +3333,7 @@ func CentralBaselineUnderSide(height float64) float64 {
 // text fragment from the primary font's integer metrics rather than the em
 // box: text_top = -ascent, text_height = ascent + descent
 // (InlineBoxState::ComputeTextMetrics, core/layout/inline/inline_box_state.cc:
-// 131-136 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b; placed by
+// 130-136 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b; placed by
 // LogicalLineBuilder, logical_line_builder.cc:262-266 @ same SHA). This box
 // (ascent + descent around the baseline) is the "font box" that inline
 // background bands also use. The nil registry keeps CSS Fonts 4
