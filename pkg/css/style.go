@@ -217,6 +217,14 @@ type Style struct {
 	// font-family is not set (core/css/resolver/font_builder.cc:647).
 	fontSelector FontSelector
 
+	// scopeFrame is the element's styleScopeFrame from the cascade pass,
+	// kept so its pseudo-elements match within it, as Blink recalcs a
+	// pseudo-element within its originating element's StyleScopeFrame
+	// (Element::RecalcStyle, core/dom/element.cc:5126-5167 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A pure cache, nil
+	// outside the cascade; Clone drops it.
+	scopeFrame *styleScopeFrame
+
 	// remFontSize is the computed font-size of the document's root element,
 	// the rem unit's size for this style's lengths. convertFontSize sets it
 	// on every cascaded style (the root takes its own size; every other
@@ -12500,6 +12508,15 @@ var propertyAliases = map[string]string{
 	// `mask-border-source`; Blink's SC set lists kWebkitMaskBoxImageSource
 	// as its OWN longhand, not a `mask-border-source` alias, so we keep it
 	// untouched here.
+}
+
+// scopeFrameOf is s's styleScopeFrame when it is node's (a frame caches one
+// element's activations), nil otherwise; nil-safe.
+func (s *Style) scopeFrameOf(node *html.Node) *styleScopeFrame {
+	if s == nil || s.scopeFrame == nil || s.scopeFrame.element != node {
+		return nil
+	}
+	return s.scopeFrame
 }
 
 // ResolveCSSPropertyID returns name's alias_for target when name is an
