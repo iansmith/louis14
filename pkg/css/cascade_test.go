@@ -1164,8 +1164,8 @@ func TestCustomPropertyReferencesSeeAppliedValue(t *testing.T) {
 // is spelled: `--a\,b`, `--a\2c b` are all `--a,b`, as a declaration and
 // inside var() (CSSTokenizer::ConsumeName / ConsumeEscape,
 // core/css/parser/css_tokenizer.cc:594-691 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An escaped `,` or `)` stays
-// inside the ident; it never splits var()'s name from its fallback, and a
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An escaped `,`, `)` or
+// trailing space stays inside the ident; it never splits var()'s name from its fallback, and a
 // self-reference through another spelling is still a cycle.
 func TestCustomPropertyEscapedNames(t *testing.T) {
 	for _, decls := range []string{
@@ -1174,6 +1174,7 @@ func TestCustomPropertyEscapedNames(t *testing.T) {
 		`--a\2c b: green; color: var(--a\,b);`,
 		`--a\,b: var(--a\2c b); color: var(--a\,b, green);`,
 		`--a\)b: green; color: var(--a\29 b);`,
+		`--a\20 : green; color: var(--a\20 );`,
 	} {
 		src := `<style>#t { ` + decls + ` }</style><div id="t"></div>`
 		if got, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get("color"); got != "green" {
