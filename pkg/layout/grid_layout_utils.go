@@ -59,11 +59,34 @@ type gridBaselineFragment struct {
 	// own: wd is the item's own writing mode, so its fragment's baselines
 	// can be read (LogicalBoxFragment::IsWritingModeEqual).
 	own bool
+	// result is the layout read; without one, the fragment is only a
+	// border box size long in wd, with no baselines of its own.
+	result *LayoutResult
+	size   float64
+	// margins are the item's margins in the grid's writing direction, for
+	// its baseline margin (GetExtraMarginForBaseline).
+	margins LogicalEdges
 }
 
+// baselineFragment is the item's layout (item.result) read in its baseline
+// writing direction for the columns (forColumns) or rows.
 func (item *gridItem) baselineFragment(forColumns bool) gridBaselineFragment {
+	return item.baselineFragmentOf(forColumns, item.result, item.margins)
+}
+
+func (item *gridItem) baselineFragmentOf(forColumns bool, result *LayoutResult, margins LogicalEdges) gridBaselineFragment {
 	a := item.axis(forColumns)
-	return gridBaselineFragment{item: item, wd: WritingDirectionMode{WM: a.baselineWritingMode, Dir: item.wdm.Dir}, own: a.hasOwnBaselines}
+	return gridBaselineFragment{item: item, wd: WritingDirectionMode{WM: a.baselineWritingMode, Dir: item.wdm.Dir},
+		own: a.hasOwnBaselines, result: result, margins: margins}
+}
+
+// synthesizedBaselineFragment is a border box size long in the item's
+// baseline writing direction, without a layout: its baselines are
+// synthesized.
+func (item *gridItem) synthesizedBaselineFragment(forColumns bool, size float64, margins LogicalEdges) gridBaselineFragment {
+	f := item.baselineFragmentOf(forColumns, nil, margins)
+	f.size = size
+	return f
 }
 
 // containerFragment is the item's fragment read in the grid's writing
@@ -71,13 +94,16 @@ func (item *gridItem) baselineFragment(forColumns bool) gridBaselineFragment {
 // PlaceGridItems reads it (grid_layout_algorithm.cc:1846-1849 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (item *gridItem) containerFragment() gridBaselineFragment {
-	return gridBaselineFragment{item: item, wd: item.wdm, own: item.itemWDM.WM == item.wdm.WM}
+	return gridBaselineFragment{item: item, wd: item.wdm, own: item.itemWDM.WM == item.wdm.WM, result: item.result, margins: item.margins}
 }
 
 // blockSize is the fragment's size along the baseline writing direction's
 // block axis.
 func (f gridBaselineFragment) blockSize() float64 {
-	return NewLogicalFragment(f.wd, f.item.result.Fragment).BlockSize()
+	if f.result == nil {
+		return f.size
+	}
+	return NewLogicalFragment(f.wd, f.result.Fragment).BlockSize()
 }
 
 // baseline is the fragment's first (or last) baseline, or not ok when it
@@ -87,8 +113,8 @@ func (f gridBaselineFragment) blockSize() float64 {
 // LayoutResult with a first baseline has a last one; a zero LastBaseline
 // means the first.
 func (f gridBaselineFragment) baseline(isLast bool) (float64, bool) {
-	r := f.item.result
-	if !f.own || !r.HasBaseline {
+	r := f.result
+	if r == nil || !f.own || !r.HasBaseline {
 		return 0, false
 	}
 	b := r.Baseline
@@ -154,9 +180,9 @@ func (f gridBaselineFragment) synthesizedLogicalBaseline(blockSize float64, cent
 // (grid_layout_algorithm.cc:540-559 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no subgrid extra
 // margins.
-func (item *gridItem) extraMarginForBaseline(forColumns bool) float64 {
-	margins := ToLogicalEdges(ToPhysicalEdges(item.margins, item.wdm), item.baselineFragment(forColumns).wd)
-	if item.axis(forColumns).alignment == AxisEdgeLastBaseline {
+func (f gridBaselineFragment) extraMarginForBaseline(forColumns bool) float64 {
+	margins := ToLogicalEdges(ToPhysicalEdges(f.margins, f.item.wdm), f.wd)
+	if f.item.axis(forColumns).alignment == AxisEdgeLastBaseline {
 		return margins.BlockEnd
 	}
 	return margins.BlockStart
@@ -167,15 +193,15 @@ func (item *gridItem) extraMarginForBaseline(forColumns bool) float64 {
 // shared baseline is unset or the item is not baseline-aligned. Mirrors
 // CalculateBaselineShim (grid_layout_algorithm.cc:606-623 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (b *gridTrackBaselines) baselineShim(item *gridItem, forColumns bool, itemBaseline float64) float64 {
-	if b == nil || !item.axis(forColumns).isBaselineAligned() {
+func (b *gridTrackBaselines) baselineShim(f gridBaselineFragment, forColumns bool, itemBaseline float64) float64 {
+	if b == nil || !f.item.axis(forColumns).isBaselineAligned() {
 		return 0
 	}
-	trackBaseline := b.trackBaseline(item, forColumns)
+	trackBaseline := b.trackBaseline(f.item, forColumns)
 	if math.IsInf(trackBaseline, -1) {
 		return 0
 	}
-	return trackBaseline - itemBaseline - item.extraMarginForBaseline(forColumns)
+	return trackBaseline - itemBaseline - f.extraMarginForBaseline(forColumns)
 }
 
 // central reports whether synthesized baselines use the central font
@@ -187,25 +213,37 @@ func (b *gridTrackBaselines) central() bool {
 // computeGridItemBaselines is the grid's shared baselines in one axis, in
 // its font baseline (ComputedStyle::GetFontBaseline).
 func (gla *GridLayoutAlgorithm) computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int) *gridTrackBaselines {
-	return computeGridItemBaselines(items, forColumns, trackCount, gla.space.WritingDirection.UsesCentralBaselineWithStyle(gla.style))
+	return computeGridItemBaselines(items, forColumns, trackCount, gla.centralBaseline(), func(item *gridItem) (gridBaselineFragment, bool) {
+		return item.baselineFragment(forColumns), item.result != nil
+	})
+}
+
+// centralBaseline reports whether the grid's font baseline is central
+// (ComputedStyle::GetFontBaseline).
+func (gla *GridLayoutAlgorithm) centralBaseline() bool {
+	return gla.space.WritingDirection.UsesCentralBaselineWithStyle(gla.style)
 }
 
 // computeGridItemBaselines is one axis's shared baselines from the items'
-// final layout: each baseline-aligned item's logical baseline plus its
-// start margin (end margin for a last baseline) in its baseline writing
-// direction. Mirrors the final pass of ComputeGridItemBaselines
-// (grid_layout_algorithm.cc:951-1037) with GetExtraMarginForBaseline
-// (:540-559) and StoreItemBaseline (grid_layout_utils.cc:66-84 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). nil when no item is
-// baseline-aligned in the axis (GridLayoutData::HasBaselines). The
-// alignment fallback (SetAlignmentFallback) is LOU-978 PR D.
-func computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int, centralBaseline bool) *gridTrackBaselines {
+// fragments (fragment: their final layout, or a measure layout while the
+// tracks are sized; not ok to skip an item): each baseline-aligned item's
+// logical baseline plus its start margin (end margin for a last baseline)
+// in its baseline writing direction, after its alignment fallback is
+// decided. Mirrors ComputeGridItemBaselines (grid_layout_algorithm.cc:
+// 951-1037) with GetExtraMarginForBaseline (:540-559) and StoreItemBaseline
+// (grid_layout_utils.cc:66-84 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// nil when no item is baseline-aligned in the axis
+// (GridLayoutData::HasBaselines).
+func computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int, centralBaseline bool, fragment func(*gridItem) (gridBaselineFragment, bool)) *gridTrackBaselines {
 	var b *gridTrackBaselines
 	for _, item := range items {
-		if !item.axis(forColumns).isBaselineSpecified() || item.result == nil {
+		if !item.axis(forColumns).isBaselineSpecified() {
 			continue
 		}
-		f := item.baselineFragment(forColumns)
+		f, ok := fragment(item)
+		if !ok {
+			continue
+		}
 		_, hasBaseline := f.baseline(false)
 		item.setAlignmentFallback(forColumns, !hasBaseline)
 		a := item.axis(forColumns)
@@ -216,7 +254,7 @@ func computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int
 			b = newGridTrackBaselines(trackCount, centralBaseline)
 		}
 		isLast := a.alignment == AxisEdgeLastBaseline
-		b.setTrackBaseline(item, forColumns, item.extraMarginForBaseline(forColumns)+f.logicalBaseline(centralBaseline, isLast))
+		b.setTrackBaseline(item, forColumns, f.extraMarginForBaseline(forColumns)+f.logicalBaseline(centralBaseline, isLast))
 	}
 	return b
 }

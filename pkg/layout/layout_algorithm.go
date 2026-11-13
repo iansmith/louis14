@@ -97,6 +97,8 @@ type LayoutContext struct {
 type orthogonalContribution struct {
 	space        orthogonalContributionSpace
 	contribution float64
+	// result is the layout the contribution was measured from.
+	result *LayoutResult
 }
 
 // orthogonalContributionSpace is the parent-space inputs an orthogonal flow
