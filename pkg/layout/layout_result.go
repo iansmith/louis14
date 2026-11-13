@@ -817,6 +817,21 @@ type PhysicalBoxData struct {
 	Scrollbar PhysicalEdges
 }
 
+// SynthesizedBaseline is the baseline synthesized for a box with none, from
+// its block-start edge over its blockSize-long border box: its center for a
+// central font baseline, else its block-end, or its block-start in flipped
+// lines. Mirrors LogicalBoxFragment::SynthesizedBaseline
+// (logical_box_fragment.h:33-40 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func SynthesizedBaseline(centralBaseline, isFlippedLines bool, blockSize float64) float64 {
+	switch {
+	case centralBaseline:
+		return blockSize / 2
+	case isFlippedLines:
+		return 0
+	}
+	return blockSize
+}
+
 // LogicalFragment is a read-only wrapper that presents a PhysicalFragment's
 // data in logical coordinates. Layout algorithms use this to read child
 // results in logical terms without knowing the physical axis.
