@@ -7220,14 +7220,6 @@ func (r *Renderer) SavePNG(filename string) error {
 	return png.Encode(f, r.target)
 }
 
-// hasOverflowClipping reports whether the box clips its overflow along
-// either axis (overflow or paint containment), as layout decided it.
-// Mirrors LayoutObject::ShouldClipOverflowAlongEitherAxis
-// (layout_object.h:2062-2065 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func hasOverflowClipping(box *layout.Box) bool {
-	return box.OverflowClipAxes != layout.NoOverflowClip
-}
-
 // applySpreadToShadowShape expands (or shrinks, for negative spread) shadow
 // radii by the spread distance, mirroring Blink's ApplySpreadToShadowShape
 // (box_painter_base.cc:91 @ 4883d11fef4a): coverage-factor corner correction

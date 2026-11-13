@@ -56,8 +56,8 @@ func TestPaint_InlineBoxOverflowDoesNotClip(t *testing.T) {
 	if span.OverflowClipAxes != layout.NoOverflowClip {
 		t.Errorf("span box OverflowClipAxes = %v, want none", span.OverflowClipAxes)
 	}
-	if hasOverflowClipping(span) {
-		t.Error("hasOverflowClipping(span) = true, want false")
+	if span.HasNonVisibleOverflow() {
+		t.Error("span HasNonVisibleOverflow() = true, want false")
 	}
 	if newPaintLayer(span).HasClip {
 		t.Error("span paint layer HasClip = true, want false")
