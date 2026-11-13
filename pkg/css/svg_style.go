@@ -316,7 +316,7 @@ func parseSVGPaint(value string, currentColor Color) SVGPaint {
 			return SVGPaint{Kind: SVGPaintColor, Color: Color{A: 1.0}}
 		}
 		inside := strings.TrimSpace(value[4:end])
-		inside = unquoteCSSString(inside)
+		inside = CSSStringValue(inside)
 		id := ""
 		if strings.HasPrefix(inside, "#") {
 			id = inside[1:]

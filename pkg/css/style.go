@@ -945,7 +945,7 @@ func ParseURLReference(val string) (string, bool) {
 	inner = strings.TrimSpace(inner)
 	// Strip surrounding quotes (CSS allows both forms).
 	if len(inner) >= 2 {
-		inner = unquoteCSSString(inner)
+		inner = CSSStringValue(inner)
 	}
 	if inner == "" {
 		return "", false
@@ -8587,7 +8587,7 @@ func (s *Style) GetContent() (string, bool) {
 		content = strings.TrimSpace(content)
 		if len(content) >= 2 {
 			// Remove single or double quotes
-			content = unquoteCSSString(content)
+			content = CSSStringValue(content)
 		}
 
 		return content, true
@@ -8686,7 +8686,7 @@ func ParseContentValues(raw string) []ContentValue {
 				arg := strings.TrimSpace(raw[start : end-1])
 				switch funcName {
 				case "url":
-					values = append(values, ContentValue{Type: "url", Value: unquoteCSSString(arg)})
+					values = append(values, ContentValue{Type: "url", Value: CSSStringValue(arg)})
 				case "counter":
 					// counter(name) or counter(name, style)
 					name, _, style := splitCounterArgs(arg)
@@ -8797,7 +8797,7 @@ func parseAttrNameAndFallback(arg string) (name, fallback string) {
 	// An unquoted identifier fallback is invalid for the string type and resolves to empty.
 	if len(rawFallback) >= 2 {
 		if isQuotedStringValue(rawFallback) {
-			return rawName, unquoteCSSString(rawFallback)
+			return rawName, CSSStringValue(rawFallback)
 		}
 	}
 	// Non-quoted fallback: invalid for string type → treat as no usable fallback.
@@ -9942,7 +9942,7 @@ func ParseURLValue(val string) (string, bool) {
 	inner := val[4 : len(val)-1]
 	inner = strings.TrimSpace(inner)
 	// Remove quotes if present
-	inner = unquoteCSSString(inner)
+	inner = CSSStringValue(inner)
 	if inner == "" {
 		return "", false
 	}
@@ -10887,7 +10887,7 @@ func (s *Style) GetListStyleType() ListStyleType {
 			// "2.\A0 \A0 " yields "2." + two NBSPs (css-pseudo
 			// marker-word-spacing-ref.html).
 			if isQuotedStringValue(val) {
-				return ListStyleType(unquoteCSSString(val))
+				return ListStyleType(CSSStringValue(val))
 			}
 			// Return as-is for other values
 			return ListStyleType(val)
@@ -11057,7 +11057,7 @@ func parseClipPathReference(val string) *ClipPath {
 	inner := val[4 : len(val)-1]
 	inner = strings.TrimSpace(inner)
 	// A quoted reference is its string's value.
-	inner = unquoteCSSString(inner)
+	inner = CSSStringValue(inner)
 	if inner == "" {
 		return nil
 	}
@@ -11659,7 +11659,7 @@ func (s *Style) GetTextOverflowString() string {
 	if !ok || !isQuotedStringValue(val) {
 		return ""
 	}
-	return unquoteCSSString(val)
+	return CSSStringValue(val)
 }
 
 // isQuotedStringValue reports whether val is a CSS <string> token
@@ -11675,11 +11675,11 @@ func isQuotedStringValue(val string) bool {
 	return val[len(val)-1] == q
 }
 
-// unquoteCSSString is the value of a quoted CSS <string> token, its escapes
-// resolved (consumeStringToken): a declaration stores a string as
-// serializeString writes it, escapes and all (unescapeCSSKeepingURLs).
-// Anything else is returned as is.
-func unquoteCSSString(val string) string {
+// CSSStringValue is the value of a quoted CSS <string> token, its escapes
+// resolved (consumeStringToken), as Blink reads a CSSStringValue's Value():
+// a declaration stores a string as serializeString writes it, escapes and
+// all (unescapeCSSKeepingURLs). Anything else is returned as is.
+func CSSStringValue(val string) string {
 	if !isQuotedStringValue(val) {
 		return val
 	}
@@ -12241,7 +12241,7 @@ func (s *Style) GetTextEmphasisMark(isHorizontal bool) string {
 
 	// Custom string: "x" or 'x' (quoted string)
 	if isQuotedStringValue(style) {
-		return unquoteCSSString(style)
+		return CSSStringValue(style)
 	}
 
 	// Standard shapes

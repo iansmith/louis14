@@ -261,7 +261,7 @@ func gridTemplateValue(rows, columns, areas string) string {
 		}
 		// SerializeGridAreaText (cssom_utils.cc:104): the row's cells
 		// joined by single spaces.
-		cells := parseGridTemplateAreasColumnNames(unquoteCSSString(areaRows[row]))
+		cells := parseGridTemplateAreasColumnNames(CSSStringValue(areaRows[row]))
 		out = append(out, `"`+strings.Join(cells, " ")+`"`)
 		row++
 		if !strings.EqualFold(t, "auto") {

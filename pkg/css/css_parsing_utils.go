@@ -1071,7 +1071,7 @@ func parseGridTemplateAreas(rows []string) (map[string]*gridAreaSpan, bool) {
 	areas := map[string]*gridAreaSpan{}
 	columns := 0
 	for i, row := range rows {
-		if !isQuotedStringValue(row) || !parseGridTemplateAreasRow(unquoteCSSString(row), areas, i, &columns) {
+		if !isQuotedStringValue(row) || !parseGridTemplateAreasRow(CSSStringValue(row), areas, i, &columns) {
 			return nil, false
 		}
 	}
@@ -1098,7 +1098,7 @@ func consumeGridTemplateRowsAndAreasAndColumns(s *componentStream) (rows, column
 			}
 		}
 		row := s.peek()
-		if !isQuotedStringValue(row) || !parseGridTemplateAreasRow(unquoteCSSString(row), gridAreas, len(areaList), &columnCount) {
+		if !isQuotedStringValue(row) || !parseGridTemplateAreasRow(CSSStringValue(row), gridAreas, len(areaList), &columnCount) {
 			return "", "", "", false
 		}
 		s.consume()
