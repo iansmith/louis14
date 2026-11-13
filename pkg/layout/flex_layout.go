@@ -366,8 +366,9 @@ func (fi *flexItem) ownOrSynthesizedBaseline(wm WritingMode, blockSize float64, 
 // minorBaseline = Blink's max_minor_ascent: max over kMinor items of
 // margins.CrossEnd() + (possibly wrap-reverse-flipped) baseline.
 // Group membership swaps under wrap-reverse per DetermineBaselineGroup
-// (baseline_utils.h:51-89); the flip is applied in the cross-sizing loop
-// per BaselineAscent (flex_layout_algorithm.cc:382-384). unsetBaseline marks
+// (baseline_utils.h:50-89 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the
+// flip is applied in the cross-sizing loop per BaselineAscent
+// (flex_layout_algorithm.cc:382-384). unsetBaseline marks
 // "no item in that group participated on this line" (analogous to Blink's
 // LayoutUnit::Min()).
 type flexLine struct {
@@ -785,11 +786,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				if reverseCross != isLastBaseline {
 					baselineVal = item.crossSize - baselineVal
 				}
-				// baseline_group per DetermineBaselineGroup (baseline_utils.h:51-89):
+				// baseline_group per DetermineBaselineGroup (baseline_utils.h:50-89 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
 				//   Normal wrap: align:baseline→kMajor, align:last-baseline→kMinor.
 				//   Wrap-reverse swaps both → align:baseline→kMinor,
-				//   align:last-baseline→kMajor. Equivalently:
-				//   isMajor = (isLastBaseline == reverseCross).
+				//   align:last-baseline→kMajor. While a line holds one group
+				//   this reduces to isMajor = (isLastBaseline == reverseCross);
+				//   LOU-1020 ports the other group.
 				isMajor := isLastBaseline == reverseCross
 				if isMajor {
 					ascent := item.crossMarginStart() + baselineVal
@@ -841,7 +844,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		//   minorBaseline = max_minor_ascent = max over kMinor items of
 		//                   margins.CrossEnd()   + (possibly flipped) baseline.
 		// Membership of items in kMajor/kMinor swaps under wrap-reverse per
-		// DetermineBaselineGroup (baseline_utils.h:51-89).
+		// DetermineBaselineGroup (baseline_utils.h:50-89 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if hasBaselineItem {
 			line.majorBaseline = maxAscent
 		} else {
