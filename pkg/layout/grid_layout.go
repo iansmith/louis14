@@ -195,7 +195,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		// stretches and its size in the grid's block axis is auto (stretch
 		// applies only to auto sizes).
 		blockSize, _ := item.style.Get(blockSizeProp)
-		stretchBlock := item.rows.stretches() && (blockSize == "" || blockSize == "auto")
+		stretchBlock := item.rows.stretches() && (blockSize == "" || blockSize == "auto") &&
+			!gla.implicitStretchYieldsToAspectRatio(item, false)
 		if stretchBlock {
 			needsRelayout = true
 		}
@@ -224,13 +225,13 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 			// pass (CreateConstraintSpace, grid_layout_algorithm.cc:1358-1409
 			// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			childSpace2 := NewConstraintSpaceBuilder(wdm, childWDM2, true).
-				SetInlineAutoBehavior(gridItemInlineAutoBehavior(stretchInline)).
+				SetInlineAutoBehavior(gridItemInlineAutoBehavior(item, stretchInline)).
 				SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM2, gla.ctx)).
 				SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 				SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: reLayoutBlock}).
 				SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}).
 				SetPercentageResolutionInlineSize(itemInline).
-				SetIsFixedInlineSize(stretchInline).
+				SetIsFixedInlineSize(stretchInline && !gla.implicitStretchYieldsToAspectRatio(item, true)).
 				SetIsFixedBlockSize(stretchBlock).
 				Build()
 			item.result = layoutElement(gla.ctx, item.node, childSpace2)
@@ -1032,15 +1033,39 @@ func (gla *GridLayoutAlgorithm) computeTrackOffsets(sizes []float64, gap, contai
 }
 
 // gridItemInlineAutoBehavior is the behaviour of a grid item's auto
-// size along the grid's inline axis: stretch when its justify-self
-// stretches it, fit-content otherwise (a replaced item under `normal`
+// size along the grid's inline axis: its column_auto_behavior
+// (kStretchExplicit for `stretch`, kStretchImplicit for `normal`) when it
+// stretches, fit-content otherwise (a replaced item under `normal`
 // included). Mirrors the auto_behavior AxisEdgeFromItemPosition sets
 // (grid_item.cc:48, :120-141 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func gridItemInlineAutoBehavior(stretchInline bool) AutoSizeBehavior {
+func gridItemInlineAutoBehavior(item *gridItem, stretchInline bool) AutoSizeBehavior {
 	if stretchInline {
-		return AutoSizeBehaviorStretchImplicit
+		return item.columns.autoBehavior
 	}
 	return AutoSizeBehaviorFitContent
+}
+
+// implicitStretchYieldsToAspectRatio reports whether an item's implicit
+// (`normal`) stretch in an axis gives way to its aspect-ratio: Blink
+// resolves an auto size under kStretchImplicit as fit-content, not stretch,
+// when the item has an aspect-ratio and a definite size in the other axis
+// (may_apply_aspect_ratio in ComputeBlockSizeForFragmentInternal and
+// ComputeInlineSizeForFragmentInternal, length_utils.cc:535-569, :820-845 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The grid then must not fix
+// that size, so the ratio transfers it. A definite size in the other axis
+// is a non-auto size property there.
+func (gla *GridLayoutAlgorithm) implicitStretchYieldsToAspectRatio(item *gridItem, forColumns bool) bool {
+	if item.axis(forColumns).autoBehavior != AutoSizeBehaviorStretchImplicit || !boxAspectRatio(gla.ctx, item.node, item.style).IsSet {
+		return false
+	}
+	// The size in the other axis: the block size for the columns, the
+	// inline size for the rows.
+	other := logicalInlineSizeProperty(gla.space.WritingDirection)
+	if forColumns {
+		other = logicalBlockSizeProperty(gla.space.WritingDirection)
+	}
+	v, _ := item.style.Get(other)
+	return v != "" && v != "auto"
 }
 
 // shouldStretchInline returns true when the grid item should be stretched
@@ -1293,13 +1318,13 @@ func (gla *GridLayoutAlgorithm) layoutItemAtColumns(item *gridItem, colSizes []f
 	// grid_layout_algorithm.cc:1358-1409; ComputeInlineSizeForFragment,
 	// length_utils.cc:559-568 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	childSpace := NewConstraintSpaceBuilder(wdm, childWDM, true).
-		SetInlineAutoBehavior(gridItemInlineAutoBehavior(stretchInline)).
+		SetInlineAutoBehavior(gridItemInlineAutoBehavior(item, stretchInline)).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(childWDM, gla.ctx)).
 		SetOrthogonalFallbackBlockSize(gla.space.OrthogonalFallbackBlockSize).
 		SetAvailableSize(LogicalSize{InlineSize: itemInline, BlockSize: blockSize}).
 		SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: blockSize}).
 		SetPercentageResolutionInlineSize(itemInline).
-		SetIsFixedInlineSize(stretchInline).
+		SetIsFixedInlineSize(stretchInline && !gla.implicitStretchYieldsToAspectRatio(item, true)).
 		Build()
 	return layoutElement(gla.ctx, item.node, childSpace), ResolveMargins(item.style, wdm, itemInline)
 }
