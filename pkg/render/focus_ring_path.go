@@ -12,17 +12,101 @@ import (
 // rightAnglePath is Blink's ComputeRightAnglePath (core/paint/
 // outline_painter.cc:87-101 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
 // each rect is outset by outline-offset (clamped per axis by
-// AdjustedOutlineOffset, :77-82) and the union's boundary is returned as
-// closed right-angle contours (SkRegion::getBoundaryPath). A nil result is
-// Blink's empty path.
-func rightAnglePath(rects []image.Rectangle, offset int) [][]image.Point {
+// AdjustedOutlineOffset, :77-82) and then by additionalOutset, and the
+// union's boundary is returned as closed right-angle contours
+// (SkRegion::getBoundaryPath), normalized as IterateRightAnglePath reads
+// them (normalizeContours). An empty result is Blink's empty path.
+func rightAnglePath(rects []image.Rectangle, offset, additionalOutset int) [][]image.Point {
 	outset := make([]image.Rectangle, 0, len(rects))
 	for _, r := range rects {
-		ox := max(offset, -r.Dx()/2)
-		oy := max(offset, -r.Dy()/2)
+		ox := max(offset, -r.Dx()/2) + additionalOutset
+		oy := max(offset, -r.Dy()/2) + additionalOutset
 		outset = append(outset, image.Rect(r.Min.X-ox, r.Min.Y-oy, r.Max.X+ox, r.Max.Y+oy))
 	}
-	return regionBoundary(regionRects(outset))
+	return normalizeContours(regionBoundary(regionRects(outset)))
+}
+
+// normalizeContours readies right-angle contours the way
+// IterateRightAnglePath (outline_painter.cc:121-160) reads a path: collinear
+// vertices are merged and a contour left with fewer than four lines, whose
+// area is empty, is dropped.
+func normalizeContours(contours [][]image.Point) [][]image.Point {
+	out := contours[:0]
+	for _, c := range contours {
+		if c = mergeCollinear(c); len(c) >= 4 {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// mergeCollinear drops the vertices of a closed right-angle contour that lie
+// on a straight line between their neighbours (MergeLineIfPossible,
+// outline_painter.cc:106-114).
+func mergeCollinear(c []image.Point) []image.Point {
+	n := len(c)
+	out := make([]image.Point, 0, n)
+	for i, p := range c {
+		prev, next := c[(i+n-1)%n], c[(i+1)%n]
+		if (prev.X == p.X && p.X == next.X) || (prev.Y == p.Y && p.Y == next.Y) {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// shrinkRightAnglePath is Blink's ShrinkRightAnglePath (outline_painter.cc:
+// 184-202): every vertex moves inset pixels toward the inside of its
+// corner (ShrinkCorner, :164-182), clockwise contours shrinking.
+func shrinkRightAnglePath(contours [][]image.Point, inset int) [][]image.Point {
+	out := make([][]image.Point, len(contours))
+	for ci, c := range contours {
+		n := len(c)
+		s := make([]image.Point, n)
+		for i := range c {
+			s[i] = shrinkCorner(c[(i+n-1)%n], c[i], c[(i+1)%n], inset)
+		}
+		out[ci] = s
+	}
+	return normalizeContours(out)
+}
+
+// shrinkCorner is Blink's ShrinkCorner: p2, the corner between p1→p2 and
+// p2→p3, moved so the containing clockwise path shrinks by inset.
+func shrinkCorner(p1, p2, p3 image.Point, inset int) image.Point {
+	d := func(dx, dy int) image.Point { return p2.Add(image.Pt(dx*inset, dy*inset)) }
+	if p1.X == p2.X {
+		if p1.Y < p2.Y {
+			if p2.X < p3.X {
+				return d(-1, 1)
+			}
+			return d(-1, -1)
+		}
+		if p2.X < p3.X {
+			return d(1, 1)
+		}
+		return d(1, -1)
+	}
+	if p1.X < p2.X {
+		if p2.Y < p3.Y {
+			return d(-1, 1)
+		}
+		return d(1, 1)
+	}
+	if p2.Y < p3.Y {
+		return d(-1, -1)
+	}
+	return d(1, -1)
+}
+
+// addContourPath traces a closed right-angle contour as a polygon.
+func addContourPath(dc pathBuilder, c []image.Point) {
+	dc.MoveTo(float64(c[0].X), float64(c[0].Y))
+	for _, p := range c[1:] {
+		dc.LineTo(float64(p.X), float64(p.Y))
+	}
+	dc.ClosePath()
 }
 
 // regionRects decomposes the union of rects into SkRegion's canonical runs:
@@ -223,22 +307,22 @@ func cornerStep(ax, ay, bx, by, radius float64) (sx, sy float64, drawSegment boo
 	return dx * radius / dist, dy * radius / dist, true
 }
 
-// addCornerRadiiToPath is Blink's AddCornerRadiiToPath for convex radii
-// equal to concave radii (outline_painter.cc:203-322 @
+// addCornerRadiiToPath is Blink's AddCornerRadiiToPath
+// (outline_painter.cc:203-322 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each line is shortened by the
 // radii of the corners at its ends (AdjustLineBetweenCorners, scaled down
 // and floored when they overlap), and each corner becomes a 90° arc
 // (conicTo with weight 1/√2, drawn here as a cubic quarter ellipse with
 // roundedCornerKappa).
-func addCornerRadiiToPath(dc pathBuilder, contour []image.Point, radii css.EllipticalRadii) {
+func addCornerRadiiToPath(dc pathBuilder, contour []image.Point, convex, concave css.EllipticalRadii) {
 	n := len(contour)
 	at := func(i int) image.Point { return contour[(i%n+n)%n] }
 	type line struct{ sx, sy, ex, ey float64 }
 	lines := make([]line, n)
 	for i := 0; i < n; i++ {
 		prev, start, end, next := at(i-1), at(i), at(i+1), at(i+2)
-		c1 := radiiCorner(radii, prev, start, end)
-		c2 := radiiCorner(radii, start, end, next)
+		c1 := radiiCorner(convex, concave, prev, start, end)
+		c2 := radiiCorner(convex, concave, start, end, next)
 		l := line{float64(start.X), float64(start.Y), float64(end.X), float64(end.Y)}
 		if start.X == end.X {
 			l.sy, l.ey = shortenBetweenCorners(l.sy, l.ey, c1.Ry, c2.Ry)
@@ -261,7 +345,7 @@ func addCornerRadiiToPath(dc pathBuilder, contour []image.Point, radii css.Ellip
 }
 
 // shortenBetweenCorners is one axis of Blink's AdjustLineBetweenCorners
-// (outline_painter.cc:240-288 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// (outline_painter.cc:241-287 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
 // the line from start to end loses r1 at its start and r2 at its end,
 // both scaled down and floored when together they exceed its length.
 func shortenBetweenCorners(start, end, r1, r2 float64) (float64, float64) {
@@ -275,37 +359,37 @@ func shortenBetweenCorners(start, end, r1, r2 float64) (float64, float64) {
 	return start - r1, end + r2
 }
 
-// radiiCorner is Blink's GetRadiiCorner with convex radii equal to concave
-// radii: the radius of the corner p2 between p1→p2 and p2→p3, picked by
-// which way the contour turns there; zero where p2 is no corner.
-func radiiCorner(radii css.EllipticalRadii, p1, p2, p3 image.Point) css.EllipticalRadius {
-	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
+// radiiCorner is Blink's GetRadiiCorner (outline_painter.cc:215-238): the
+// radius of the corner p2 between p1→p2 and p2→p3 from convex or concave
+// by which way the clockwise contour turns there; zero where p2 is no
+// corner.
+func radiiCorner(convex, concave css.EllipticalRadii, p1, p2, p3 image.Point) css.EllipticalRadius {
 	if p1.X == p2.X {
 		if p1.Y == p2.Y || p2.X == p3.X {
 			return css.EllipticalRadius{}
 		}
 		if p1.Y < p2.Y {
 			if p2.X < p3.X {
-				return bl
+				return concave[3] // bottom-left
 			}
-			return br
+			return convex[2] // bottom-right
 		}
 		if p2.X < p3.X {
-			return tl
+			return convex[0] // top-left
 		}
-		return tr
+		return concave[1] // top-right
 	}
 	if p2.X != p3.X || p2.Y == p3.Y {
 		return css.EllipticalRadius{}
 	}
 	if p1.X < p2.X {
 		if p2.Y < p3.Y {
-			return tr
+			return convex[1] // top-right
 		}
-		return br
+		return concave[2] // bottom-right
 	}
 	if p2.Y < p3.Y {
-		return tl
+		return concave[0] // top-left
 	}
-	return bl
+	return convex[3] // bottom-left
 }

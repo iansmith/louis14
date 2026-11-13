@@ -48,11 +48,7 @@ body { margin: 0; background: black }
 // "XXX " and nothing runs along the bounding box's top and bottom edges
 // there.
 func TestFocusRing_MultiRect(t *testing.T) {
-	doc := ParsePage(t, `<!doctype html><style>
-body { margin: 0; background: black }
-#d { position: absolute; left: 10px; top: 10px; width: 120px; font: 20px/20px Ahem; color: transparent }
-#s { outline: auto 1px blue }
-</style><div id=d>XXX <span id=s>XX XXXX</span></div>`)
+	doc := ParsePage(t, splitInlineOutlinePage("auto 1px blue"))
 	img, _ := RenderDocument(t, doc, 160, 80)
 	blue := color.RGBA{0, 0, 255, 255}
 	black := color.RGBA{0, 0, 0, 255}
@@ -130,4 +126,15 @@ func TestFocusRing_OutlineRects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// splitInlineOutlinePage is a page whose span #s, outlined with outline,
+// splits across two Ahem 20px lines into the fragments (90,10)-(130,30)
+// and (10,30)-(90,50), on black.
+func splitInlineOutlinePage(outline string) string {
+	return `<!doctype html><style>
+body { margin: 0; background: black }
+#d { position: absolute; left: 10px; top: 10px; width: 120px; font: 20px/20px Ahem; color: transparent }
+#s { outline: ` + outline + ` }
+</style><div id=d>XXX <span id=s>XX XXXX</span></div>`
 }

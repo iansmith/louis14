@@ -4013,12 +4013,10 @@ func (r *Renderer) drawColumnRuleRect(style string, c css.Color, x, y, w, h floa
 // single even-odd ring (outer rect minus inner rect) via fillOutlineSides,
 // which avoids diagonal seam artifacts from per-side painting.
 
-// outlinePaintRect returns the pixel-snapped rect a non-auto outline ring
-// is drawn around: the bounding box of the layer's outline rects, so a
-// multi-line inline's ring encloses all its line fragments. Blink strokes
-// the rects' united contour instead (OutlinePainter::PaintOutline →
-// ComputeRightAnglePath); louis14 does that only for focus rings
-// (drawFocusRing).
+// outlinePaintRect returns the pixel-snapped rect a single-rect non-auto
+// outline is drawn around: the union of the layer's outline rects, which
+// drawOutline reaches only when that union is the first rect (several
+// rects otherwise go through complexOutline).
 func outlinePaintRect(layer *PaintLayer) (x, y, w, h float64) {
 	rects := layer.outlineRects()
 	u := rects[0]
@@ -4026,6 +4024,18 @@ func outlinePaintRect(layer *PaintLayer) (x, y, w, h float64) {
 		u = u.Union(r)
 	}
 	return pixelSnap(u.Origin.X, u.Origin.Y, u.Size.Width, u.Size.Height)
+}
+
+// unionEvenIfEmpty is the smallest rect containing every rect, empty ones
+// included (gfx::Rect::UnionEvenIfEmpty, as PaintOutlineRects unites a
+// non-auto outline's rects, outline_painter.cc:956-967).
+func unionEvenIfEmpty(rects []image.Rectangle) image.Rectangle {
+	u := rects[0]
+	for _, rc := range rects[1:] {
+		u.Min.X, u.Min.Y = min(u.Min.X, rc.Min.X), min(u.Min.Y, rc.Min.Y)
+		u.Max.X, u.Max.Y = max(u.Max.X, rc.Max.X), max(u.Max.Y, rc.Max.Y)
+	}
+	return u
 }
 
 // pixelSnappedOutlineRects returns the layer's outline rects pixel-snapped
@@ -4086,7 +4096,7 @@ func (r *Renderer) drawFocusRing(layer *PaintLayer) {
 		{offset + int(math.Ceil(focusRingInnerStrokeWidth)), focusRingOuterColor},
 		{offset, layer.OutlineColor},
 	} {
-		contours := rightAnglePath(rects, ring.outset)
+		contours := rightAnglePath(rects, ring.outset, 0)
 		if len(contours) == 0 {
 			continue
 		}
@@ -4100,7 +4110,7 @@ func (r *Renderer) drawFocusRing(layer *PaintLayer) {
 			}
 		default:
 			for _, c := range contours {
-				addCornerRadiiToPath(r.dc, c, radii)
+				addCornerRadiiToPath(r.dc, c, radii, radii)
 			}
 		}
 		r.setColor(ring.color)
@@ -4157,6 +4167,15 @@ func focusRingCornerRadii(layer *PaintLayer) css.EllipticalRadii {
 func (r *Renderer) drawOutline(layer *PaintLayer) {
 	if layer.OutlineStyle == "auto" {
 		r.drawFocusRing(layer)
+		return
+	}
+	// Several rects whose union is not the first go through
+	// ComplexOutlinePainter (OutlinePainter::PaintOutlineRects,
+	// outline_painter.cc:1018-1031 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the rest paint around one
+	// rect below.
+	if rects := pixelSnappedOutlineRects(layer); unionEvenIfEmpty(rects) != rects[0] {
+		r.complexOutline(layer, rects)
 		return
 	}
 	x, y, w, h := outlinePaintRect(layer)
