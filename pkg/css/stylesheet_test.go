@@ -284,8 +284,8 @@ func TestTopLevelCommaBlocks(t *testing.T) {
 		{"([)], x", -1},
 		{`a\, b`, -1},
 	} {
-		if got := findTopLevelComma(tc.in); got != tc.want {
-			t.Errorf("findTopLevelComma(%q) = %d, want %d", tc.in, got, tc.want)
+		if got := indexTopLevel(tc.in, ','); got != tc.want {
+			t.Errorf("indexTopLevel(%q, ',') = %d, want %d", tc.in, got, tc.want)
 		}
 	}
 }

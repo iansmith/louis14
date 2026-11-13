@@ -601,7 +601,7 @@ func (s *Style) resolveVarsWithStatus(value string) (string, bool) {
 		varName := content
 		fallback := ""
 		hasFallback := false
-		if commaIdx := findTopLevelComma(content); commaIdx >= 0 {
+		if commaIdx := indexTopLevel(content, ','); commaIdx >= 0 {
 			varName = strings.TrimSpace(content[:commaIdx])
 			fallback = strings.TrimSpace(content[commaIdx+1:])
 			hasFallback = true
@@ -743,8 +743,8 @@ func resolveEnvValue(val string) string {
 
 		inner := strings.TrimSpace(val[start+4 : end])
 
-		// Split on the first comma (outside parens) to get variable name and optional fallback
-		commaIdx := findTopLevelComma(inner)
+		// Split on the first top-level comma to get variable name and optional fallback
+		commaIdx := indexTopLevel(inner, ',')
 		varName := strings.ToLower(strings.TrimSpace(inner))
 		fallback := "0px"
 		if commaIdx >= 0 {
@@ -8782,7 +8782,7 @@ func ParseContentValues(raw string) []ContentValue {
 func parseAttrNameAndFallback(arg string) (name, fallback string) {
 	arg = strings.TrimSpace(arg)
 	// Split at the first top-level comma (separates name[+type] from fallback).
-	commaIdx := findTopLevelComma(arg)
+	commaIdx := indexTopLevel(arg, ',')
 	rawName := arg
 	rawFallback := ""
 	hasFallback := false
@@ -8821,7 +8821,7 @@ func parseAttrNameAndFallback(arg string) (name, fallback string) {
 // For counter() (two parts) name and style. For counters() (two or
 // three parts) call splitCountersSepAndStyle on `rest` afterward.
 func splitCounterArgs(arg string) (name, rest, style string) {
-	first := findTopLevelComma(arg)
+	first := indexTopLevel(arg, ',')
 	if first < 0 {
 		return strings.TrimSpace(arg), "", ""
 	}
@@ -9005,7 +9005,7 @@ func expandRepeatTracks(parts []string) []string {
 		if strings.HasPrefix(part, "repeat(") && strings.HasSuffix(part, ")") {
 			inner := strings.TrimSpace(part[7 : len(part)-1]) // strip "repeat(" and ")"
 			// Find the first comma at depth 0
-			commaIdx := findTopLevelComma(inner)
+			commaIdx := indexTopLevel(inner, ',')
 			if commaIdx < 0 {
 				// Malformed repeat(), pass through as-is
 				result = append(result, part)
@@ -12705,32 +12705,20 @@ func (s *Style) WillChangeEstablishesInlineContainingBlock() bool {
 	return false
 }
 
-// SplitTopLevelCommas splits s on commas outside parentheses and string
-// tokens (stringTokenEnd), each part trimmed: a comma-separated CSS list
-// value (background layers, shadows, transitions, font-family, @font-face
-// src, function arguments).
+// SplitTopLevelCommas splits s at its top-level commas (indexTopLevel:
+// outside every block, string and escape), each part trimmed: a
+// comma-separated CSS list value (background layers, shadows, transitions,
+// font-family, @font-face src, function arguments).
 func SplitTopLevelCommas(s string) []string {
 	var parts []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '"' || c == '\'':
-			i, _ = stringTokenEnd(s, i)
-		case c == '(':
-			depth++
-		case c == ')':
-			if depth > 0 {
-				depth--
-			}
-		case c == ',' && depth == 0:
-			parts = append(parts, strings.TrimSpace(s[start:i]))
-			start = i + 1
+	for {
+		i := indexTopLevel(s, ',')
+		if i < 0 {
+			return append(parts, strings.TrimSpace(s))
 		}
+		parts = append(parts, strings.TrimSpace(s[:i]))
+		s = s[i+1:]
 	}
-	parts = append(parts, strings.TrimSpace(s[start:]))
-	return parts
 }
 
 // splitTopLevelFields splits s on whitespace runs that are not nested inside
