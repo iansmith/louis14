@@ -410,3 +410,23 @@ func TestNestingParentAfterPseudoClass(t *testing.T) {
 		t.Errorf("#d matched div.a&: & after a class must still be :scope")
 	}
 }
+
+// A `::` inside a string (an attribute value) is no pseudo-element, so it
+// does not drop the boundary: Blink's tokenizer reads it inside a string
+// token (CSSTokenizer::ConsumeStringTokenUntil, css_tokenizer.cc:393 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestScopeBoundaryAllowsColonsInStrings(t *testing.T) {
+	for _, prelude := range []string{
+		`([data-x="a::b"])`, `([data-x='a::b'])`,
+		`(.r) to ([data-x="a::b"])`, `(.r) to ([data-x='a::b'])`,
+		`(.r[data-x="a::b"]:not([data-y="c::d"]))`,
+	} {
+		t.Run(prelude, func(t *testing.T) {
+			styles := cascadeHTML(t, `<style>@scope `+prelude+` { .t { color: green } }</style>
+			<div class="r" data-x="a::b"><div class="t" id="t"></div></div>`, nil)
+			if got := colorOf(t, styles, "t"); got != "green" {
+				t.Errorf("#t color = %q, want green: @scope %s must apply", got, prelude)
+			}
+		})
+	}
+}
