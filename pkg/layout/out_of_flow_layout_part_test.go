@@ -317,27 +317,38 @@ func TestOOFInsetAlignment(t *testing.T) {
 // inline direction (a block-level box sits on the next line, at the line's
 // start) and by its align-self within the line box's block extent: a center
 // or end block edge moves its static point to the line box's middle or end.
-// justify-items / align-items do not apply in inline layout. Blink sets the
+// justify-items / align-items do not apply in inline layout. Self-start /
+// self-end resolve against the box's line item's container direction: for
+// a block-level box its block container's, for an inline-level box the
+// direction of its own bidi level, not the `direction` of the inline
+// element around it (span: an RTL <span> around an LTR box). Blink sets the
 // edges in FragmentBuilder::AddOutOfFlowInlineChildCandidate
-// (fragment_builder.cc:545-585 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// `a` (20x20) is in a 100x100 positioned container with a 1px border.
+// (fragment_builder.cc:545-585) from LogicalLineBuilder's OOF container
+// direction (logical_line_builder.cc:312-322 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `a` (20x20) is in a 100x100
+// positioned container with a 1px border.
 func TestOOFInlineStaticPositionAlignment(t *testing.T) {
+	const rtlSpan = "direction:rtl"
 	for _, tc := range []struct {
-		name, abs string
-		want      fragRect
+		name, abs, span string
+		want            fragRect
 	}{
-		{"start", "", fragRect{1, 26, 20, 20}},
-		{"justify-self:end", "justify-self:end", fragRect{-19, 26, 20, 20}},
-		{"justify-self:center", "justify-self:center", fragRect{-9, 26, 20, 20}},
-		{"align-self:end", "align-self:end", fragRect{1, 31, 20, 20}},
-		{"align-self:center", "align-self:center", fragRect{1, 28.5, 20, 20}},
-		{"self-end, rtl box", "justify-self:self-end;direction:rtl", fragRect{1, 26, 20, 20}},
-		{"align-self:end, inline-level", "align-self:end;display:inline-block", fragRect{21, 6, 20, 20}},
+		{"start", "", "", fragRect{1, 26, 20, 20}},
+		{"justify-self:end", "justify-self:end", "", fragRect{-19, 26, 20, 20}},
+		{"justify-self:center", "justify-self:center", "", fragRect{-9, 26, 20, 20}},
+		{"align-self:end", "align-self:end", "", fragRect{1, 31, 20, 20}},
+		{"align-self:center", "align-self:center", "", fragRect{1, 28.5, 20, 20}},
+		{"self-end, rtl box", "justify-self:self-end;direction:rtl", "", fragRect{1, 26, 20, 20}},
+		{"self-start, ltr box in an rtl span", "justify-self:self-start;direction:ltr", rtlSpan, fragRect{1, 26, 20, 20}},
+		{"self-end, ltr box in an rtl span", "justify-self:self-end;direction:ltr", rtlSpan, fragRect{-19, 26, 20, 20}},
+		{"inline-level self-start, ltr box in an rtl span", "display:inline-block;justify-self:self-start;direction:ltr", rtlSpan, fragRect{21, 1, 20, 20}},
+		{"inline-level self-end, ltr box in an rtl span", "display:inline-block;justify-self:self-end;direction:ltr", rtlSpan, fragRect{1, 1, 20, 20}},
+		{"align-self:end, inline-level", "align-self:end;display:inline-block", "", fragRect{21, 6, 20, 20}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
 				`<div style="position:relative;width:100px;height:100px;border:1px solid">`+
-				`<span style="font:10px/25px Ahem">XX <div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div><br>XX</span></div>`)
+				`<span style="font:10px/25px Ahem;`+tc.span+`">XX <div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div><br>XX</span></div>`)
 			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
 		})
 	}
