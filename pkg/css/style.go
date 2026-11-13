@@ -155,12 +155,6 @@ type Style struct {
 	// Shared by reference across Clone(); never mutated post-cascade.
 	CascadedProps map[string]bool
 
-	// cascadeImportant is the set of properties the element's cascade set
-	// with !important, and revertSnapshot its UA + presentational-attribute
-	// snapshot, for the declarations applied after the cascade (@container
-	// rules; applyContainerQueryRules).
-	cascadeImportant map[string]bool
-	revertSnapshot   allShorthandRevertSnapshot
 	// cascadePositions is the cascade position each direction-aware
 	// property was last set at, and cascadeSeq the order counter it draws
 	// from (setCascadePosition), for resolveDirectionAwareProperties.

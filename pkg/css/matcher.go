@@ -1528,21 +1528,22 @@ func matchesReadWrite(node *html.Node) bool {
 // FindMatchingRules returns all rules that match the given node
 // Phase 22: Added viewport dimensions for media query evaluation
 func FindMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, viewportHeight float64) []Rule {
-	return findMatchingRules(node, stylesheet, viewportWidth, viewportHeight, nil)
+	return findMatchingRules(node, stylesheet, viewportWidth, viewportHeight, nil, nil)
 }
 
-// findMatchingRules is FindMatchingRules with node's styleScopeFrame.
-func findMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, viewportHeight float64, frame *styleScopeFrame) []Rule {
+// findMatchingRules is FindMatchingRules with node's styleScopeFrame and the
+// ancestors' computed styles. A @container rule matches when every level of
+// its query matches against them, evaluated as the rule is collected so it
+// cascades with the rest (ElementRuleCollector::
+// CollectMatchingRulesForListInternal, element_rule_collector.cc:662-702 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); with no styles (a probe) none
+// matches.
+func findMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, viewportHeight float64, frame *styleScopeFrame, styles map[*html.Node]*Style) []Rule {
 	matches := make([]Rule, 0)
 
 	for _, rule := range stylesheet.Rules {
 		// Skip pseudo-element rules (they are applied via ComputePseudoElementStyle)
 		if rule.Selector.PseudoElement != "" {
-			continue
-		}
-
-		// Skip container query rules (evaluated separately in applyContainerQueryRules)
-		if rule.ContainerQuery != nil {
 			continue
 		}
 
@@ -1554,7 +1555,10 @@ func findMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, v
 			continue
 		}
 
-		if matched, ok := matchRule(node, &rule, frame); ok {
+		// The container query is evaluated only for a rule whose selector
+		// matched: it walks node's ancestors.
+		if matched, ok := matchRule(node, &rule, frame); ok &&
+			(rule.ContainerQuery == nil || (styles != nil && evaluateContainerQuery(node, rule.ContainerQuery, styles))) {
 			matches = append(matches, matched)
 		}
 	}

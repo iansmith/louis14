@@ -24,7 +24,9 @@ func TestContainerBodyNestedAtRules(t *testing.T) {
 		`@container ` + yes + ` { @scope (.r) { .t { color: blue } } }`,
 		`@container ` + yes + ` { @media all { .t { color: blue } } }`,
 		`@container ` + yes + ` { @supports (color: red) { .t { color: blue } } }`,
-		`@container ` + yes + ` { @layer l { .t { color: blue } } }`,
+		// !important: a layered normal rule loses to containerColor's
+		// unlayered green; a layered important one beats it.
+		`@container ` + yes + ` { @layer l { .t { color: blue !important } } }`,
 	} {
 		t.Run(css, func(t *testing.T) {
 			if got := containerColor(t, css); got != "blue" {
@@ -70,6 +72,31 @@ func TestContainerChainAllGate(t *testing.T) {
 		{`@media all { @container ` + yes + ` { .t { color: blue } } }`, "blue"},
 	} {
 		t.Run(tc.css, func(t *testing.T) {
+			if got := containerColor(t, tc.css); got != tc.want {
+				t.Errorf("#t color = %q, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// A matching @container rule cascades with every other rule, by layer,
+// specificity and source order: ElementRuleCollector evaluates a rule's
+// container queries while it collects (CollectMatchingRulesForListInternal,
+// core/css/element_rule_collector.cc:562, container block :662-699) and adds
+// it through DidMatchRule with its layer order (:701-702, SeekLayerOrder
+// :345-354 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestContainerRulesCascadeInOrder(t *testing.T) {
+	const yes = "(min-width: 0)"
+	for _, tc := range []struct{ name, css, want string }{
+		{"unlayered beats layered", `@layer a { @container ` + yes + ` { .t { color: red } } } .t { color: green }`, "green"},
+		{"specificity", `@container ` + yes + ` { .t { color: red } } #t { color: green }`, "green"},
+		{"specificity, container later", `#t { color: green } @container ` + yes + ` { .t { color: red } }`, "green"},
+		{"source order", `@container ` + yes + ` { .t { color: red } } .t { color: green }`, "green"},
+		// The @container rule wins where the cascade says it does.
+		{"later container rule wins", `.t { color: red } @container ` + yes + ` { .t { color: green } }`, "green"},
+		{"earlier container rule wins on specificity", `@container ` + yes + ` { #t { color: green } } .t { color: red }`, "green"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			if got := containerColor(t, tc.css); got != tc.want {
 				t.Errorf("#t color = %q, want %s", got, tc.want)
 			}

@@ -684,9 +684,11 @@ func cascadeOrderLess(a, b *Rule, layerA, layerB int) bool {
 //
 // CSS animations are sampled at local time 0 and node's running-animation
 // records are left untouched; the document cascade (ApplyStylesToDocument)
-// samples them against the document timeline instead.
+// samples them against the document timeline instead. @container rules
+// never match here: they need the ancestors' computed styles, which only
+// the document cascade has.
 func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext) *Style {
-	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil, nil, nil)
+	return computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, nil, nil, nil, nil)
 }
 
 // computeStyle is ComputeStyle with the document's AnimationClock and the
@@ -698,8 +700,10 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 // records alone, for probes that are not the element's style recalc.
 //
 // frame is node's styleScopeFrame during the document's cascade pass (the
-// style keeps it as scopeFrame), nil for a probe.
-func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock, parent *Style, frame *styleScopeFrame) *Style {
+// style keeps it as scopeFrame), nil for a probe. styles holds the
+// ancestors' computed styles, against which @container rules are matched;
+// nil for a probe, which then matches none.
+func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock, parent *Style, frame *styleScopeFrame, styles map[*html.Node]*Style) *Style {
 	finalStyle := NewStyle()
 
 	// Phase 17: Apply user agent (default browser) styles first
@@ -719,7 +723,7 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	allRules := make([]Rule, 0)
 
 	for _, stylesheet := range stylesheets {
-		matches := findMatchingRules(node, stylesheet, viewportWidth, viewportHeight, frame)
+		matches := findMatchingRules(node, stylesheet, viewportWidth, viewportHeight, frame, styles)
 		allRules = append(allRules, matches...)
 	}
 
@@ -949,8 +953,6 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 	// ApplyInheritedProperties in applyStylesToNode) — so the key set IS the
 	// declared set. Literal `inherit` values re-inherit and are excluded.
 	recordCascadedProps(finalStyle)
-	finalStyle.cascadeImportant = importantProps
-	finalStyle.revertSnapshot = revertSnap
 
 	return finalStyle
 }
@@ -3341,18 +3343,14 @@ func isPxLiteral(val string) bool {
 func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, viewportWidth, viewportHeight float64, ctx *ParserContext, fs FontSelector, clock *html.AnimationClock, frame *styleScopeFrame) {
 	if node.Type == html.ElementNode && node.TagName != "document" {
 		frame = newStyleScopeFrame(node, frame)
-		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock, styles[node.Parent], frame)
+		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock, styles[node.Parent], frame, styles)
 		style.fontSelector = fs
 		style.scopeFrame = frame
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		resolveComputedTimeDeclarations(node, style, styles)
-		// Apply container query rules after base style (needs ancestor styles resolved)
-		if applyContainerQueryRules(node, stylesheets, styles, style, frame, viewportWidth, viewportHeight) {
-			resolveLateDeclarations(node, style, styles)
-		}
 		// The element's font properties are final here (@container rules
-		// included, which Blink applies inside the same cascade), so build its font
+		// included, cascaded with the rest), so build its font
 		// (UpdateFont), then compute line-height against it, then record the lh
 		// size (UpdateLineHeight) — Blink's StyleCascade::Apply order
 		// (style_cascade.cc:310-315 @ 5992657f556bcd9d207a4aca187488462f027cab).
@@ -3470,7 +3468,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 }
 
 // applyDeclarationPass applies the declarations of one importance from a
-// declaration block (a rule's, a style attribute's, an @container rule's):
+// declaration block (a rule's or a style attribute's):
 // `all` first, since parseDeclarations keeps only the declarations after it,
 // then the rest. The normal pass leaves the properties importantProps holds;
 // the important pass adds what it sets to importantProps, an `all` every
@@ -3524,61 +3522,6 @@ func applyDeclarationPass(style *Style, block *DeclarationResult, important bool
 			importantProps[p] = true
 		}
 	}
-}
-
-// applyContainerQueryRules applies the @container rules matching node, whose
-// queries are evaluated against ancestor containers' computed sizes, after
-// the element's cascade and inheritance, and reports whether any matched.
-// A rule's @media queries gate it too (RuleMediaApplies), as they do in the
-// main cascade. Like the main cascade it runs a normal pass, which leaves the properties
-// the cascade set with !important, then an important pass, each applying a
-// rule's `all` before its other declarations.
-func applyContainerQueryRules(node *html.Node, stylesheets []*Stylesheet, styles map[*html.Node]*Style, style *Style, frame *styleScopeFrame, viewportWidth, viewportHeight float64) bool {
-	var matched []Rule
-	for _, stylesheet := range stylesheets {
-		for _, rule := range stylesheet.Rules {
-			// @container rules for the element itself, not a pseudo-element.
-			if rule.ContainerQuery == nil || rule.Selector.PseudoElement != "" {
-				continue
-			}
-			// An @media around or inside the @container gates it too.
-			if !RuleMediaApplies(&rule, viewportWidth, viewportHeight) {
-				continue
-			}
-			if m, ok := matchRule(node, &rule, frame); ok && evaluateContainerQuery(node, rule.ContainerQuery, styles) {
-				matched = append(matched, m)
-			}
-		}
-	}
-	if len(matched) == 0 {
-		return false
-	}
-	for _, pass := range []bool{false, true} {
-		for _, rule := range matched {
-			rank := cascadeRankAuthorNormal
-			if pass {
-				rank = cascadeRankAuthorImportant
-			}
-			applyDeclarationPass(style, rule.DeclarationResult, pass, style.cascadeImportant, nil, func(property, value string) {
-				expandShorthand(style, property, value)
-				style.setCascadePosition(property, rank)
-			})
-		}
-	}
-	return true
-}
-
-// resolveLateDeclarations resolves what declarations applied after the
-// cascade and inheritance (applyContainerQueryRules) leave: pending
-// substitutions (against the parent's custom properties, as in the main
-// cascade), CSS-wide keywords (revert and revert-layer against the
-// cascade's UA + presentational-attribute snapshot; @container rules carry
-// no layer), then logical properties onto their physical side.
-func resolveLateDeclarations(node *html.Node, style *Style, styles map[*html.Node]*Style) {
-	resolvePendingSubstitutions(style, styles[node.Parent])
-	resolveCSSWideKeywords(style, style.revertSnapshot, nil)
-	resolveInheritValues(node, style, styles)
-	resolveComputedTimeDeclarations(node, style, styles)
 }
 
 // resolveComputedTimeDeclarations resolves what waits for the element's
@@ -4370,7 +4313,7 @@ func rbOnlyInlineRecursive(node *html.Node) bool {
 // metrics take the unit fallbacks). It leaves alone the values that compute
 // to themselves: `normal`, a bare number (or a unitless calc()) and plain px.
 // Idempotent, so it can re-run after a late line-height write (var()
-// shorthand re-expansion, @container rules, first-frame transitions).
+// shorthand re-expansion, first-frame transitions).
 func absolutizeLineHeight(s *Style, parent *Style) {
 	val, ok := s.Get("line-height")
 	if !ok {
