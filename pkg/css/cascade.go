@@ -3061,7 +3061,7 @@ var isVarDeferredShorthand = map[string]bool{
 	"border-right": true, "border-bottom": true, "border-left": true,
 	"border-width": true, "border-style": true, "border-color": true,
 	"font": true, "flex": true, "flex-flow": true, "list-style": true,
-	"gap": true, "grid-gap": true, "grid-area": true, "grid-row": true,
+	"gap": true, "grid-area": true, "grid-row": true,
 	"grid-column": true, "grid-template": true, "grid": true, "background": true,
 }
 

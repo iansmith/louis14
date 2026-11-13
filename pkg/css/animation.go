@@ -114,12 +114,9 @@ func BuildKeyframeEffect(frames []KeyframeRule, defaultEasing TimingFunction) *K
 			kf.Easing = r.easing
 		}
 		for p, v := range r.decls {
-			// An alias names the property it is an alias for, as Blink's
-			// parser resolves it (css_properties.json5 alias_for @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-			if canon, isAlias := propertyAliases[p]; isAlias {
-				p = canon
-			}
+			// A script's keyframes skip the declaration parser, which
+			// resolves a stylesheet's aliases.
+			p = resolvePropertyAlias(p)
 			kf.Declarations[p] = v
 			eff.Properties[p] = true
 			eff.currentAnimations |= currentAnimationFlagsByProperty[p]

@@ -2644,11 +2644,10 @@ func expandShorthand(style *Style, property, value string) {
 			}
 		}
 		_ = foundPos
-	case "gap", "grid-gap":
-		// gap (and its alias grid-gap): row-gap, then column-gap, the one
-		// value for both; components are split respecting parentheses, so
-		// a calc() is one (Gap::ParseShorthand; grid-gap is gap's alias in
-		// css_properties.json5 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	case "gap":
+		// gap: row-gap, then column-gap, the one value for both;
+		// components are split respecting parentheses, so a calc() is one
+		// (Gap::ParseShorthand @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		parts := splitShorthandParts(value)
 		if len(parts) == 1 {
 			style.Set("row-gap", parts[0])
@@ -12482,19 +12481,33 @@ var willChangeBroadTransformSet = map[string]bool{
 	"offset-position": true,
 }
 
-// propertyAliases maps vendor-prefixed property names to the property they
-// are an alias for (css_properties.json5 alias_for @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the will-change idents and
-// keyframe properties louis14 resolves before matching. Partial: only the
-// aliases of properties those consumers care about are listed.
+// propertyAliases maps a property name to the property it is an alias for
+// (alias_for entries, third_party/blink/renderer/core/css/
+// css_properties.json5 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The
+// declaration parser resolves them, as Blink's does, and so do the
+// will-change idents and keyframe properties. Partial: not every Blink
+// alias is listed.
 var propertyAliases = map[string]string{
 	"-webkit-perspective": "perspective",
 	"-webkit-transform":   "transform",
 	"-webkit-filter":      "filter",
+	// Gap legacy names (css_properties.json5:10927-10938).
+	"grid-column-gap": "column-gap",
+	"grid-row-gap":    "row-gap",
+	"grid-gap":        "gap",
 	// `-webkit-mask-box-image-source` is the legacy alias for
 	// `mask-border-source`; Blink's SC set lists kWebkitMaskBoxImageSource
 	// as its OWN longhand, not a `mask-border-source` alias, so we keep it
 	// untouched here.
+}
+
+// resolvePropertyAlias returns name's alias_for target when name is an
+// alias (propertyAliases), and name itself otherwise.
+func resolvePropertyAlias(name string) string {
+	if target, isAlias := propertyAliases[name]; isAlias {
+		return target
+	}
+	return name
 }
 
 // willChangeShorthandExpansion maps shorthand idents to the set of
@@ -12582,10 +12595,7 @@ func (s *Style) GetWillChangeData() *WillChange {
 			wc.HasScrollPosition = true
 			continue
 		}
-		// Alias normalization (-webkit-* → unprefixed where applicable).
-		if canon, isAlias := propertyAliases[ident]; isAlias {
-			ident = canon
-		}
+		ident = resolvePropertyAlias(ident)
 		// Shorthand expansion: replace the shorthand ident with its
 		// SC/CB-relevant longhand set.
 		if longs, isShorthand := willChangeShorthandExpansion[ident]; isShorthand {
