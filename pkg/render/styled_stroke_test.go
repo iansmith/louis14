@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"image/color"
 	"testing"
 
 	"louis14/pkg/render"
@@ -38,4 +39,20 @@ func TestDrawLineWithStyle_DottedSideFitsDots(t *testing.T) {
 	assertPixel(t, img, 18, 13, white, "first gap, x 6-11.74")
 	assertPixel(t, img, 24, 13, black, "second dot, centre x 14.74")
 	assertPixel(t, img, 106, 13, black, "last dot, centre x 96.9")
+}
+
+// Round dots are separate subpaths of one fill (Skia strokes each
+// zero-length dash of SkDashPathEffect as its own capped contour,
+// src/utils/SkDashPath.cpp:309-458 @ skia
+// d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e): nothing joins one dot to the
+// next. 5px dotted sides centre their dots 2.5px into the border, so the
+// dots stop at the padding edge and the padding beside them keeps its
+// background (css-backgrounds/background-334). Once textshape dashes
+// strokes itself (MAZ-219), this guards the move onto SetDash.
+func TestDrawLineWithStyle_DotsAreSeparate(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+		`<div style="position:absolute;left:10px;top:10px;width:40px;height:40px;background:lime;border-left:5px dotted black;border-top:5px dotted black"></div></body></html>`, 70, 70)
+	lime := color.RGBA{0, 255, 0, 255}
+	assertPixel(t, img, 15, 35, lime, "padding beside the left side's dots")
+	assertPixel(t, img, 35, 15, lime, "padding below the top side's dots")
 }
