@@ -1471,8 +1471,8 @@ func parseRules(ruleStr string) ([]Rule, error) {
 
 	selectorStr := strings.TrimSpace(ruleStr[:bracePos])
 
-	// Split selector by commas (but not commas inside brackets or parens)
-	selectors := splitSelectorGroup(selectorStr)
+	// Split the selector list at its top-level commas
+	selectors := SplitTopLevelCommas(selectorStr)
 	if len(selectors) <= 1 {
 		// No commas or only one selector — use the original parseRule
 		rule, err := parseRule(ruleStr)
@@ -1491,7 +1491,6 @@ func parseRules(ruleStr string) ([]Rule, error) {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	rules := make([]Rule, 0, len(selectors))
 	for _, sel := range selectors {
-		sel = strings.TrimSpace(sel)
 		if sel == "" || !isValidSelector(sel) {
 			return nil, fmt.Errorf("invalid selector in group: %q", sel)
 		}
@@ -1506,32 +1505,6 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		return nil, fmt.Errorf("no valid selectors in group")
 	}
 	return rules, nil
-}
-
-// splitSelectorGroup splits a selector group by commas, respecting brackets
-// and parentheses (e.g., attribute selectors like [attr~="a,b"]).
-func splitSelectorGroup(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if ch == '"' || ch == '\'' {
-			i, _ = stringTokenEnd(s, i)
-			continue
-		}
-		if ch == '(' || ch == '[' {
-			depth++
-		} else if ch == ')' || ch == ']' {
-			depth--
-		} else if ch == ',' && depth == 0 {
-			parts = append(parts, s[start:i])
-			start = i + 1
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
 }
 
 // parseRule parses a single CSS rule
@@ -2594,7 +2567,7 @@ func evaluateSupportsSelector(sel string) bool {
 	// Per CSS Conditional 5 §2.5 the argument is a single <complex-selector>,
 	// NOT a <complex-selector-list>. A comma at the top level invalidates the
 	// supports condition. Required by at-supports-selector-004.
-	parts := splitSelectorGroup(sel)
+	parts := SplitTopLevelCommas(sel)
 	if len(parts) != 1 {
 		return false
 	}
@@ -2841,8 +2814,7 @@ func validateLogicalPseudoArg(name, body string) bool {
 		// but in @supports we treat them as invalid (Chrome behaviour).
 		return false
 	}
-	for _, item := range splitSelectorGroup(body) {
-		item = strings.TrimSpace(item)
+	for _, item := range SplitTopLevelCommas(body) {
 		if item == "" {
 			return false
 		}
@@ -4024,10 +3996,10 @@ func parseSelector(selectorStr string) Selector {
 			if strings.HasPrefix(pc, "is(") {
 				// :is() takes specificity of its most specific argument
 				arg := functionalPseudoArg(pc, "is(")
-				sels := splitSelectorGroup(strings.TrimSpace(arg))
+				sels := SplitTopLevelCommas(arg)
 				maxSpec := 0
 				for _, sel := range sels {
-					innerSel := parseSelector(strings.TrimSpace(sel))
+					innerSel := parseSelector(sel)
 					if innerSel.Specificity > maxSpec {
 						maxSpec = innerSel.Specificity
 					}
@@ -4049,8 +4021,8 @@ func parseSelector(selectorStr string) Selector {
 				}
 				if _, ofSel, hasOf := splitNthChildArg(arg); hasOf {
 					maxSpec := 0
-					for _, sel := range splitSelectorGroup(ofSel) {
-						innerSel := parseSelector(strings.TrimSpace(sel))
+					for _, sel := range SplitTopLevelCommas(ofSel) {
+						innerSel := parseSelector(sel)
 						if innerSel.Specificity > maxSpec {
 							maxSpec = innerSel.Specificity
 						}
@@ -6630,9 +6602,13 @@ func ParseSelector(selectorStr string) Selector {
 	return parseSelector(selectorStr)
 }
 
-// SplitSelectorGroup splits a comma-separated selector group into individual selectors.
+// SplitSelectorGroup splits a selector list into its complex selectors, at
+// the commas left at the top level of the token stream
+// (CSSSelectorParser::ConsumeComplexSelectorList,
+// core/css/parser/css_selector_parser.cc:311-359 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; SplitTopLevelCommas).
 func SplitSelectorGroup(s string) []string {
-	return splitSelectorGroup(s)
+	return SplitTopLevelCommas(s)
 }
 
 // parseFontFaceRule parses a @font-face { ... } rule string.
