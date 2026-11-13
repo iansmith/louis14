@@ -706,10 +706,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		sectionBuilder = nil
 	}
 
-	firstRowHeight := 0.0
-	firstRowBaseline := 0.0    // max cell baseline in first VISIBLE row
+	firstRowBaseline := 0.0    // row baseline of the first non-collapsed row
 	firstRowBlockOffset := 0.0 // block offset of first VISIBLE row
-	lastRowBaseline := 0.0     // max cell baseline in last VISIBLE row
+	lastRowBaseline := 0.0     // row baseline of the last non-collapsed row
 	lastRowBlockOffset := 0.0  // block offset of last VISIBLE row
 	emittedRows := 0           // count of visible (non-collapsed) rows emitted
 	// rowStarts[i] is row i's block offset in the content box (a collapsed
@@ -912,7 +911,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 		rowBaseline := measured[rowIdx].baseline
 		if emittedRows == 0 {
-			firstRowHeight = rowHeight
 			firstRowBaseline = rowBaseline
 			firstRowBlockOffset = blockOffset
 		}
@@ -1016,35 +1014,22 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		BlockSize:  borderBoxBlock,
 	})
 
-	// CSS 2.1 §17.5.2: "The baseline of an inline-table is the baseline of
-	// the first row." Blink computes this via RowBaselineTabulator: the row
-	// baseline is the max first-baseline of all baseline-aligned cells.
-	// We propagate the first row's baseline as the table's first baseline,
-	// and the last row's baseline as the table's last baseline.
-	if len(rows) > 0 {
+	// The table's first and last baselines are those of its first and
+	// last non-collapsed rows; every row has a baseline, possibly 0
+	// (RowBaselineTabulator::ComputeBaseline,
+	// table/table_layout_utils.cc:1725-1733; TableTypes::Row::baseline,
+	// table_layout_algorithm_types.h:186). The first row sits below the
+	// top captions and the leading border spacing, which its block offset
+	// includes, as the sections' and table's baselines at their offsets do
+	// (table_section_layout_algorithm.cc:113-158,
+	// table_layout_algorithm.cc:1391-1394, :1623-1629 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A table's last baseline,
+	// even 0, never becomes an inline-block's: that skips tables
+	// (PropagateBaselineFromBlockChild).
+	if emittedRows > 0 {
 		borderPaddingStart := geom.Border.BlockStart + geom.Padding.BlockStart
-		// The first row sits below the top captions and the leading
-		// border spacing, which its block offset includes, as Blink's
-		// first section's baseline at its offset does
-		// (table_layout_algorithm.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		if firstRowBaseline > 0 {
-			// First baseline: distance from table border-box block-start
-			// to the first row's text baseline.
-			builder.SetBaseline(borderPaddingStart + firstRowBlockOffset + firstRowBaseline)
-		} else if firstRowHeight > 0 {
-			// Fallback: center of first row (no cells had a text baseline).
-			builder.SetBaseline(borderPaddingStart + firstRowBlockOffset + firstRowHeight/2)
-		}
-		if lastRowBaseline > 0 {
-			builder.SetLastBaseline(borderPaddingStart + lastRowBlockOffset + lastRowBaseline)
-		}
-		// When no row has a text-alignment baseline, leave LastBaseline
-		// unset. Blink's LayoutBox::LastBaselineForInlineBlock returns
-		// nullopt in this case; the fallback to the bottom margin edge
-		// (CSS 2.1 §10.8.1) happens at the enclosing inline-block's
-		// atomic-inline placement, not here. Synthesizing a content-box
-		// baseline here would propagate through block wrappers and
-		// incorrectly shift the inline-block's baseline.
+		builder.SetBaseline(borderPaddingStart + firstRowBlockOffset + firstRowBaseline)
+		builder.SetLastBaseline(borderPaddingStart + lastRowBlockOffset + lastRowBaseline)
 	}
 
 	physBorder := ToPhysicalEdges(geom.Border, wdm)
