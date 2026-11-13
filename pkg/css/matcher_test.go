@@ -923,12 +923,18 @@ func TestSplitSelectorGroupTopLevel(t *testing.T) {
 		{`.a\,b, .c`, []string{`.a\,b`, ".c"}},
 		{`:is(.a]), .b`, []string{`:is(.a])`, ".b"}},
 	} {
-		got := SplitSelectorGroup(tc.in)
-		for i := range got {
-			got[i] = strings.TrimSpace(got[i])
-		}
-		if !slices.Equal(got, tc.want) {
+		if got := SplitSelectorGroup(tc.in); !slices.Equal(got, tc.want) {
 			t.Errorf("SplitSelectorGroup(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// The rule parser splits its selector list with the same top-level split:
+// `.a\,b, .c` is the two selectors `.a\,b` and `.c`, never a `b` type
+// selector that would style <b>.
+func TestRuleSelectorListKeepsEscapedComma(t *testing.T) {
+	src := `<style>.a\,b, .c { color: red }</style><b id="t"></b>`
+	if got, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get("color"); got == "red" {
+		t.Errorf(`.a\,b, .c styled <b>: color = %q`, got)
 	}
 }
