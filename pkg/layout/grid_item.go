@@ -53,7 +53,7 @@ type gridItemAxisData struct {
 // louis14 has no subgrids, so the parent and root grids are the container.
 func newGridItemAxisData(forColumns bool, container *css.Style, containerWDM WritingDirectionMode, item *css.Style, itemWDM WritingDirectionMode, isReplaced bool) gridItemAxisData {
 	var d gridItemAxisData
-	d.alignment, d.autoBehavior, d.isOverflowSafe = axisEdgeFromItemPosition(forColumns, isReplaced, container, containerWDM, item, itemWDM)
+	d.alignment, d.autoBehavior, d.isOverflowSafe = axisEdgeFromItemPosition(forColumns, isReplaced, false, container, containerWDM, item, itemWDM)
 	// The rows are a parallel alignment context, the columns are not
 	// (grid_item.cc:170-176).
 	d.baselineWritingMode = DetermineBaselineWritingMode(containerWDM, itemWDM.WM, !forColumns)
@@ -77,24 +77,26 @@ func (d gridItemAxisData) stretches() bool {
 // fit-content. Mirrors Blink's AxisEdgeFromItemPosition
 // (grid/grid_item.cc:18-147 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
 // louis14 has no subgrids or grid-lanes, so those branches are omitted.
-func axisEdgeFromItemPosition(forColumns, isReplaced bool, container *css.Style, containerWDM WritingDirectionMode, item *css.Style, itemWDM WritingDirectionMode) (edge AxisEdge, autoBehavior AutoSizeBehavior, isOverflowSafe bool) {
+func axisEdgeFromItemPosition(forColumns, isReplaced, isOutOfFlow bool, container *css.Style, containerWDM WritingDirectionMode, item *css.Style, itemWDM WritingDirectionMode) (edge AxisEdge, autoBehavior AutoSizeBehavior, isOverflowSafe bool) {
 	position, safe := resolvedSelfAlignment(forColumns, container, item)
 	autoBehavior, isOverflowSafe = AutoSizeBehaviorFitContent, safe
 
-	// Auto margins take precedence over any alignment property
-	// (grid_item.cc:66-86).
-	autoInlineStart, autoInlineEnd, autoBlockStart, autoBlockEnd := PhysicalAutoMarginsToLogical(item.GetMargin(), containerWDM)
-	startAuto, endAuto := autoBlockStart, autoBlockEnd
-	if forColumns {
-		startAuto, endAuto = autoInlineStart, autoInlineEnd
-	}
-	switch {
-	case startAuto && endAuto:
-		return AxisEdgeCenter, autoBehavior, true
-	case startAuto:
-		return AxisEdgeEnd, autoBehavior, true
-	case endAuto:
-		return AxisEdgeStart, autoBehavior, true
+	// Auto margins take precedence over any alignment property, except
+	// for an out-of-flow item (grid_item.cc:66-86).
+	if !isOutOfFlow {
+		autoInlineStart, autoInlineEnd, autoBlockStart, autoBlockEnd := PhysicalAutoMarginsToLogical(item.GetMargin(), containerWDM)
+		startAuto, endAuto := autoBlockStart, autoBlockEnd
+		if forColumns {
+			startAuto, endAuto = autoInlineStart, autoInlineEnd
+		}
+		switch {
+		case startAuto && endAuto:
+			return AxisEdgeCenter, autoBehavior, true
+		case startAuto:
+			return AxisEdgeEnd, autoBehavior, true
+		case endAuto:
+			return AxisEdgeStart, autoBehavior, true
+		}
 	}
 
 	switch position {

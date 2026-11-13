@@ -166,11 +166,16 @@ func BlockStaticPositionEdge(oofStyle, alignItemsStyle *css.Style, oofWDM, paren
 	return StaticEdgeStart
 }
 
-// staticEdgeOfAxisEdge maps self-start / self-end's resolved edge (start or
-// end only) onto a static-position edge.
+// staticEdgeOfAxisEdge maps an axis edge onto a static-position edge: a
+// last baseline aligns with the end, a first baseline with the start
+// (as AlignmentOffsetForOutOfFlow groups them, grid_layout_utils.cc:466-503
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func staticEdgeOfAxisEdge(edge AxisEdge) StaticPositionEdge {
-	if edge == AxisEdgeEnd {
+	switch edge {
+	case AxisEdgeCenter:
+		return StaticEdgeCenter
+	case AxisEdgeEnd, AxisEdgeLastBaseline:
 		return StaticEdgeEnd
 	}
-	return StaticEdgeStart
+	return StaticEdgeStart // start, first baseline
 }
