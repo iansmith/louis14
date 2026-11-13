@@ -156,6 +156,22 @@ func (r *Renderer) drawWavyLine(x, top, width, thickness, wavyOffset float64, ke
 // underline or overline.
 func doubleOffsetFromThickness(thickness float64) float64 { return thickness + 1 }
 
+// decorationLineBounds is DecorationLinePainter::Bounds' block extent
+// (core/paint/decoration_line_painter.cc:409-435 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for a line of the given style
+// whose rect is at top, thickness thick: a double line also covers its
+// second line doubleOffset away, a wavy one its paint rect (wavyPaintRect).
+func decorationLineBounds(style string, top, thickness, doubleOffset, wavyOffset float64) (lo, hi float64) {
+	switch style {
+	case "wavy":
+		rectTop, rectHeight := wavyPaintRect(top, thickness, wavyOffset)
+		return rectTop, rectTop + rectHeight
+	case "double":
+		return min(top, top+doubleOffset), max(top, top+doubleOffset) + thickness
+	}
+	return top, top + thickness
+}
+
 // decorationStrokeStyle maps a dashed or dotted text-decoration-style to
 // its stroke style (TextDecorationStyleToStrokeStyle,
 // core/paint/text_decoration_info.cc:94-108 @ a9f50e52); ok is false for
