@@ -25,11 +25,11 @@ func collectTextFragments(frag *PhysicalFragment, baseX, baseY float64) [][2]flo
 // TestGridLayout_JustifyItemsStart_PlainText mirrors the WPT test
 // firefox-bug-1881495 for grid 3 (inline-size: 3em = 90px).  The item
 // content is plain text "X " followed by a span with margin-right:-1px
-// wrapping text "X".  With justify-items:start, ShrinkToFit sizes the item
-// to its max-content (< column width), so the span's "X" must wrap to line 2.
-// This also validates that the re-layout pass (needed for align-self:stretch)
-// preserves the ShrinkToFit inline size rather than reverting to the full
-// column width.
+// wrapping text "X".  With justify-items:start, the item's fit-content
+// inline auto behaviour sizes it to its max-content (< column width), so the
+// span's "X" must wrap to line 2. This also validates that the re-layout pass
+// (needed for align-self:stretch) sizes it the same way rather than to the
+// full column width.
 func TestGridLayout_JustifyItemsStart_PlainText(t *testing.T) {
 	// DOM: grid > item > ("X " , span.negMargin > "X")
 	textBefore := makeTextNode("X ")
@@ -54,7 +54,7 @@ func TestGridLayout_JustifyItemsStart_PlainText(t *testing.T) {
 
 	result := layoutElement(ctx, layoutRoot, space)
 
-	// With justify-items:start, ShrinkToFit sizes the item to max-content
+	// With justify-items:start, fit-content sizes the item to max-content
 	// (< column width), so the span's "X" exceeds the remaining space and
 	// wraps to line 2.  Grid height = 2 lines × 30px = 60px.
 	if result.Fragment.Size.HeightF64() != 60 {
@@ -83,7 +83,7 @@ func TestGridLayout_JustifyItemsStart_PlainText(t *testing.T) {
 }
 
 // TestGridLayout_JustifyItemsStart_WrapsAtMaxContent verifies that a grid item
-// with justify-self != stretch is sized to its max-content (ShrinkToFit), not
+// with justify-self != stretch is sized to its max-content (fit-content), not
 // to the full column track width.
 //
 // Setup: 90px grid, justify-items:start.
@@ -104,7 +104,7 @@ func TestGridLayout_JustifyItemsStart_PlainText(t *testing.T) {
 //	position after child1 = 60; remaining = 90-60 = 30; 30 > 30 = FALSE → no break.
 //	Both children fit on one line → item height = 30px → grid height = 30px.
 //
-// With the fix (item laid out at max-content = 89px via ShrinkToFit):
+// With the fix (item laid out at max-content = 89px, fit-content):
 //
 //	position after child1 = 60; remaining = 89-60 = 29; 30 > 29 = TRUE → break.
 //	child2 wraps to line 2 → item height = 60px → grid height = 60px.
