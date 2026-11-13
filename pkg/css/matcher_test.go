@@ -1047,6 +1047,10 @@ func TestSelectorScannersFollowTokenStream(t *testing.T) {
 	}{
 		{`[title="a] b"]`, `<div id="t" title="a] b"></div>`, "t", true},
 		{`div:not([title=") x"])`, `<div id="t"></div>`, "t", true},
+		{`div:not([title=") x"])`, `<div id="t" title=") x"></div>`, "t", false},
+		{`:is([title=") x"])`, `<div id="t" title=") x"></div>`, "t", true},
+		{`:nth-child(1 of [title=") x"])`, `<div id="t" title=") x"></div>`, "t", true},
+		{`[x=:is(])], #t`, `<div id="t"></div>`, "t", false},
 		{`:is(.a]), #t`, `<div id="t"></div>`, "t", true},
 		{`:not(.a]), #t`, `<div id="t"></div>`, "t", false},
 		{`.a), #t`, `<div id="t"></div>`, "t", false},
@@ -1082,5 +1086,12 @@ func TestSupportsSelectorEscapedClass(t *testing.T) {
 func TestPseudoElementAfterEscapedParen(t *testing.T) {
 	if pe := ParseSelector(`.a\(::before`).PseudoElement; pe != "before" {
 		t.Errorf(`.a\(::before pseudo-element = %q, want before`, pe)
+	}
+}
+
+// A `::highlight()` name ends at its own `)`, past an escaped one.
+func TestHighlightNameEscapedParen(t *testing.T) {
+	if pe := ParseSelector(`::highlight(a\))`).PseudoElement; pe != `highlight(a\))` {
+		t.Errorf(`::highlight(a\)) pseudo-element = %q, want highlight(a\))`, pe)
 	}
 }
