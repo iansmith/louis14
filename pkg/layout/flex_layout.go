@@ -367,18 +367,29 @@ func (fi *flexItem) ownOrSynthesizedBaseline(wm WritingMode, blockSize float64, 
 //
 // majorBaseline = Blink's max_major_ascent and minorBaseline its
 // max_minor_ascent: the largest flexItem.baselineAscent over the line's
-// major- and minor-group items. unsetBaseline marks "no item in that group
-// participated on this line" (analogous to Blink's LayoutUnit::Min()).
+// major- and minor-group items, collapsed ones included; they feed the
+// container's baseline export. alignMajorBaseline / alignMinorBaseline
+// exclude collapsed items and drive item placement. unsetBaseline marks
+// "no item in that group participated on this line" (analogous to Blink's
+// LayoutUnit::Min()).
 type flexLine struct {
-	items           []*flexItem
-	crossSize       float64
-	majorBaseline   float64 // unsetBaseline if no major-group item on line
-	minorBaseline   float64 // unsetBaseline if no minor-group item on line
-	crossAxisOffset float64 // physical cross-start offset in container space (post wrap-reverse flip)
+	items         []*flexItem
+	crossSize     float64
+	majorBaseline float64 // unsetBaseline if no major-group item on line
+	minorBaseline float64 // unsetBaseline if no minor-group item on line
+	// alignMajorBaseline / alignMinorBaseline are majorBaseline /
+	// minorBaseline over the line's items that are not collapsed, or
+	// unsetBaseline if every item in that group is collapsed (or there are
+	// none): a collapsed item takes part in baseline alignment only to size
+	// the line (CSS Flexbox §12; no Blink analog: Blink does not collapse
+	// flex items). Items are placed against these.
+	alignMajorBaseline, alignMinorBaseline float64
+	crossAxisOffset                        float64 // physical cross-start offset in container space (post wrap-reverse flip)
 }
 
 // unsetBaseline marks "no participant" for flexLine.majorBaseline /
-// minorBaseline and baselineAccumulator's optional fields. Mirrors Blink's
+// minorBaseline / alignMajorBaseline / alignMinorBaseline and
+// baselineAccumulator's optional fields. Mirrors Blink's
 // use of LayoutUnit::Min() as a sentinel (flex_layout_algorithm.cc:107-112).
 var unsetBaseline = math.Inf(-1)
 
@@ -714,6 +725,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		// group adds nothing.
 		maxMajorAscent, maxMajorDescent := unsetBaseline, unsetBaseline
 		maxMinorAscent, maxMinorDescent := unsetBaseline, unsetBaseline
+		alignMajorAscent, alignMinorAscent := unsetBaseline, unsetBaseline
 		for _, item := range line.items {
 			// For column flex: the initial layout pass measures intrinsic cross-sizes.
 			// Stretch items are NOT given crossIsFixed=true here; instead the stretch
@@ -766,17 +778,21 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			if item.collapsed && item.strutCrossSize > 0 {
 				outerCross = item.strutCrossSize
 			}
-			// A collapsed item contributes only its strut (§12; Blink does
-			// not collapse flex items), not a baseline.
-			if (selfAlign == "baseline" || selfAlign == "last baseline") && !item.collapsed {
+			if selfAlign == "baseline" || selfAlign == "last baseline" {
 				ascent, isMajor := itemBaselineAscent(item, selfAlign == "last baseline")
 				descent := outerCross - ascent
 				if isMajor {
 					maxMajorAscent = math.Max(maxMajorAscent, ascent)
 					maxMajorDescent = math.Max(maxMajorDescent, descent)
+					if !item.collapsed {
+						alignMajorAscent = math.Max(alignMajorAscent, ascent)
+					}
 				} else {
 					maxMinorAscent = math.Max(maxMinorAscent, ascent)
 					maxMinorDescent = math.Max(maxMinorDescent, descent)
+					if !item.collapsed {
+						alignMinorAscent = math.Max(alignMinorAscent, ascent)
+					}
 				}
 			} else {
 				lineCrossMax = math.Max(lineCrossMax, outerCross)
@@ -789,6 +805,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		// Store max_major_ascent / max_minor_ascent on the line
 		// (flex_layout_algorithm.cc:1557-1559); see flexLine.
 		line.majorBaseline, line.minorBaseline = maxMajorAscent, maxMinorAscent
+		line.alignMajorBaseline, line.alignMinorBaseline = alignMajorAscent, alignMinorAscent
 	}
 
 	// §9.4 step 8: If single-line and container has definite cross size,
@@ -1209,17 +1226,17 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			case "baseline", "last baseline":
 				// The major group aligns from the line's cross-start, the
 				// minor group from its cross-end (flex_layout_algorithm.cc:
-				// 1947-1956 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A
-				// collapsed item with no group on its line sits at the
-				// group's edge.
+				// 1947-1956 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), against
+				// the non-collapsed items' baselines; with none in its group
+				// an item sits at the group's edge.
 				ascent, isMajor := itemBaselineAscent(item, selfAlign == "last baseline")
 				switch {
-				case isMajor && line.majorBaseline != unsetBaseline:
-					itemCrossOffset = crossStart + line.majorBaseline - ascent
+				case isMajor && line.alignMajorBaseline != unsetBaseline:
+					itemCrossOffset = crossStart + line.alignMajorBaseline - ascent
 				case isMajor:
 					itemCrossOffset = crossStart
-				case line.minorBaseline != unsetBaseline:
-					itemCrossOffset = crossStart + crossFreeForAlign - (line.minorBaseline - ascent)
+				case line.alignMinorBaseline != unsetBaseline:
+					itemCrossOffset = crossStart + crossFreeForAlign - (line.alignMinorBaseline - ascent)
 				default:
 					itemCrossOffset = crossStart + crossFreeForAlign
 				}
