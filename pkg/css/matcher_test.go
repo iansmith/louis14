@@ -978,8 +978,9 @@ func TestDirHintPaddedValueInherits(t *testing.T) {
 // ConsumeEscape, core/css/parser/css_tokenizer.cc:594-691 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an escape never ends a
 // class, id, type or attribute name, a hex escape's trailing space is part
-// of it, not a combinator, and an attribute value is its string's or
-// ident's value.
+// of it, not a combinator, an escaped `*` before `=` is part of the
+// attribute name, not the operator, and an attribute value is its string's
+// or ident's value.
 func TestSelectorEscapesResolve(t *testing.T) {
 	for _, tc := range []struct{ sel, el string }{
 		{`.\61 b`, `<div id="t" class="ab"></div>`},
@@ -992,6 +993,7 @@ func TestSelectorEscapesResolve(t *testing.T) {
 		{`[d\61 ta-x]`, `<div id="t" data-x></div>`},
 		{`[data-x="a\"b"]`, `<div id="t" data-x='a"b'></div>`},
 		{`[data-x=a\ b]`, `<div id="t" data-x="a b"></div>`},
+		{`[a\*=b]`, `<div id="t" a*="b"></div>`},
 	} {
 		src := `<style>` + tc.sel + ` { color: green }</style>` + tc.el
 		if got, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get("color"); got != "green" {
