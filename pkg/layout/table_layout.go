@@ -68,6 +68,11 @@ type tableColWidth struct {
 	hasMin   bool    // true if min-width is a concrete px length
 	maxWidth float64 // resolved max-width in pixels; hasMax false means the value was absent, auto, or a percentage/calc-% (which GetLength rejects)
 	hasMax   bool    // true if max-width is a concrete px length
+	// percent is the percentage width (InlineSizesFromStyle's
+	// percentage_inline_size); hasPercent false when there is none or it
+	// is 0, which CreateColumn drops.
+	percent    float64
+	hasPercent bool
 }
 
 // extractColWidthSpec reads width/min-width/max-width constraints from a
@@ -77,17 +82,27 @@ func extractColWidthSpec(style *css.Style, colIndex, span int) (tableColWidth, b
 	w, okWidth := style.GetLength("width")
 	mw, okMin := style.GetLength("min-width")
 	xw, okMax := style.GetLength("max-width")
-	// Include a spec when ANY of width>0, okMin, or okMax holds — a
-	// min-width-only col must still produce a spec (col-definite-min-size row 1).
-	if (okWidth && w > 0) || okMin || okMax {
+	// A percentage width, read as a cell's is (TableTypes::CreateColumn →
+	// InlineSizesFromStyle, table/table_layout_algorithm_types.cc:24-75,
+	// :86-115 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a 0% one is
+	// dropped (:102-103).
+	// Horizontal, as the lengths above are read physically.
+	pct, okPct := cellPercentageInlineSize(style, WritingDirectionMode{})
+	okPct = okPct && pct != 0
+	// Include a spec when ANY of width>0, okMin, okMax or a percentage holds
+	// — a min-width-only col must still produce a spec
+	// (col-definite-min-size row 1).
+	if (okWidth && w > 0) || okMin || okMax || okPct {
 		return tableColWidth{
-			colIndex: colIndex,
-			span:     span,
-			width:    w,
-			minWidth: mw,
-			hasMin:   okMin,
-			maxWidth: xw,
-			hasMax:   okMax,
+			colIndex:   colIndex,
+			span:       span,
+			width:      w,
+			minWidth:   mw,
+			hasMin:     okMin,
+			maxWidth:   xw,
+			hasMax:     okMax,
+			percent:    pct,
+			hasPercent: okPct,
 		}, true
 	}
 	return tableColWidth{}, false
@@ -228,6 +243,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Track which columns have explicit col/colgroup widths (used for orthogonal cell row height).
 	colHasExplicit := make([]bool, numCols)
 	for _, cws := range colWidthSpecs {
+		if !(cws.width > 0 || cws.hasMin || cws.hasMax) {
+			continue // a percentage alone gives no length
+		}
 		for s := 0; s < cws.span; s++ {
 			ci := cws.colIndex + s
 			if ci < numCols {
@@ -1665,8 +1683,8 @@ func cellFixedLength(style *css.Style, prop string) (float64, bool) {
 // ApplyCellConstraintsToColumnConstraints's total-percentage clamp
 // (:144-160) and Column::Encompass's percentage rule
 // (table/table_layout_algorithm_types.cc:290-293), all @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Not ported: mergeable columns
-// and <col> percentages. availableInline is the cells' available
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Not ported: mergeable columns.
+// availableInline is the cells' available
 // inline-size (Indefinite while sizing the table intrinsically);
 // inlineSpacing is the table's inline border spacing (0 when collapsed).
 //
@@ -1742,6 +1760,12 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 			if cws.width > 0 || cws.hasMin {
 				colConstrained[ci] = true
 				colConstrainedByCol[ci] = true
+			}
+			// A <col> percentage makes a percentage column; the cells'
+			// larger percentages win (Column::Encompass, table/
+			// table_layout_algorithm_types.cc:290-293).
+			if cws.hasPercent && (!colHasPercent[ci] || cws.percent > colPercent[ci]) {
+				colPercent[ci], colHasPercent[ci] = cws.percent, true
 			}
 			colHasSize[ci] = true
 		}

@@ -89,8 +89,9 @@ func AllowColumnPercentages(table *LayoutInputNode, isLayoutPass bool) bool {
 	return true
 }
 
-// cellPercentageInlineSize returns a cell's percentage inline-size in the
-// table's writing mode, capped by a percentage max-inline-size: the
+// cellPercentageInlineSize returns a cell's or column's percentage
+// inline-size in the table's writing mode, capped by a percentage
+// max-inline-size: the
 // percentage part of Blink's InlineSizesFromStyle
 // (table/table_layout_algorithm_types.cc:62-74 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A calc() whose pixel part is
