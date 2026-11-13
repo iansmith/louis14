@@ -392,7 +392,8 @@ func TestOOFGridStaticPositionAlignment(t *testing.T) {
 // from the line's start. In an RTL run inside an LTR line, a box after the
 // run's text is visually before it, so it stays on the line. The box is
 // resolved for bidi as a U+FFFC neutral, taking the run's level, and an
-// inline box's open and close tags are not inline content. Mirrors
+// undecorated inline box's open tag is not inline content
+// (TestOOFBlockLevelAfterInlineBoxTags). Mirrors
 // PlaceOutOfFlowObjects (inline/inline_layout_algorithm.cc:760-855),
 // InlineNode::SegmentBidiRuns (inline/inline_node.cc:1361-1430) and
 // LogicalLineItem::HasInFlowFragment (inline/logical_line_item.h:162-166 @

@@ -992,6 +992,28 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		if n := len(line.Results); n > 0 {
 			lastLogicalItem = line.Results[n-1].Item
 		}
+		// The inline-box tags that count as content before a block-level
+		// OOF, taken in logical order before reordering: an open tag with an
+		// inline-start margin, border or padding, and a box empty on the line
+		// (its close tag right after its open tag). An empirical rule matching
+		// Chrome 157 (TestOOFBlockLevelAfterInlineBoxTags), not yet traced to
+		// Blink: LOU-1066.
+		var inflowTags map[*InlineItem]bool
+		for i, r := range line.Results {
+			counts := false
+			switch r.Item.Type {
+			case InlineItemOpenTag:
+				counts = r.InlineSize != 0
+			case InlineItemCloseTag:
+				counts = r.InlineSize != 0 || (i > 0 && line.Results[i-1].Item.Type == InlineItemOpenTag)
+			}
+			if counts {
+				if inflowTags == nil {
+					inflowTags = map[*InlineItem]bool{}
+				}
+				inflowTags[r.Item] = true
+			}
+		}
 		// Reorder line results from logical to visual order (UAX#9 L2)
 		// before positioning. Mirrors Blink's BidiReorder step in
 		// InlineLayoutAlgorithm::CreateLine.
@@ -1023,14 +1045,13 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 						r.Item, wdm, 0, blockOffset, positionedInlineMap[r.Item],
 					)))
 				}
-			} else if r.Item.Type != InlineItemFloat && r.Item.Type != InlineItemOpenTag && r.Item.Type != InlineItemCloseTag {
-				// An item with an in-flow fragment (not a float, and not an
-				// inline box's open or close tag, which the line holds as
-				// placeholders) means a block-level OOF after it captures its
-				// static position at the line's block-end
-				// (LogicalLineItem::HasInFlowFragment,
+			} else if inflowTags[r.Item] || (r.Item.Type != InlineItemOpenTag && r.Item.Type != InlineItemCloseTag && r.Item.Type != InlineItemFloat) {
+				// An item with an in-flow fragment (not a float) means a
+				// block-level OOF after it captures its static position at the
+				// line's block-end (LogicalLineItem::HasInFlowFragment,
 				// logical_line_item.h:162-166 @
-				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); an inline box's
+				// tag counts only as inflowTags says (empirical).
 				hasInflowOnLine = true
 			}
 			inlinePos += r.InlineSize
