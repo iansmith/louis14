@@ -3,6 +3,7 @@ package css
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"louis14/pkg/html"
 )
@@ -248,8 +249,14 @@ func (f *styleScopeFrame) store(scope *StyleScope, activations []styleScopeActiv
 	f.data[scope] = activations
 }
 
+// activationsComputed counts computeActivations calls (cache misses), so a
+// test can check the frame cache keeps scoped matching linear in the tree
+// size. No Blink analog: test instrumentation, as layoutAlgorithmRuns is.
+var activationsComputed atomic.Int64
+
 // computeActivations is calculateActivations without the cache.
 func computeActivations(element *html.Node, scope *StyleScope, outer []styleScopeActivation, frame *styleScopeFrame) []styleScopeActivation {
+	activationsComputed.Add(1)
 	if len(outer) == 0 {
 		return nil
 	}
