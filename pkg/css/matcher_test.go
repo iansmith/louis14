@@ -972,3 +972,126 @@ func TestDirHintPaddedValueInherits(t *testing.T) {
 		t.Errorf(`dir=" rtl " under dir=ltr: direction = %v, want ltr`, got)
 	}
 }
+
+// A selector's idents are names with their escapes resolved, as the token
+// stream hands them to the selector parser (CSSTokenizer::ConsumeName /
+// ConsumeEscape, core/css/parser/css_tokenizer.cc:594-691 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an escape never ends a
+// class, id, type or attribute name, a hex escape's trailing space is part
+// of it, not a combinator, an escaped `*` before `=` is part of the
+// attribute name, not the operator, and an attribute value is its string's
+// or ident's value. An escaped `|` is part of its ident too, not a
+// namespace bar (ConsumeName / ConsumeAttribute read the bar only as a
+// delimiter token, css_selector_parser.cc:1454-1497, 1530-1584 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and an escaped trailing space
+// survives trimming; unescaped `*|b` / `[*|b]` keep matching.
+func TestSelectorEscapesResolve(t *testing.T) {
+	for _, tc := range []struct {
+		sel, el string
+		green   bool
+	}{
+		{`.\61 b`, `<div id="t" class="ab"></div>`, true},
+		{`.a\:b`, `<div id="t" class="a:b"></div>`, true},
+		{`.a\.b`, `<div id="t" class="a.b"></div>`, true},
+		{`.a\]b`, `<div id="t" class="a]b"></div>`, true},
+		{`.a\,b`, `<div id="t" class="a,b"></div>`, true},
+		{`#\31 0 b`, `<div id="10"><b id="t"></b></div>`, true},
+		{`d\69 v#t`, `<div id="t"></div>`, true},
+		{`[d\61 ta-x]`, `<div id="t" data-x></div>`, true},
+		{`[data-x="a\"b"]`, `<div id="t" data-x='a"b'></div>`, true},
+		{`[data-x=a\ b]`, `<div id="t" data-x="a b"></div>`, true},
+		{`[a\*=b]`, `<div id="t" a*="b"></div>`, true},
+		{`[data-x=a\ ]`, `<div id="t" data-x="a "></div>`, true},
+		{`a\|b`, `<b id="t"></b>`, false},
+		{`[\|b]`, `<div id="t" b></div>`, false},
+		{`*|b`, `<b id="t"></b>`, true},
+		{`[*|b]`, `<div id="t" b></div>`, true},
+	} {
+		if got := cascadeColor(t, tc.sel, tc.el, "t"); (got == "green") != tc.green {
+			t.Errorf("%s on %s: color = %q, want green %v", tc.sel, tc.el, got, tc.green)
+		}
+	}
+}
+
+// A bad string (a newline ends it) is no attribute value: ConsumeAttribute
+// rejects the selector (css_selector_parser.cc:1567-1571 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so it matches nothing, not
+// the empty value.
+func TestAttributeSelectorBadStringMatchesNothing(t *testing.T) {
+	node := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"data-x": ""}}
+	if !MatchesSelector(node, ParseSelector(`[data-x=""]`)) {
+		t.Fatal(`control: [data-x=""] did not match data-x=""`)
+	}
+	if MatchesSelector(node, ParseSelector("[data-x=\"a\nb\"]")) {
+		t.Error(`[data-x="a<newline>b"] matched data-x=""`)
+	}
+	// A newline right before `]` ends the string too, bad, even where
+	// trimming would leave `"x` closed by end of input.
+	xnode := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"data-x": "x"}}
+	if MatchesSelector(xnode, ParseSelector("[data-x=\"x\n]")) {
+		t.Error(`[data-x="x<newline>] matched data-x="x"`)
+	}
+}
+
+// Selector scanners follow Blink's token stream: blocks stack
+// (CSSTokenizer::BlockStart / BlockEnd, core/css/parser/css_tokenizer.cc:
+// 66-87 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), strings and escapes
+// are skipped, and an escaped trailing space is part of its ident. A `]` or
+// `)` that closes nothing is a plain token: at the top level or in an
+// unforgiving argument it voids the selector, in a forgiving :is()/:where()
+// argument only that argument. Expected values derived from that source.
+func TestSelectorScannersFollowTokenStream(t *testing.T) {
+	for _, tc := range []struct {
+		css, el, id string
+		green       bool
+	}{
+		{`[title="a] b"]`, `<div id="t" title="a] b"></div>`, "t", true},
+		{`div:not([title=") x"])`, `<div id="t"></div>`, "t", true},
+		{`div:not([title=") x"])`, `<div id="t" title=") x"></div>`, "t", false},
+		{`:is([title=") x"])`, `<div id="t" title=") x"></div>`, "t", true},
+		{`:nth-child(1 of [title=") x"])`, `<div id="t" title=") x"></div>`, "t", true},
+		{`[x=:is(])], #t`, `<div id="t"></div>`, "t", false},
+		{`:is(.a]), #t`, `<div id="t"></div>`, "t", true},
+		{`:not(.a]), #t`, `<div id="t"></div>`, "t", false},
+		{`.a), #t`, `<div id="t"></div>`, "t", false},
+		{`[x;y], #t`, `<div id="t"></div>`, "t", false},
+		{`#a\ `, `<div id="a "></div>`, "a ", true},
+		{`:is(#a\ ) b`, `<div id="a "><b id="t"></b></div>`, "t", true},
+	} {
+		if got := cascadeColor(t, tc.css, tc.el, tc.id); (got == "green") != tc.green {
+			t.Errorf("%s on %s: color = %q, want green %v", tc.css, tc.el, got, tc.green)
+		}
+	}
+}
+
+// cascadeColor is the color `sel { color: green }` gives the element whose
+// id is id in el.
+func cascadeColor(t *testing.T, sel, el, id string) string {
+	t.Helper()
+	got, _ := styleByID(t, cascadeHTML(t, `<style>`+sel+` { color: green }</style>`+el, nil), id).Get("color")
+	return got
+}
+
+// @supports selector() reads the compound escape-aware: `.a\:b` is one
+// class, so the selector is supported.
+func TestSupportsSelectorEscapedClass(t *testing.T) {
+	src := `<style>@supports selector(.a\:b) { #t { color: green } }</style><div id="t"></div>`
+	if got, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get("color"); got != "green" {
+		t.Errorf(`@supports selector(.a\:b): color = %q, want green`, got)
+	}
+}
+
+// An escaped `(` is ident text, no block: `::before` after `.a\(` is still
+// at the top level, so it is the selector's pseudo-element.
+func TestPseudoElementAfterEscapedParen(t *testing.T) {
+	if pe := ParseSelector(`.a\(::before`).PseudoElement; pe != "before" {
+		t.Errorf(`.a\(::before pseudo-element = %q, want before`, pe)
+	}
+}
+
+// A `::highlight()` name ends at its own `)`, past an escaped one.
+func TestHighlightNameEscapedParen(t *testing.T) {
+	if pe := ParseSelector(`::highlight(a\))`).PseudoElement; pe != `highlight(a\))` {
+		t.Errorf(`::highlight(a\)) pseudo-element = %q, want highlight(a\))`, pe)
+	}
+}

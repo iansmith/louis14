@@ -22,6 +22,16 @@ const (
 	DirectionRTL
 )
 
+// DirectionFromLevel is the direction of a bidi embedding level: RTL when
+// odd. Mirrors Blink's DirectionFromLevel (platform/text/text_direction.h:
+// 56-58 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func DirectionFromLevel(level int) Direction {
+	if level&1 == 1 {
+		return DirectionRTL
+	}
+	return DirectionLTR
+}
+
 // WritingDirectionMode combines WritingMode and Direction into a single
 // value that fully determines the logical-to-physical coordinate mapping.
 // This is the Go equivalent of Blink's WritingDirectionMode.
@@ -92,9 +102,15 @@ func (wdm WritingDirectionMode) IsFlippedLines() bool {
 }
 
 // lineToBlock maps a line-relative pair (over, under) onto the line's
+// block-start and block-end sides (lineToBlockSides).
+func (wdm WritingDirectionMode) lineToBlock(over, under float64) (blockStart, blockEnd float64) {
+	return lineToBlockSides(wdm, over, under)
+}
+
+// lineToBlockSides maps a line-relative pair (over, under) onto the line's
 // block-start and block-end sides: over is block-start except in the
 // flipped-lines mode, where it is block-end.
-func (wdm WritingDirectionMode) lineToBlock(over, under float64) (blockStart, blockEnd float64) {
+func lineToBlockSides[T any](wdm WritingDirectionMode, over, under T) (blockStart, blockEnd T) {
 	if wdm.IsFlippedLines() {
 		return under, over
 	}

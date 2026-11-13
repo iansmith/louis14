@@ -73,6 +73,9 @@ type SelectorPart struct {
 }
 
 // AttributeSelector represents an attribute selector like [type="text"]
+// AttributeSelector is one `[...]` of a compound. The zero value (no Name)
+// stands for an invalid one (a bad-string value, an unclosed `[`): no
+// element has an attribute with no name, so it matches nothing.
 type AttributeSelector struct {
 	Name     string // Attribute name
 	Operator string // =, ^=, $=, *=, ~=, |=
@@ -552,7 +555,7 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 			continue
 		}
 
-		sel := strings.TrimSpace(part[:bracePos])
+		sel := trimCSSSpace(part[:bracePos])
 		body := part[bracePos+1 : closePos]
 
 		// Handle conditional at-rules nested inside a selector block. Per CSS
@@ -1323,7 +1326,7 @@ func splitRulesAt(css string, starts *[]int) []string {
 // isValidSelector checks if a selector string looks valid enough to parse.
 // Returns false for clearly malformed selectors that should cause the rule to be skipped.
 func isValidSelector(s string) bool {
-	s = strings.TrimSpace(s)
+	s = trimCSSSpace(s)
 	if s == "" {
 		return false
 	}
@@ -1331,42 +1334,39 @@ func isValidSelector(s string) bool {
 	if s[0] == '}' || s[0] == ';' || s[0] == '{' {
 		return false
 	}
-	// Check for unbalanced brackets
-	bracketDepth, parenDepth := 0, 0
-	for i := 0; i < len(s); i++ {
+	// Blocks stack as the token stream stacks them (walkBlocks): a closer
+	// matching no open block is a plain token. At the top level, or in an
+	// unforgiving argument, that token voids the selector; inside an :is()
+	// or :where() argument only that argument, the forgiving list keeping
+	// the selector valid (CSSSelectorParser::ConsumePseudo kPseudoIs /
+	// kPseudoWhere, css_selector_parser.cc:1666-1749 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	valid := true
+	end := walkBlocks(s, func(i int, b blockState) bool {
 		switch s[i] {
-		case '\\':
-			i++ // an escaped `;`, `{`, ... is ident text
-		case '(':
-			parenDepth++
-		case ')':
-			parenDepth = max(parenDepth-1, 0)
-		case ';':
-			// A top-level `;` is no selector token. One in a functional
-			// pseudo-class's argument is left to that argument's parse.
-			if parenDepth == 0 {
-				return false
-			}
 		case '"', '\'':
 			// A bad string makes the selector invalid; a `{` or `}` in a
 			// string is string text.
-			var end stringEnd
-			if i, end = stringTokenEnd(s, i); end != stringClosed {
-				return false
+			if _, end := stringTokenEnd(s, i); end != stringClosed {
+				valid = false
 			}
-		case '[':
-			bracketDepth++
-		case ']':
-			bracketDepth--
-			if bracketDepth < 0 {
-				return false
+		case ')', ']':
+			if b.stray && b.forgiving == 0 {
+				valid = false
+			}
+		case ';':
+			// A `;` is no selector token. One in a functional
+			// pseudo-class's argument is left to that argument's parse.
+			if b.parens == 0 {
+				valid = false
 			}
 		case '{', '}':
 			// Braces inside selector text are invalid
-			return false
+			valid = false
 		}
-	}
-	if bracketDepth != 0 {
+		return valid
+	})
+	if !valid || end.brackets > 0 {
 		return false
 	}
 	// :has() disallows pseudo-elements in its unforgiving argument.
@@ -1394,37 +1394,15 @@ func scanPseudoElements(sel string) (unforgiven, inHas bool) {
 	if strings.IndexByte(sel, ':') < 0 {
 		return false, false
 	}
-	type frame struct{ forgiving, has bool }
-	var frames []frame
-	for i := 0; i < len(sel); i++ {
-		switch sel[i] {
-		case '"', '\'':
-			i, _ = stringTokenEnd(sel, i)
-		case '\\':
-			i++
-		case '(':
-			name := strings.ToLower(functionNameBefore(sel, i))
-			frames = append(frames, frame{forgiving: name == "is" || name == "where", has: name == "has"})
-		case ')':
-			if len(frames) > 0 {
-				frames = frames[:len(frames)-1]
-			}
-		case ':':
-			if !namesPseudoElementAt(sel, i) {
-				continue
-			}
-			// An enclosing :is() or :where() at any depth absorbs the
-			// pseudo-element, and the invalid :has() it may void.
-			forgiven := slices.ContainsFunc(frames, func(f frame) bool { return f.forgiving })
-			if !forgiven {
-				unforgiven = true
-				inHas = inHas || slices.ContainsFunc(frames, func(f frame) bool { return f.has })
-			}
-			if i+1 < len(sel) && sel[i+1] == ':' {
-				i++
-			}
+	walkBlocks(sel, func(i int, b blockState) bool {
+		// An enclosing :is() or :where() at any depth absorbs the
+		// pseudo-element, and the invalid :has() it may void.
+		if sel[i] == ':' && namesPseudoElementAt(sel, i) && b.forgiving == 0 {
+			unforgiven = true
+			inHas = inHas || b.has > 0
 		}
-	}
+		return true
+	})
 	return unforgiven, inHas
 }
 
@@ -1469,7 +1447,7 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		return nil, fmt.Errorf("no opening brace found")
 	}
 
-	selectorStr := strings.TrimSpace(ruleStr[:bracePos])
+	selectorStr := trimCSSSpace(ruleStr[:bracePos])
 
 	// Split the selector list at its top-level commas
 	selectors := SplitTopLevelCommas(selectorStr)
@@ -1515,7 +1493,7 @@ func parseRule(ruleStr string) (Rule, error) {
 	}
 
 	// Extract selector
-	selectorStr := strings.TrimSpace(ruleStr[:bracePos])
+	selectorStr := trimCSSSpace(ruleStr[:bracePos])
 
 	// Validate selector — skip entire rule if invalid
 	if !isValidSelector(selectorStr) {
@@ -2571,7 +2549,7 @@ func evaluateSupportsSelector(sel string) bool {
 	if len(parts) != 1 {
 		return false
 	}
-	return isValidComplexSelector(strings.TrimSpace(parts[0]))
+	return isValidComplexSelector(trimCSSSpace(parts[0]))
 }
 
 // isValidComplexSelector reports whether s is a syntactically valid CSS
@@ -2588,7 +2566,7 @@ func evaluateSupportsSelector(sel string) bool {
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f which only consumes a leading
 // combinator when invoked in nesting / forgiving-nested mode.
 func isValidComplexSelector(s string) bool {
-	s = strings.TrimSpace(s)
+	s = trimCSSSpace(s)
 	if s == "" {
 		return false
 	}
@@ -2606,7 +2584,7 @@ func isValidComplexSelector(s string) bool {
 	// We don't need a full AST — just validate each compound's tokens.
 	tokens := tokenizeSelector(s)
 	for _, t := range tokens {
-		t = strings.TrimSpace(t)
+		t = trimCSSSpace(t)
 		if t == "" || t == ">" || t == "+" || t == "~" {
 			continue
 		}
@@ -2685,11 +2663,9 @@ func isValidCompoundSelector(s string) bool {
 			// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 			i++
 		case c == '.' || c == '#':
-			// class or id — read until next selector boundary
-			i++
-			for i < len(s) && !isSelectorBoundary(s[i]) {
-				i++
-			}
+			// class or id — read until next selector boundary outside an
+			// escape
+			i = identEnd(s, i+1, isSelectorBoundary)
 		case c == '[':
 			// Attribute selector — find matching `]`.
 			j := i + 1
@@ -2759,13 +2735,9 @@ func isValidCompoundSelector(s string) bool {
 				}
 			}
 			i = j
-		case isElementIdentChar(c):
-			// Element identifier.
-			j := i
-			for j < len(s) && isElementIdentChar(s[j]) {
-				j++
-			}
-			i = j
+		case isElementIdentChar(c) || escapeLen(s, i) > 0:
+			// Element identifier, escapes included.
+			i = identEnd(s, i, func(c byte) bool { return !isElementIdentChar(c) && c != '\\' })
 		default:
 			// Unexpected character — fail validation.
 			return false
@@ -3043,27 +3015,118 @@ func blockBounds(rule string) (openPos, closePos int, ok bool) {
 // values inside its prelude (e.g. `@supports not unknown(!@#% { ... })`);
 // with `,` the end of a comma-separated list item.
 func indexTopLevel(s string, target byte) int {
-	var buf [16]byte
-	blocks := buf[:0]
+	idx := -1
+	walkTopLevel(s, func(i int) bool {
+		if s[i] == target {
+			idx = i
+			return false
+		}
+		return true
+	})
+	return idx
+}
+
+// walkTopLevel calls f with the index of each top-level byte of s, outside
+// every (), [] and {} block (an opener or a stray closer included), until f
+// returns false. A string or escape at the top level is reported at its
+// first byte (its quote or backslash) only; f sees none of the bytes inside
+// it.
+func walkTopLevel(s string, f func(i int) bool) {
+	walkBlocks(s, func(i int, b blockState) bool {
+		return b.depth > 0 || f(i)
+	})
+}
+
+// blockState is what walkBlocks reports at a byte: how many blocks are
+// open, which kinds, and whether the byte is a closer that matches no open
+// block (a plain token).
+type blockState struct {
+	depth      int  // open blocks
+	parens     int  // open `(` blocks
+	brackets   int  // open `[` blocks
+	forgiving  int  // open :is() / :where() arguments
+	has        int  // open :has() arguments
+	stray      bool // a closer matching no open block
+	closesLast bool // a closer that closes the last open block
+}
+
+// walkBlocks calls f with the index of each byte of s outside strings and
+// escapes, and the blocks open at it (an opener reported before its block
+// opens, a closer before it closes), until f returns false; it returns the
+// state after the last byte. A string or escape is reported at its first
+// byte only. Blocks stack as Blink's tokenizer stacks them
+// (CSSTokenizer::BlockStart / BlockEnd, core/css/parser/css_tokenizer.cc:
+// 66-87 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a `(` is a function
+// only after `:name` and outside every `[` (an attribute selector holds no
+// function).
+func walkBlocks(s string, f func(i int, b blockState) bool) blockState {
+	const (
+		plain = iota
+		forgivingArg
+		hasArg
+	)
+	type frame struct{ closer, kind byte }
+	var buf [16]frame
+	open := buf[:0]
+	var b blockState
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c == target && len(blocks) == 0 {
-			return i
+		isCloser := c == ')' || c == ']' || c == '}'
+		b.stray = isCloser && (len(open) == 0 || open[len(open)-1].closer != c)
+		b.closesLast = isCloser && !b.stray && len(open) == 1
+		if !f(i, b) {
+			return b
 		}
 		switch c {
 		case '\\':
-			i++
+			if n := escapeLen(s, i); n > 0 {
+				i += n - 1
+			}
 		case '"', '\'':
 			i, _ = stringTokenEnd(s, i)
 		case '(', '[', '{':
-			blocks = append(blocks, blockCloser(c))
+			fr := frame{closer: blockCloser(c), kind: plain}
+			switch c {
+			case '(':
+				b.parens++
+				if b.brackets == 0 {
+					switch strings.ToLower(functionNameBefore(s, i)) {
+					case "is", "where":
+						fr.kind = forgivingArg
+						b.forgiving++
+					case "has":
+						fr.kind = hasArg
+						b.has++
+					}
+				}
+			case '[':
+				b.brackets++
+			}
+			open = append(open, fr)
+			b.depth++
 		case ')', ']', '}':
-			if len(blocks) > 0 && blocks[len(blocks)-1] == c {
-				blocks = blocks[:len(blocks)-1]
+			if b.stray {
+				continue
+			}
+			fr := open[len(open)-1]
+			open = open[:len(open)-1]
+			b.depth--
+			switch c {
+			case ')':
+				b.parens--
+			case ']':
+				b.brackets--
+			}
+			switch fr.kind {
+			case forgivingArg:
+				b.forgiving--
+			case hasArg:
+				b.has--
 			}
 		}
 	}
-	return -1
+	b.stray, b.closesLast = false, false
+	return b
 }
 
 // consumeSupportsDecl reports whether inner is a valid <declaration> for
@@ -3757,45 +3820,21 @@ func orResult(a, b supportsResult) supportsResult {
 }
 
 // findTopLevelPseudoElement returns the byte index of the first occurrence of
-// token in s that is NOT inside parentheses or brackets, or -1 if none exists.
-// For the ":before" (single-colon) tokens, the preceding character must not be
-// ':' (which would make it a "::before" already matched on a prior pass) or an
-// identifier character (avoids matching ":beforexyz" by chance).
+// token in s outside every block, string and escape (walkTopLevel), or -1 if
+// none exists. For the ":before" (single-colon) tokens, the preceding
+// character must not be ':' (the ":before" tail of a "::before" the caller's
+// ordered list already extracted).
 func findTopLevelPseudoElement(s, token string) int {
-	depth := 0
-	tlen := len(token)
 	singleColon := strings.HasPrefix(token, ":") && !strings.HasPrefix(token, "::")
-	for i := 0; i+tlen <= len(s); i++ {
-		ch := s[i]
-		switch ch {
-		case '"', '\'':
-			i, _ = stringTokenEnd(s, i)
-			continue
-		case '(', '[':
-			depth++
-			continue
-		case ')', ']':
-			depth--
-			continue
+	idx := -1
+	walkTopLevel(s, func(i int) bool {
+		if !strings.HasPrefix(s[i:], token) || (singleColon && i > 0 && s[i-1] == ':') {
+			return true
 		}
-		if depth != 0 {
-			continue
-		}
-		if s[i:i+tlen] != token {
-			continue
-		}
-		// For single-colon legacy form, guard against matching ":beforexyz"
-		// or matching the ":before" tail of "::before". The double-colon form
-		// is matched first by the caller's ordered list, so by the time we
-		// look for ":before" any "::before" has already been extracted.
-		if singleColon {
-			if i > 0 && s[i-1] == ':' {
-				continue
-			}
-		}
-		return i
-	}
-	return -1
+		idx = i
+		return false
+	})
+	return idx
 }
 
 // Phase 17: parseSelector parses a complex CSS selector
@@ -3853,7 +3892,7 @@ var pseudoElementTokens = []struct {
 }
 
 func parseSelector(selectorStr string) Selector {
-	selectorStr = strings.TrimSpace(selectorStr)
+	selectorStr = trimCSSSpace(selectorStr)
 
 	if selectorStr == "" {
 		return Selector{Raw: "", Parts: []SelectorPart{}, Specificity: 0}
@@ -3882,7 +3921,7 @@ func parseSelector(selectorStr string) Selector {
 			pseudoElementForDescendants = true
 		}
 		selectorStr = selectorStr[:idx] + selectorStr[idx+len(pe.token):]
-		selectorStr = strings.TrimSpace(selectorStr)
+		selectorStr = trimCSSSpace(selectorStr)
 		break
 	}
 	// `::highlight(NAME)` — CSS Custom Highlight API. The functional notation
@@ -3893,29 +3932,18 @@ func parseSelector(selectorStr string) Selector {
 	if pseudoElement == "" {
 		const hlTok = "::highlight("
 		if idx := findTopLevelPseudoElement(selectorStr, hlTok); idx >= 0 {
-			// Find matching closing paren.
-			depth := 1
-			end := idx + len(hlTok)
-			for end < len(selectorStr) && depth > 0 {
-				switch selectorStr[end] {
-				case '(':
-					depth++
-				case ')':
-					depth--
-				}
-				if depth == 0 {
-					break
-				}
-				end++
-			}
-			if depth == 0 && end < len(selectorStr) {
-				name := strings.TrimSpace(selectorStr[idx+len(hlTok) : end])
+			// Its `)` is the first in the argument outside every block,
+			// string and escape.
+			start := idx + len(hlTok)
+			if n := indexTopLevel(selectorStr[start:], ')'); n >= 0 {
+				end := start + n
+				name := trimCSSSpace(selectorStr[start:end])
 				pseudoElement = "highlight(" + name + ")"
 				if idx > 0 && selectorStr[idx-1] == ' ' {
 					pseudoElementForDescendants = true
 				}
 				selectorStr = selectorStr[:idx] + selectorStr[end+1:]
-				selectorStr = strings.TrimSpace(selectorStr)
+				selectorStr = trimCSSSpace(selectorStr)
 			}
 		}
 	}
@@ -4069,53 +4097,30 @@ func parseSelector(selectorStr string) Selector {
 // tokenizeSelector splits a selector into tokens (handling combinators)
 func tokenizeSelector(s string) []string {
 	tokens := make([]string, 0)
-	current := ""
-	inBracket := false
-	parenDepth := 0
-
-	for i := 0; i < len(s); i++ {
+	start := 0
+	walkTopLevel(s, func(i int) bool {
 		ch := s[i]
-
-		if ch == '(' {
-			parenDepth++
-			current += string(ch)
-		} else if ch == ')' {
-			parenDepth--
-			current += string(ch)
-		} else if ch == '[' {
-			inBracket = true
-			current += string(ch)
-		} else if ch == ']' {
-			inBracket = false
-			current += string(ch)
-		} else if !inBracket && parenDepth == 0 && (ch == '>' || ch == '+' || ch == '~' || ch == ' ') {
-			if current != "" {
-				tokens = append(tokens, current)
-				current = ""
-			}
-			if ch != ' ' || (ch == ' ' && len(tokens) > 0) {
-				// Only add space if it's a meaningful separator
-				if ch == ' ' {
-					// Check if last token was a combinator
-					if len(tokens) > 0 {
-						lastToken := tokens[len(tokens)-1]
-						if lastToken != ">" && lastToken != "+" && lastToken != "~" && lastToken != " " {
-							tokens = append(tokens, " ")
-						}
-					}
-				} else {
-					tokens = append(tokens, string(ch))
-				}
-			}
-		} else {
-			current += string(ch)
+		if ch != '>' && ch != '+' && ch != '~' && ch != ' ' {
+			return true
 		}
+		if start < i {
+			tokens = append(tokens, s[start:i])
+		}
+		start = i + 1
+		if ch != ' ' {
+			tokens = append(tokens, string(ch))
+		} else if len(tokens) > 0 {
+			// Only a meaningful descendant separator: not right after a
+			// combinator or another space.
+			if last := tokens[len(tokens)-1]; last != ">" && last != "+" && last != "~" && last != " " {
+				tokens = append(tokens, " ")
+			}
+		}
+		return true
+	})
+	if start < len(s) {
+		tokens = append(tokens, s[start:])
 	}
-
-	if current != "" {
-		tokens = append(tokens, current)
-	}
-
 	return tokens
 }
 
@@ -4126,6 +4131,49 @@ func isCompoundDelimiter(c byte) bool {
 	return c == '.' || c == '#' || c == '[' || c == ':' || c == '&'
 }
 
+// escapeLen returns the length of the escape at s[i] (the backslash and
+// what it escapes), or 0 when s[i] starts none: a `\` before a newline is
+// no escape (TwoCharsAreValidEscape, core/css/parser/css_tokenizer.cc:
+// 214-215 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); one at the end
+// escapes U+FFFD.
+func escapeLen(s string, i int) int {
+	if s[i] != '\\' {
+		return 0
+	}
+	if i+1 >= len(s) {
+		// At end of input the escape is U+FFFD (ConsumeEscape,
+		// css_tokenizer.cc:689-691 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return 1
+	}
+	if isCSSNewline(s[i+1]) {
+		return 0
+	}
+	_, n := consumeEscape(s[i+1:])
+	return 1 + n
+}
+
+// selectorIdentEnd returns the end of the type, class or id name that
+// starts at s[i]: the next compound delimiter outside an escape.
+func selectorIdentEnd(s string, i int) int {
+	return identEnd(s, i, isCompoundDelimiter)
+}
+
+// identEnd returns the index of the first byte at or after s[i] that isEnd
+// accepts and no escape covers.
+func identEnd(s string, i int, isEnd func(byte) bool) int {
+	for i < len(s) {
+		if n := escapeLen(s, i); n > 0 {
+			i += n
+			continue
+		}
+		if isEnd(s[i]) {
+			break
+		}
+		i++
+	}
+	return i
+}
+
 func parseSelectorPart(s string) SelectorPart {
 	part := SelectorPart{
 		Classes:       make([]string, 0),
@@ -4133,7 +4181,7 @@ func parseSelectorPart(s string) SelectorPart {
 		PseudoClasses: make([]string, 0),
 	}
 
-	s = strings.TrimSpace(s)
+	s = trimCSSSpace(s)
 	if s == "" {
 		return part
 	}
@@ -4144,11 +4192,9 @@ func parseSelectorPart(s string) SelectorPart {
 	// Check for element (must come first)
 	if !isCompoundDelimiter(s[i]) {
 		// Read element name until we hit a special character
-		j := i
-		for j < len(s) && !isCompoundDelimiter(s[j]) {
-			j++
-		}
-		part.Element = strings.ToLower(s[i:j])
+		j := selectorIdentEnd(s, i)
+		raw := s[i:j]
+		local := raw
 		// Namespace-prefixed type selectors (CSS Selectors 4 §6.1). An
 		// unprefixed type selector takes the sheet's default namespace,
 		// applied after parsing by Selector.resolveNamespaces; recording
@@ -4158,15 +4204,18 @@ func parseSelectorPart(s string) SelectorPart {
 		// (louis14 keeps no @namespace prefix map) all match `tag` in any
 		// namespace, and `*|*` matches any element (LOU-437 decisions
 		// L4/L5).
-		if idx := strings.Index(part.Element, "|"); idx >= 0 {
+		// The bar is a namespace bar only unescaped (a delimiter token,
+		// CSSSelectorParser::ConsumeName, css_selector_parser.cc:1454-1497
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): `a\|b` is the type
+		// `a|b`.
+		if bar := indexTopLevel(raw, '|'); bar >= 0 {
 			part.hasNamespacePrefix = true
-			local := part.Element[idx+1:]
-			if local == "" || local == "*" {
-				part.Element = "*"
-			} else {
-				part.Element = local
-			}
+			local = raw[bar+1:]
 		}
+		if local == "" {
+			local = "*"
+		}
+		part.Element = strings.ToLower(unescapeName(local))
 		i = j
 	}
 
@@ -4184,20 +4233,14 @@ func parseSelectorPart(s string) SelectorPart {
 		} else if s[i] == '.' {
 			// Class
 			i++
-			j := i
-			for j < len(s) && !isCompoundDelimiter(s[j]) {
-				j++
-			}
-			part.Classes = append(part.Classes, s[i:j])
+			j := selectorIdentEnd(s, i)
+			part.Classes = append(part.Classes, unescapeName(s[i:j]))
 			i = j
 		} else if s[i] == '#' {
 			// ID
 			i++
-			j := i
-			for j < len(s) && !isCompoundDelimiter(s[j]) {
-				j++
-			}
-			part.ID = s[i:j]
+			j := selectorIdentEnd(s, i)
+			part.ID = unescapeName(s[i:j])
 			i = j
 		} else if s[i] == ':' {
 			// Pseudo-class (skip :: pseudo-elements, handled separately)
@@ -4206,40 +4249,36 @@ func parseSelectorPart(s string) SelectorPart {
 				break
 			}
 			i++ // skip the ':'
-			j := i
-			depth := 0
-			for j < len(s) {
-				if s[j] == '(' {
-					depth++
-				} else if s[j] == ')' {
-					depth--
-					if depth == 0 {
-						j++ // include the closing paren
-						break
-					}
-				} else if depth == 0 && isCompoundDelimiter(s[j]) {
-					break
+			// The pseudo-class runs to the next compound delimiter outside
+			// every block, string and escape, or through its function's
+			// own `)`.
+			j := len(s)
+			walkBlocks(s[i:], func(k int, b blockState) bool {
+				switch {
+				case b.depth == 0 && isCompoundDelimiter(s[i+k]):
+					j = i + k
+				case b.closesLast:
+					j = i + k + 1
+				default:
+					return true
 				}
-				j++
-			}
+				return false
+			})
 			if j > i {
 				part.PseudoClasses = append(part.PseudoClasses, s[i:j])
 			}
 			i = j
 		} else if s[i] == '[' {
-			// Attribute
-			j := i + 1
-			for j < len(s) && s[j] != ']' {
-				j++
-			}
-			if j < len(s) {
-				attrStr := s[i+1 : j]
-				attr := parseAttributeSelector(attrStr)
-				part.Attributes = append(part.Attributes, attr)
-				i = j + 1
-			} else {
+			// Attribute: its `]` is the first outside strings and escapes.
+			n := indexTopLevel(s[i+1:], ']')
+			if n < 0 {
+				// An unclosed `[` makes the selector invalid: it matches
+				// nothing (an attribute with no name matches no element).
+				part.Attributes = append(part.Attributes, AttributeSelector{})
 				break
 			}
+			part.Attributes = append(part.Attributes, parseAttributeSelector(s[i+1:i+1+n]))
+			i += n + 2
 		} else {
 			i++
 		}
@@ -4254,8 +4293,9 @@ func parseSelectorPart(s string) SelectorPart {
 // prefixed with a namespace: `ns|attr` selects attributes in namespace `ns`,
 // `*|attr` selects any namespace, and `|attr` selects the no-namespace form
 // (equivalent to a bare `attr` in HTML, where all author-supplied attributes
-// are in no namespace by default). Mirrors Blink core/css/parser/
-// css_selector_parser.cc::ConsumeAttrName @ 4883d11fef4a.
+// are in no namespace by default). Mirrors Blink's
+// CSSSelectorParser::ConsumeAttribute (core/css/parser/
+// css_selector_parser.cc:1530-1584 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 //
 // Whitespace IS permitted around the operator and between brackets and the
 // attribute name (CSS Selectors 4 §6.1), but NOT inside the namespace prefix
@@ -4263,34 +4303,92 @@ func parseSelectorPart(s string) SelectorPart {
 // whitespace; this function handles operator-adjacent whitespace via
 // strings.TrimSpace.
 func parseAttributeSelector(s string) AttributeSelector {
-	// `|=` is a value-match operator (lang-hyphen). Distinguish it from the
-	// namespace prefix `|attr` by requiring the `|` to be followed by `=`.
-	// Look for ` |=` or `=` first; otherwise `|` at the start of the name
-	// is the no-namespace prefix.
-	operators := []string{"^=", "$=", "*=", "~=", "|=", "="}
-
-	for _, op := range operators {
-		if idx := strings.Index(s, op); idx != -1 {
-			name := strings.TrimSpace(s[:idx])
-			value := strings.TrimSpace(s[idx+len(op):])
-			// Remove quotes from value
-			value = strings.Trim(value, `"'`)
-			// Handle CSS escape sequences (e.g., second\ two → second two)
-			value = strings.ReplaceAll(value, `\ `, " ")
-			return AttributeSelector{
-				Name:     normalizeAttrName(name),
-				Operator: op,
-				Value:    value,
-			}
+	// The operator ends at the first `=` outside strings and escapes; a
+	// `^ $ * ~ |` right before it is part of it (`|=` is lang-hyphen, a
+	// `|` elsewhere is the namespace bar).
+	eq := indexTopLevel(s, '=')
+	if eq < 0 {
+		// No operator, just attribute name (existence check)
+		return AttributeSelector{
+			Name:     normalizeAttrName(trimCSSSpace(s)),
+			Operator: "",
+			Value:    "",
 		}
 	}
-
-	// No operator, just attribute name (existence check)
-	return AttributeSelector{
-		Name:     normalizeAttrName(strings.TrimSpace(s)),
-		Operator: "",
-		Value:    "",
+	op, nameEnd := "=", eq
+	if eq > 0 && !escapeEndsAt(s, eq) && strings.IndexByte("^$*~|", s[eq-1]) >= 0 {
+		op, nameEnd = s[eq-1:eq+1], eq-1
 	}
+	value, ok := attributeSelectorValue(s[eq+1:])
+	if !ok {
+		// A bad string is no value: ConsumeAttribute rejects the selector
+		// (css_selector_parser.cc:1567-1571 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An attribute with no
+		// name matches no element.
+		return AttributeSelector{}
+	}
+	return AttributeSelector{
+		Name:     normalizeAttrName(trimCSSSpace(s[:nameEnd])),
+		Operator: op,
+		Value:    value,
+	}
+}
+
+// trimCSSSpace trims CSS whitespace from both ends of s, keeping a
+// trailing space that an escape covers (`a\ ` is the ident `a `).
+func trimCSSSpace(s string) string {
+	start := 0
+	for start < len(s) && isCSSWhitespace(s[start]) {
+		start++
+	}
+	end := start
+	for i := start; i < len(s); {
+		if n := escapeLen(s, i); n > 0 {
+			i += n
+			end = i
+			continue
+		}
+		if !isCSSWhitespace(s[i]) {
+			end = i + 1
+		}
+		i++
+	}
+	return s[start:end]
+}
+
+// escapeEndsAt reports whether an escape in s ends right before s[end], so
+// the byte before end is escaped, not syntax.
+func escapeEndsAt(s string, end int) bool {
+	for k := 0; k < end; {
+		if n := escapeLen(s, k); n > 0 {
+			if k+n == end {
+				return true
+			}
+			k += n
+			continue
+		}
+		k++
+	}
+	return false
+}
+
+// attributeSelectorValue is the value an attribute selector's value token
+// spells: a string token's value or an ident's name, escapes resolved;
+// false for a bad string
+// (CSSSelectorParser::ConsumeAttribute takes the kStringToken or
+// kIdentToken value, core/css/parser/css_selector_parser.cc:1530-1584 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func attributeSelectorValue(v string) (string, bool) {
+	for v != "" && isCSSWhitespace(v[0]) {
+		v = v[1:]
+	}
+	if v != "" && (v[0] == '"' || v[0] == '\'') {
+		// The string token is read untrimmed: a newline before `]`
+		// still makes it bad.
+		value, _, ok := consumeStringToken(v[1:], v[0])
+		return value, ok
+	}
+	return unescapeName(trimCSSSpace(v)), true
 }
 
 // normalizeAttrName handles the namespace prefix on attribute selectors.
@@ -4307,28 +4405,29 @@ func parseAttributeSelector(s string) AttributeSelector {
 // to `|` and return the name unchanged so it won't match anything (the
 // invalid selector is silently skipped, mirroring Blink's parser-reject).
 //
-// Mirrors Blink core/css/parser/css_selector_parser.cc::ConsumeAttrName
-// @ 4883d11fef4a.
+// Mirrors Blink's CSSSelectorParser::ConsumeAttribute (core/css/parser/
+// css_selector_parser.cc:1530-1584 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func normalizeAttrName(name string) string {
-	idx := strings.Index(name, "|")
+	// The bar is a namespace bar only unescaped: `[\|b]` names `|b`.
+	idx := indexTopLevel(name, '|')
 	if idx < 0 {
-		return name
+		return unescapeName(name)
 	}
 	// Whitespace adjacent to the bar makes the selector invalid.
 	if idx > 0 && name[idx-1] == ' ' {
-		return name
+		return unescapeName(name)
 	}
 	if idx+1 < len(name) && name[idx+1] == ' ' {
-		return name
+		return unescapeName(name)
 	}
 	prefix := name[:idx]
 	local := name[idx+1:]
 	switch prefix {
 	case "", "*":
 		// `|attr` and `*|attr` — match the bare attribute name in HTML.
-		return local
+		return unescapeName(local)
 	}
-	// Named-namespace prefix: keep as-is. With no @namespace prefix map
+	// Named-namespace prefix: keep as written. With no @namespace prefix map
 	// (only the default namespace is recorded, Stylesheet.DefaultNamespace)
 	// the selector matches nothing, which is the correct behavior for an
 	// unregistered prefix per CSS Namespaces 3 §6.2.
@@ -5038,14 +5137,15 @@ func unescapeName(s string) string {
 	}
 	var b strings.Builder
 	for i := 0; i < len(s); {
-		if s[i] != '\\' || i+1 >= len(s) {
+		n := escapeLen(s, i)
+		if n == 0 {
 			b.WriteByte(s[i])
 			i++
 			continue
 		}
-		r, n := consumeEscape(s[i+1:])
+		r, _ := consumeEscape(s[i+1:])
 		b.WriteRune(r)
-		i += 1 + n
+		i += n
 	}
 	return b.String()
 }

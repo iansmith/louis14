@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"image"
+	"image/color"
 	"testing"
 
 	"louis14/pkg/render"
@@ -130,18 +131,23 @@ func TestDecorationLine_UprightVerticalDouble(t *testing.T) {
 // in Chrome 2026-11-13: a 40px Ahem column at x 100-140 with 6px lines and
 // a 10px offset has its underline at x 83-88 and its line-through at x
 // 116-121.
+//
+// Mixed orientation keeps the central baseline, so Chrome places a rotated
+// run's lines identically (TestDecorationLine_VerticalUnderlinePosition).
 func TestDecorationLine_UprightVerticalPlacement(t *testing.T) {
-	for _, wm := range []string{"vertical-rl", "vertical-lr"} {
-		for _, c := range []struct {
-			line   string
-			x0, x1 int
-		}{{"underline", 83, 88}, {"line-through", 116, 121}} {
-			img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
-				`<div style="position:absolute;left:100px;top:10px;writing-mode:`+wm+`;text-orientation:upright;font:40px/40px Ahem;color:white;`+
-				`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
-			first, last := darkColumnSpan(img, 60)
-			if first != c.x0 || last != c.x1 {
-				t.Errorf("%s %s: dark x %d-%d, want Chrome's %d-%d", wm, c.line, first, last, c.x0, c.x1)
+	for _, orientation := range []string{"upright", "mixed"} {
+		for _, wm := range []string{"vertical-rl", "vertical-lr"} {
+			for _, c := range []struct {
+				line   string
+				x0, x1 int
+			}{{"underline", 83, 88}, {"line-through", 116, 121}} {
+				img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+					`<div style="position:absolute;left:100px;top:10px;writing-mode:`+wm+`;text-orientation:`+orientation+`;font:40px/40px Ahem;color:white;`+
+					`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
+				first, last := darkColumnSpan(img, 60)
+				if first != c.x0 || last != c.x1 {
+					t.Errorf("%s %s %s: dark x %d-%d, want Chrome's %d-%d", orientation, wm, c.line, first, last, c.x0, c.x1)
+				}
 			}
 		}
 	}
@@ -263,10 +269,14 @@ func assertWaveInk(t *testing.T, img image.Image, x, y int, why string) {
 // the overline's geometry from the em box's top, keeping its
 // text-underline-offset, and the overline swaps to the under side without
 // one (flip_underline_and_overline_, :224-235; ComputeUnderlineLineData /
-// ComputeOverlineLineData, :335-377). Measured in Chrome 2026-11-13 on a
-// 40px Ahem column at x 100-140 with 6px lines and a 10px offset.
-func TestDecorationLine_UprightUnderlinePosition(t *testing.T) {
-	for _, c := range []struct {
+// ComputeOverlineLineData, :335-377). Mixed orientation, whose Latin runs
+// rotate, keeps the central baseline and paints the same line-relative
+// geometry under the same rotation (TextFragmentPainter::Paint,
+// core/paint/text_fragment_painter.cc:369-379), so Chrome draws every case
+// identically there. Measured in Chrome 2026-11-13 on a 40px Ahem column at
+// x 100-140 with 6px lines and a 10px offset.
+func TestDecorationLine_VerticalUnderlinePosition(t *testing.T) {
+	cases := []struct {
 		name, wm, lang, line, pos string
 		x0, x1                    int
 	}{
@@ -279,13 +289,16 @@ func TestDecorationLine_UprightUnderlinePosition(t *testing.T) {
 		{"zh stays under", "vertical-rl", "zh", "underline", "auto", 83, 88},
 		{"vertical-lr left stays under", "vertical-lr", "en", "underline", "left", 83, 88},
 		{"vertical-lr right goes over", "vertical-lr", "en", "underline", "right", 151, 156},
-	} {
-		img := render.RenderPage(t, `<!DOCTYPE html><html lang="`+c.lang+`"><body style="margin:0">`+
-			`<div style="position:absolute;left:100px;top:10px;writing-mode:`+c.wm+`;text-orientation:upright;font:40px/40px Ahem;color:white;`+
-			`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-underline-position:`+c.pos+`;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
-		first, last := darkColumnSpan(img, 60)
-		if first != c.x0 || last != c.x1 {
-			t.Errorf("%s: dark x %d-%d, want Chrome's %d-%d", c.name, first, last, c.x0, c.x1)
+	}
+	for _, orientation := range []string{"upright", "mixed"} {
+		for _, c := range cases {
+			img := render.RenderPage(t, `<!DOCTYPE html><html lang="`+c.lang+`"><body style="margin:0">`+
+				`<div style="position:absolute;left:100px;top:10px;writing-mode:`+c.wm+`;text-orientation:`+orientation+`;font:40px/40px Ahem;color:white;`+
+				`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-underline-position:`+c.pos+`;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
+			first, last := darkColumnSpan(img, 60)
+			if first != c.x0 || last != c.x1 {
+				t.Errorf("%s %s: dark x %d-%d, want Chrome's %d-%d", orientation, c.name, first, last, c.x0, c.x1)
+			}
 		}
 	}
 }
@@ -304,4 +317,117 @@ func TestDecorationLine_SkipInkDilatesByThickness(t *testing.T) {
 	if first != 56 || last != 83 {
 		t.Errorf("underline kept x %d-%d, want Chrome's 56-83", first, last)
 	}
+}
+
+// A mixed-orientation run's rotated glyphs skip ink, an upright run's don't:
+// Blink computes intercepts only for blobs that aren't upright
+// (InterceptsFromBlobs, platform/fonts/font.cc:161-162 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). With a -15px offset a 6px
+// underline crosses "X X"'s two 40px Ahem glyphs (y 10-50, 90-130), so on
+// the mixed run only the stretch beside the space paints. Measured in
+// Chrome 2026-11-13: x 109-114 from y 56 to 83 when mixed, unbroken when
+// upright.
+func TestDecorationLine_MixedVerticalSkipsInk(t *testing.T) {
+	page := func(orientation string) string {
+		return `<!DOCTYPE html><html lang="en"><body style="margin:0">` +
+			`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:` + orientation + `;font:40px/40px Ahem;color:transparent;` +
+			`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:-15px">X X</div></body></html>`
+	}
+	mixed := render.RenderPage(t, page("mixed"), 250, 160)
+	assertPixel(t, mixed, 111, 30, white, "mixed: skipped across the first glyph")
+	assertPixel(t, mixed, 111, 55, white, "mixed: the skip ends past y 55")
+	assertPixel(t, mixed, 111, 56, black, "mixed: the line beside the space starts at y 56")
+	assertPixel(t, mixed, 111, 83, black, "mixed: and runs to y 83")
+	assertPixel(t, mixed, 111, 84, white, "mixed: skipped again from y 84")
+	upright := render.RenderPage(t, page("upright"), 250, 160)
+	assertPixel(t, upright, 111, 30, black, "upright: no skip across the glyph")
+	assertPixel(t, upright, 111, 70, black, "upright: beside the space too")
+}
+
+// A vertical run's under- and overlines paint before its glyphs and its
+// line-through after (TextFragmentPainter::Paint, core/paint/
+// text_fragment_painter.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b:
+// PaintDecorationsExceptLineThrough before the text, PaintDecorationLineThrough
+// after), so green glyphs cover an underline pulled into them. Chrome
+// 2026-11-13: the line at x 109-114 stays green over the glyphs, mixed or
+// upright.
+func TestDecorationLine_VerticalUnderlinePaintsBeneathGlyphs(t *testing.T) {
+	green := color.RGBA{0, 255, 0, 255}
+	for _, orientation := range []string{"mixed", "upright"} {
+		img := render.RenderPage(t, `<!DOCTYPE html><html lang="en"><body style="margin:0">`+
+			`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:`+orientation+`;font:40px/40px Ahem;color:#0f0;`+
+			`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:-15px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
+		assertPixel(t, img, 111, 30, green, orientation+": the glyph covers the underline")
+		assertPixel(t, img, 111, 70, green, orientation+": and again over the second glyph")
+	}
+}
+
+// A rotated run skips ink only where its line crosses the glyphs' ink, not
+// anywhere in the line box: an underline in the half-leading of a
+// line-height: 100px column runs on unbroken (ClipDecorationLine finds no
+// intercepts there). Chrome 2026-11-13: x 118-123, past both glyphs.
+func TestDecorationLine_MixedSkipInkOnlyAcrossGlyphInk(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html lang="en"><body style="margin:0">`+
+		`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:mixed;font:40px/100px Ahem;color:transparent;`+
+		`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:5px">X X</div></body></html>`, 300, 160)
+	for _, y := range []int{30, 70, 110} {
+		assertPixel(t, img, 120, y, black, "the underline in the half-leading, unbroken")
+	}
+}
+
+// A rotated run's decoration spans its inline extent, letter-spacing
+// included (the text fragment's inline size). Chrome 2026-11-13: with
+// letter-spacing: 10px "XXX" runs y 10-159.
+func TestDecorationLine_MixedDecorationSpansLetterSpacing(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html lang="en"><body style="margin:0">`+
+		`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:mixed;font:40px/40px Ahem;color:transparent;letter-spacing:10px;`+
+		`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 260)
+	assertPixel(t, img, 85, 159, black, "the underline reaches y 159")
+	assertPixel(t, img, 85, 160, white, "and stops there")
+}
+
+// A text decoration spans its text fragment's laid-out inline size, not a
+// re-measure of its text (TextDecorationPainter::UpdateDecorationInfo passes
+// decoration_rect.InlineSize(), core/paint/text_decoration_painter.cc:86-96
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a justified space's
+// expansion and a font-size-adjusted run are underlined across their whole
+// width. Chrome 2026-11-13: a 100px justified "X X" is underlined x 0-99,
+// with or without font-size-adjust: 0.25.
+func TestDecorationLine_SpansFragmentInlineSize(t *testing.T) {
+	green := color.RGBA{0, 128, 0, 255}
+	for _, adjust := range []string{"none", "0.25"} {
+		img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0"><div style="position:absolute;top:50px;left:0;line-height:100px">`+
+			`<u style="display:inline-block;font:20px/1 Ahem;width:100px;text-align-last:justify;color:transparent;text-decoration:green underline;text-decoration-skip-ink:none;text-underline-offset:0px;text-decoration-thickness:20px;font-size-adjust:`+adjust+`">X X</u>`+
+			`</div></body></html>`, 200, 200)
+		for _, x := range []int{5, 50, 70, 99} {
+			assertPixel(t, img, x, 115, green, "font-size-adjust: "+adjust+": the underline across the justified box")
+		}
+		assertPixel(t, img, 100, 115, white, "font-size-adjust: "+adjust+": and no further")
+	}
+}
+
+// A selection splits a text fragment into segments that paint separately,
+// but its decorations still span the fragment's inline size once, unbroken
+// at the selection's edges and no further, letter-spacing included
+// (TextDecorationPainter::UpdateDecorationInfo,
+// core/paint/text_decoration_painter.cc:86-96 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Chrome 2026-11-13: 20px
+// "XXXX" with letter-spacing: 10px and characters 1-3 selected is
+// underlined x 100-219 without a break. louis14's fragment ends at x 209,
+// short of the last character's letter-spacing (LOU-1071), so the end is
+// checked there (LOU-1071 re-pins it to x 219); the edges at x 130 and
+// 190 are this test's point.
+func TestDecorationLine_SelectionSegmentsKeepOneUnderline(t *testing.T) {
+	img, _ := renderScripted(t, `<!DOCTYPE html><style>
+	body { margin: 0 }
+	#d { position: absolute; left: 100px; top: 10px; font: 20px/20px Ahem; color: transparent; letter-spacing: 10px;
+	     text-decoration: underline solid black; text-decoration-thickness: 4px; text-underline-offset: 2px; text-decoration-skip-ink: none }
+	#d::selection { background: transparent; color: black }
+</style><div id="d">XXXX</div>
+<script>const t = document.getElementById("d").firstChild; const r = document.createRange(); r.setStart(t, 1); r.setEnd(t, 3); getSelection().removeAllRanges(); getSelection().addRange(r);</script>`,
+		300, 80, render.WithEditingState())
+	for _, x := range []int{100, 129, 130, 131, 189, 190, 191, 209} {
+		assertPixel(t, img, x, 31, black, "the underline runs on across the selection's edges")
+	}
+	assertPixel(t, img, 225, 31, white, "and doesn't overshoot the fragment")
 }

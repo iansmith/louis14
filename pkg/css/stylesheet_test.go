@@ -271,6 +271,9 @@ func TestTopLevelCommaBlocks(t *testing.T) {
 		{"a {b, c}, d", []string{"a {b, c}", "d"}},
 		{"([)], x", []string{"([)], x"}},
 		{`a\, b, c`, []string{`a\, b`, "c"}},
+		// Only CSS whitespace is trimmed: U+00A0 is none (CSS Syntax §4.2),
+		// so a part keeps an edge NBSP.
+		{"a\u00a0, \u00a0b", []string{"a\u00a0", "\u00a0b"}},
 	} {
 		if got := SplitTopLevelCommas(tc.in); !slices.Equal(got, tc.want) {
 			t.Errorf("SplitTopLevelCommas(%q) = %q, want %q", tc.in, got, tc.want)
@@ -287,5 +290,16 @@ func TestTopLevelCommaBlocks(t *testing.T) {
 		if got := indexTopLevel(tc.in, ','); got != tc.want {
 			t.Errorf("indexTopLevel(%q, ',') = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+// A backslash at the end of input is a valid escape of U+FFFD
+// (TwoCharsAreValidEscape is false only before a newline; ConsumeEscape
+// returns U+FFFD at EOF, core/css/parser/css_tokenizer.cc:214-215, 689-691
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestTrailingBackslashIsReplacementChar(t *testing.T) {
+	sel := ParseSelector(`#a\`)
+	if len(sel.Parts) != 1 || sel.Parts[0].ID != "a\uFFFD" {
+		t.Errorf(`#a\ parts = %+v, want id "a\uFFFD"`, sel.Parts)
 	}
 }

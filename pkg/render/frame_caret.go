@@ -164,7 +164,7 @@ func (r *Renderer) caretAtTextOffset(t *html.Node, offset int) *frameCaret {
 	shape := caretShapeFromStyle(tb.Style)
 	vertical := tb.IsVerticalText
 	logical := tb.Text
-	ltr := tb.BidiLevel%2 == 0
+	ltr := layout.DirectionFromLevel(tb.BidiLevel) == layout.DirectionLTR
 	if !ltr {
 		logical = layout.ReverseAndMirrorRunes(logical)
 	}
