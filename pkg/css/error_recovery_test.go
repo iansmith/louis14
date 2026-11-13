@@ -1,9 +1,16 @@
 package css
 
-import "testing"
+import (
+	"slices"
+	"strings"
+	"testing"
+)
 
 // TestErrorRecovery_InvalidSelectors verifies that rules with invalid selectors
-// are silently skipped while valid rules are still parsed.
+// are dropped and the valid rules Blink keeps are still parsed.
+//
+// Blink drops these as TestStrayCloseBraceJoinsNextPrelude cites: an
+// unclosed `[` swallows the rest of the sheet.
 func TestErrorRecovery_InvalidSelectors(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -26,8 +33,8 @@ func TestErrorRecovery_InvalidSelectors(t *testing.T) {
 		{
 			name:          "unbalanced bracket in selector",
 			css:           `[} { color: red; } p { color: green; }`,
-			expectedRules: 1,
-			description:   "rule with [} selector skipped, p rule kept",
+			expectedRules: 0,
+			description:   "the unclosed [ swallows the rest, p rule included",
 		},
 		{
 			name:          "empty selector",
@@ -38,8 +45,8 @@ func TestErrorRecovery_InvalidSelectors(t *testing.T) {
 		{
 			name:          "valid rules survive among invalid ones",
 			css:           `body { color: red; } [} { bad: true; } h1 { font-size: 20px; }`,
-			expectedRules: 2,
-			description:   "body and h1 rules kept, invalid one skipped",
+			expectedRules: 1,
+			description:   "body kept; the unclosed [ swallows the rest, h1 included",
 		},
 	}
 
@@ -181,9 +188,12 @@ func TestErrorRecovery_UnclosedBlocks(t *testing.T) {
 			expectedRules: 2,
 		},
 		{
-			name:          "extra closing brace recovers",
+			// The stray `}` joins p's prelude, `} p`, no valid selector
+			// (CSSParserImpl::ConsumeRuleList, css_parser_impl.cc:748-791 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			name:          "extra closing brace invalidates the next rule",
 			css:           `} p { color: red; }`,
-			expectedRules: 1,
+			expectedRules: 0,
 		},
 	}
 
@@ -234,8 +244,12 @@ func TestErrorRecovery_UnclosedStrings(t *testing.T) {
 	}
 }
 
-// TestErrorRecovery_Acid2Patterns tests specific patterns from the Acid2 test
-// that must be silently ignored.
+// TestErrorRecovery_Acid2Patterns tests malformed rules in the style of the
+// Acid2 test that must be silently ignored. The `[}` here is not in Acid2
+// itself; as in Blink, its unclosed `[` swallows the rest of the sheet.
+//
+// Blink drops these as TestStrayCloseBraceJoinsNextPrelude cites: an
+// unclosed `[` swallows the rest of the sheet.
 func TestErrorRecovery_Acid2Patterns(t *testing.T) {
 	// This CSS simulates a mix of valid and intentionally malformed rules
 	// similar to what Acid2 includes.
@@ -270,9 +284,9 @@ func TestErrorRecovery_Acid2Patterns(t *testing.T) {
 		t.Fatalf("ParseStylesheet returned error: %v", err)
 	}
 
-	// We expect exactly 3 valid rules: .eyes, .nose, .mouth
-	if len(ss.Rules) != 3 {
-		t.Errorf("expected 3 rules, got %d", len(ss.Rules))
+	// Only .eyes: the unclosed `[` swallows .nose and .mouth.
+	if len(ss.Rules) != 1 {
+		t.Errorf("expected 1 rule (.eyes), got %d", len(ss.Rules))
 		for i, r := range ss.Rules {
 			t.Logf("  rule %d: selector=%q declarations=%v", i, r.Selector.Raw, r.Declarations)
 		}
@@ -328,4 +342,56 @@ func TestIsValidSelector(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStrayCloseBraceJoinsNextPrelude: a stray top-level `}` is no rule
+// boundary (CSSParserImpl::ConsumeRuleList, css_parser_impl.cc:748-791 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), nor is a `;` outside an
+// at-rule: either is part of the next rule's prelude, which is then no valid
+// selector (ConsumeStyleRule reads the prelude to its `{`).
+//
+// Blink @ the same SHA: a `}` inside an open `[` is a plain token, not a block
+// end (CSSTokenizer::BlockEnd, css_tokenizer.cc:80-87), so ConsumeStyleRule's
+// error recovery (css_parser_impl.cc:2926-2946) skips for a top-level `{`
+// (CSSParserTokenStream::SkipUntilPeekedTypeIs, css_parser_token_stream.h:
+// 316-356) to EOF: an unclosed `[` swallows the rest of the sheet.
+//
+// The rules a parse keeps are the CSSOM rule list's (RuleTexts), so a
+// mutation's re-parse of that list keeps the same rules (LOU-923).
+func TestStrayCloseBraceJoinsNextPrelude(t *testing.T) {
+	for _, tc := range []struct {
+		name, css string
+		want      []string
+	}{
+		{"stray } then ;", `a{width:1px} };b, c{width:2px} d{width:3px}`, []string{"a", "d"}},
+		{"stray } before a list", `a{width:1px} }b, c{width:2px} d{width:3px}`, []string{"a", "d"}},
+		{"double }", `a{width:1px}} c{width:2px} d{width:3px}`, []string{"a", "d"}},
+		{"stray ;", `a{width:1px} ;b,c{width:2px}`, []string{"a"}},
+		{"; inside a prelude", `a{width:1px} b ; c{width:2px} d{width:3px}`, []string{"a", "d"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := mustParseSheet(t, tc.css, nil)
+			if got := ruleSelectors(ss); !slices.Equal(got, tc.want) {
+				t.Errorf("rules = %q, want %q", got, tc.want)
+			}
+			if d := ruleBySelector(ss, "d"); d != nil && d.Declarations["width"] != "3px" {
+				t.Errorf("d width = %q, want 3px", d.Declarations["width"])
+			}
+			reparsed, err := parseResolvedStylesheet(strings.Join(ss.RuleTexts, "\n"), NewParserContext(""))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ruleSelectors(reparsed); !slices.Equal(got, tc.want) {
+				t.Errorf("re-parsed rule list = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func ruleSelectors(ss *Stylesheet) []string {
+	var sels []string
+	for _, r := range ss.Rules {
+		sels = append(sels, r.Selector.Raw)
+	}
+	return sels
 }
