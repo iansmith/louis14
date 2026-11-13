@@ -393,24 +393,11 @@ func StripComments(css string) string {
 	var b strings.Builder
 	b.Grow(len(css))
 	i := 0
-	inString := byte(0)
 	for i < len(css) {
-		// Handle string literals
-		if inString != 0 {
-			b.WriteByte(css[i])
-			if css[i] == '\\' && i+1 < len(css) {
-				i++
-				b.WriteByte(css[i])
-			} else if css[i] == inString {
-				inString = 0
-			}
-			i++
-			continue
-		}
 		if css[i] == '"' || css[i] == '\'' {
-			inString = css[i]
-			b.WriteByte(css[i])
-			i++
+			end, _ := stringTokenEnd(css, i)
+			b.WriteString(css[i : end+1])
+			i = end + 1
 			continue
 		}
 		if i+1 < len(css) && css[i] == '/' && css[i+1] == '*' {
@@ -448,25 +435,13 @@ func stripTopLevelCDOTokens(css string) string {
 	braceDepth := 0
 	parenDepth := 0
 	bracketDepth := 0
-	inString := byte(0)
 	for i < len(css) {
 		ch := css[i]
-		if inString != 0 {
-			b.WriteByte(ch)
-			if ch == '\\' && i+1 < len(css) {
-				i++
-				b.WriteByte(css[i])
-			} else if ch == inString {
-				inString = 0
-			}
-			i++
-			continue
-		}
 		switch ch {
 		case '"', '\'':
-			inString = ch
-			b.WriteByte(ch)
-			i++
+			end, _ := stringTokenEnd(css, i)
+			b.WriteString(css[i : end+1])
+			i = end + 1
 			continue
 		case '{':
 			braceDepth++
@@ -536,8 +511,8 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 		// ... } ...)` has braces inside the prelude that are part of
 		// <general-enclosed>, not the body. indexTopLevelBrace tracks
 		// parens/strings to skip them.
-		bracePos := indexTopLevelBrace(part)
-		if bracePos < 0 {
+		bracePos, closePos, ok := blockBounds(part)
+		if !ok {
 			// No block — pass through (e.g., @layer statement)
 			result.WriteString(part)
 			result.WriteByte('\n')
@@ -545,10 +520,6 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 		}
 
 		sel := strings.TrimSpace(part[:bracePos])
-		closePos := lastCloseBrace(part)
-		if closePos < bracePos {
-			continue
-		}
 		body := part[bracePos+1 : closePos]
 
 		// Handle conditional at-rules nested inside a selector block. Per CSS
@@ -580,7 +551,9 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 					innerBlock.WriteString(parentSelector)
 					innerBlock.WriteString(" { ")
 					innerBlock.WriteString(flatDecls)
-					innerBlock.WriteString(" }\n")
+					// On its own line: a trailing bad string's newline,
+					// trimmed away with the declarations, must still end it.
+					innerBlock.WriteString("\n}\n")
 				}
 				// Recurse for any nested rules inside the at-rule body.
 				innerBlock.WriteString(expandNesting(nestedParts, parentSelector))
@@ -647,7 +620,9 @@ func writeBodySegments(b *strings.Builder, segments []bodySegment, declSel, chil
 			b.WriteString(declSel)
 			b.WriteString(" { ")
 			b.WriteString(seg.Text)
-			b.WriteString(" }\n")
+			// On its own line: a trailing bad string's newline, trimmed
+			// away with the declarations, must still end it.
+			b.WriteString("\n}\n")
 		} else {
 			b.WriteString(expandNesting(seg.Text, childParent))
 		}
@@ -689,9 +664,8 @@ func anchorScopeBody(segments []bodySegment) []bodySegment {
 		case !strings.HasPrefix(seg.Text, "@"):
 			segments[i].Text = scopedRuleText(seg.Text)
 		case isGroupingRule(seg.Text):
-			brace := indexTopLevelBrace(seg.Text)
-			end := strings.LastIndex(seg.Text, "}")
-			if brace < 0 || end < brace {
+			brace, end, ok := blockBounds(seg.Text)
+			if !ok {
 				continue
 			}
 			var b strings.Builder
@@ -813,20 +787,11 @@ func splitBodySegments(body string) []bodySegment {
 	depth := 0
 	start := 0
 	nestedBlockStart := -1
-	inString := false
-	var stringChar byte
 
 	for i := 0; i < len(body); i++ {
 		ch := body[i]
-		if inString {
-			if ch == stringChar && (i == 0 || body[i-1] != '\\') {
-				inString = false
-			}
-			continue
-		}
 		if ch == '"' || ch == '\'' {
-			inString = true
-			stringChar = ch
+			i, _ = stringTokenEnd(body, i)
 			continue
 		}
 		switch ch {
@@ -872,20 +837,11 @@ func separateDeclsAndNested(body string) (flatDecls, nestedParts string) {
 	depth := 0
 	start := 0
 	nestedBlockStart := -1 // tracks start of a nested block (selector position)
-	inString := false
-	var stringChar byte
 
 	for i := 0; i < len(body); i++ {
 		ch := body[i]
-		if inString {
-			if ch == stringChar && (i == 0 || body[i-1] != '\\') {
-				inString = false
-			}
-			continue
-		}
 		if ch == '"' || ch == '\'' {
-			inString = true
-			stringChar = ch
+			i, _ = stringTokenEnd(body, i)
 			continue
 		}
 		switch ch {
@@ -1247,20 +1203,9 @@ func splitRulesAt(css string, starts *[]int) []string {
 	depth := 0
 	parenDepth := 0
 	start := 0
-	inString := byte(0) // 0 = not in string, '"' or '\'' = in that string
 
 	for i := 0; i < len(css); i++ {
 		ch := css[i]
-
-		// Handle string literals — skip their contents
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(css) {
-				i++ // skip escaped character
-			} else if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 
 		// Handle backslash escapes outside strings (e.g., \} in property values)
 		if ch == '\\' && i+1 < len(css) {
@@ -1269,7 +1214,7 @@ func splitRulesAt(css string, starts *[]int) []string {
 		}
 
 		if ch == '"' || ch == '\'' {
-			inString = ch
+			i, _ = stringTokenEnd(css, i)
 			continue
 		}
 
@@ -1368,8 +1313,15 @@ func isValidSelector(s string) bool {
 	}
 	// Check for unbalanced brackets
 	bracketDepth := 0
-	for _, ch := range s {
-		switch ch {
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '"', '\'':
+			// A bad string makes the selector invalid; a `{` or `}` in a
+			// string is string text.
+			var end stringEnd
+			if i, end = stringTokenEnd(s, i); end != stringClosed {
+				return false
+			}
 		case '[':
 			bracketDepth++
 		case ']':
@@ -1392,9 +1344,8 @@ func isValidSelector(s string) bool {
 // groups into multiple rules with the same declarations.
 // e.g., "h1, h2, h3 { color: red }" → 3 separate rules.
 func parseRules(ruleStr string) ([]Rule, error) {
-	// Find the opening brace
-	bracePos := strings.Index(ruleStr, "{")
-	if bracePos == -1 {
+	bracePos, declEnd, ok := blockBounds(ruleStr)
+	if !ok {
 		return nil, fmt.Errorf("no opening brace found")
 	}
 
@@ -1412,12 +1363,7 @@ func parseRules(ruleStr string) ([]Rule, error) {
 	}
 
 	// Extract declarations (shared by all selectors)
-	declStart := bracePos + 1
-	declEnd := lastCloseBrace(ruleStr)
-	if declEnd < declStart {
-		declEnd = len(ruleStr)
-	}
-	declStr := ruleStr[declStart:declEnd]
+	declStr := ruleStr[bracePos+1 : declEnd]
 	declResult := parseDeclarations(declStr)
 
 	rules := make([]Rule, 0, len(selectors))
@@ -1444,21 +1390,12 @@ func parseRules(ruleStr string) ([]Rule, error) {
 func splitSelectorGroup(s string) []string {
 	var parts []string
 	depth := 0
-	inString := byte(0)
 	start := 0
 
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(s) {
-				i++
-			} else if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 		if ch == '"' || ch == '\'' {
-			inString = ch
+			i, _ = stringTokenEnd(s, i)
 			continue
 		}
 		if ch == '(' || ch == '[' {
@@ -1476,9 +1413,8 @@ func splitSelectorGroup(s string) []string {
 
 // parseRule parses a single CSS rule
 func parseRule(ruleStr string) (Rule, error) {
-	// Find the opening brace
-	bracePos := strings.Index(ruleStr, "{")
-	if bracePos == -1 {
+	bracePos, declEnd, ok := blockBounds(ruleStr)
+	if !ok {
 		return Rule{}, fmt.Errorf("no opening brace found")
 	}
 
@@ -1492,14 +1428,7 @@ func parseRule(ruleStr string) (Rule, error) {
 
 	selector := parseSelector(selectorStr)
 
-	// Extract declarations (between { and })
-	declStart := bracePos + 1
-	declEnd := lastCloseBrace(ruleStr)
-	if declEnd < declStart {
-		declEnd = len(ruleStr)
-	}
-
-	declStr := ruleStr[declStart:declEnd]
+	declStr := ruleStr[bracePos+1 : declEnd]
 	declResult := parseDeclarations(declStr)
 
 	return Rule{
@@ -1528,8 +1457,8 @@ func parseMediaRule(ruleStr string, ss *Stylesheet) []Rule {
 
 	// Find the opening brace, skipping braces that appear inside the prelude's
 	// parens (e.g. media-query value with a `<general-enclosed>` token).
-	bracePos := indexTopLevelBrace(ruleStr)
-	if bracePos == -1 {
+	bracePos, innerEnd, ok := blockBounds(ruleStr)
+	if !ok {
 		return rules
 	}
 
@@ -1545,13 +1474,7 @@ func parseMediaRule(ruleStr string, ss *Stylesheet) []Rule {
 	}
 
 	// Extract inner CSS (between outermost { and })
-	innerStart := bracePos + 1
-	innerEnd := lastCloseBrace(ruleStr)
-	if innerEnd <= innerStart {
-		return rules
-	}
-
-	innerCSS := ruleStr[innerStart:innerEnd]
+	innerCSS := ruleStr[bracePos+1 : innerEnd]
 
 	// Whether the @media's prelude is statically known to be false at parse
 	// time (e.g. `not all`, or `not screen` when we're rendering as screen).
@@ -1693,8 +1616,8 @@ func parseContainerRule(ruleStr string) []Rule {
 	rules := make([]Rule, 0)
 
 	// Find the opening brace, skipping braces inside the prelude's parens.
-	bracePos := indexTopLevelBrace(ruleStr)
-	if bracePos == -1 {
+	bracePos, innerEnd, ok := blockBounds(ruleStr)
+	if !ok {
 		return rules
 	}
 
@@ -1703,13 +1626,7 @@ func parseContainerRule(ruleStr string) []Rule {
 	containerQuery := parseContainerQuery(queryStr)
 
 	// Extract inner CSS (between outermost { and })
-	innerStart := bracePos + 1
-	innerEnd := lastCloseBrace(ruleStr)
-	if innerEnd <= innerStart {
-		return rules
-	}
-
-	innerCSS := ruleStr[innerStart:innerEnd]
+	innerCSS := ruleStr[bracePos+1 : innerEnd]
 
 	// Parse inner rules
 	innerRules := splitRules(innerCSS)
@@ -1764,8 +1681,8 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string, ss *Stylesheet)
 	}
 
 	// Block form: "@layer name { ... }" or "@layer { ... }" (anonymous)
-	bracePos := strings.Index(rest, "{")
-	if bracePos == -1 {
+	bracePos, innerEnd, ok := blockBounds(rest)
+	if !ok {
 		return rules, layerNames
 	}
 
@@ -1783,14 +1700,7 @@ func parseLayerRule(ruleStr string, existingLayerOrder []string, ss *Stylesheet)
 		layerName = fmt.Sprintf("#anon-%d", anonymousLayerCounter.Add(1))
 	}
 
-	// Extract inner CSS (between outermost { and last })
-	innerStart := strings.Index(ruleStr, "{") + 1
-	innerEnd := lastCloseBrace(ruleStr)
-	if innerEnd <= innerStart {
-		return rules, layerNames
-	}
-
-	innerCSS := ruleStr[innerStart:innerEnd]
+	innerCSS := rest[bracePos+1 : innerEnd]
 
 	// Parse inner rules
 	innerRules := splitRules(innerCSS)
@@ -2315,18 +2225,12 @@ func parseSupportsRule(ruleStr string, ss *Stylesheet) []Rule {
 	// Skip braces inside any `(`/`[` block; mirrors Blink's
 	// CSSParserImpl::ConsumeAtRule prelude/block split at SHA
 	// 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	braceIdx := indexTopLevelBrace(ruleStr)
-	if braceIdx < 0 {
+	braceIdx, innerEnd, ok := blockBounds(ruleStr)
+	if !ok {
 		return nil
 	}
 
 	conditionStr := strings.TrimSpace(ruleStr[len("@supports"):braceIdx])
-
-	// The block's end: the last `}` outside strings and comments.
-	innerEnd := lastCloseBrace(ruleStr)
-	if innerEnd <= braceIdx {
-		return nil
-	}
 	innerCSS := ruleStr[braceIdx+1 : innerEnd]
 
 	if !evaluateSupportsCondition(conditionStr) {
@@ -2694,22 +2598,16 @@ func hasBalancedBrackets(s string) bool {
 	parenDepth := 0
 	bracketDepth := 0
 	braceDepth := 0
-	inString := byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if inString != 0 {
-			if c == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if c == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch c {
 		case '"', '\'':
-			inString = c
+			// A bad string, or one end of input closes, is no
+			// well-formed value here.
+			var end stringEnd
+			if i, end = stringTokenEnd(s, i); end != stringClosed {
+				return false
+			}
 		case '(':
 			parenDepth++
 		case ')':
@@ -2733,7 +2631,7 @@ func hasBalancedBrackets(s string) bool {
 			braceDepth--
 		}
 	}
-	return inString == 0 && parenDepth == 0 && bracketDepth == 0 && braceDepth == 0
+	return parenDepth == 0 && bracketDepth == 0 && braceDepth == 0
 }
 
 // isValidCompoundSelector reports whether s is a valid CSS compound-selector
@@ -2772,22 +2670,10 @@ func isValidCompoundSelector(s string) bool {
 		case c == '[':
 			// Attribute selector — find matching `]`.
 			j := i + 1
-			inStr := byte(0)
 			for j < len(s) {
 				cc := s[j]
-				if inStr != 0 {
-					if cc == '\\' && j+1 < len(s) {
-						j += 2
-						continue
-					}
-					if cc == inStr {
-						inStr = 0
-					}
-					j++
-					continue
-				}
 				if cc == '"' || cc == '\'' {
-					inStr = cc
+					j, _ = stringTokenEnd(s, j)
 				} else if cc == ']' {
 					break
 				}
@@ -3083,15 +2969,14 @@ func functionalPseudoArg(pc, name string) string {
 // comment, -1 if none: the end of a rule's block as Blink's tokenizer sees
 // it, where a `}` inside a string token or a comment is no block end
 // (CSSTokenizer @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A string
-// token's extent is skipStringToken's: to its quote or, as a bad string,
+// token's extent is stringTokenEnd's: to its quote or, as a bad string,
 // to a newline.
 func lastCloseBrace(s string) int {
 	last := -1
 	for i := 0; i < len(s); i++ {
 		switch c := s[i]; {
 		case c == '"' || c == '\'':
-			n, _ := skipStringToken(s[i+1:], c)
-			i += n
+			i, _ = stringTokenEnd(s, i)
 		case c == '\\':
 			i++
 		case c == '/' && i+1 < len(s) && s[i+1] == '*':
@@ -3107,6 +2992,25 @@ func lastCloseBrace(s string) int {
 	return last
 }
 
+// blockBounds is where rule's block lies: openPos is its `{`, the first
+// outside a string and a `(` block (indexTopLevelBrace), and closePos its `}`,
+// the last outside a string and a comment (lastCloseBrace), or len(rule)
+// when end of input closes the block, as Blink consumes a qualified rule's
+// or an at-rule's block (CSSParserImpl::ConsumeQualifiedRule,
+// ConsumeAtRuleContents @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). ok is
+// false when rule has no block.
+func blockBounds(rule string) (openPos, closePos int, ok bool) {
+	openPos = indexTopLevelBrace(rule)
+	if openPos < 0 {
+		return -1, -1, false
+	}
+	closePos = lastCloseBrace(rule)
+	if closePos < openPos {
+		closePos = len(rule)
+	}
+	return openPos, closePos, true
+}
+
 // indexTopLevelBrace returns the byte index of the first `{` in s that lies
 // outside any `(` block and outside string literals, or -1 if none. Used to
 // split an at-rule's prelude from its body without being fooled by braces
@@ -3115,22 +3019,11 @@ func lastCloseBrace(s string) int {
 // splitRules' comment for rationale.
 func indexTopLevelBrace(s string) int {
 	parenDepth := 0
-	inString := byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if inString != 0 {
-			if c == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if c == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch c {
 		case '"', '\'':
-			inString = c
+			i, _ = stringTokenEnd(s, i)
 		case '(':
 			parenDepth++
 		case ')':
@@ -3418,23 +3311,12 @@ func SplitPriority(value string) (string, bool, bool) {
 // CDO `<!--` token per CSS Syntax §4.3.4) of s, or -1 if none.
 func lastTopLevelBang(s string) int {
 	depth := 0
-	inString := byte(0)
 	last := -1
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if inString != 0 {
-			if c == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if c == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch c {
 		case '"', '\'':
-			inString = c
+			i, _ = stringTokenEnd(s, i)
 		case '<':
 			// CSS Syntax §4.3.4: `<!--` is a single CDO-token. The `!` inside
 			// is part of the token, not a delim, so it must not register as a
@@ -3470,22 +3352,16 @@ func isValidDeclarationValue(s string) bool {
 	parenDepth := 0
 	bracketDepth := 0
 	braceDepth := 0
-	inString := byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if inString != 0 {
-			if c == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if c == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch c {
 		case '"', '\'':
-			inString = c
+			// A bad string, or one end of input closes, is no
+			// well-formed value here.
+			var end stringEnd
+			if i, end = stringTokenEnd(s, i); end != stringClosed {
+				return false
+			}
 		case '<':
 			// CSS Syntax §4.3.4: `<!--` is a single CDO-token; consume it as a
 			// unit so the `!` inside isn't treated as a delim. CDO tokens are
@@ -3527,7 +3403,7 @@ func isValidDeclarationValue(s string) bool {
 			}
 		}
 	}
-	if inString != 0 || parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
+	if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
 		return false
 	}
 	return true
@@ -3778,22 +3654,11 @@ func consumeBalancedParens(s string) (body, rest string, ok bool) {
 		return "", s, false
 	}
 	depth := 0
-	inString := byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if inString != 0 {
-			if c == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if c == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch c {
 		case '"', '\'':
-			inString = c
+			i, _ = stringTokenEnd(s, i)
 		case '(':
 			depth++
 		case ')':
@@ -3872,24 +3737,13 @@ func orResult(a, b supportsResult) supportsResult {
 // identifier character (avoids matching ":beforexyz" by chance).
 func findTopLevelPseudoElement(s, token string) int {
 	depth := 0
-	inString := byte(0)
 	tlen := len(token)
 	singleColon := strings.HasPrefix(token, ":") && !strings.HasPrefix(token, "::")
 	for i := 0; i+tlen <= len(s); i++ {
 		ch := s[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch ch {
 		case '"', '\'':
-			inString = ch
+			i, _ = stringTokenEnd(s, i)
 			continue
 		case '(', '[':
 			depth++
@@ -5013,23 +4867,14 @@ func parseMediaLength(val string) (float64, string) {
 func splitDeclarationParts(declStr string) []string {
 	var parts []string
 	start := 0
-	inString := byte(0)
 	parenDepth := 0
 	bracketDepth := 0
 	braceDepth := 0
 
 	for i := 0; i < len(declStr); i++ {
 		ch := declStr[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(declStr) {
-				i++ // skip escaped char
-			} else if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 		if ch == '"' || ch == '\'' {
-			inString = ch
+			i, _ = stringTokenEnd(declStr, i)
 			continue
 		}
 		// CSS Syntax §5.4.6: a `<declaration-value>` may contain any
@@ -6317,21 +6162,10 @@ func isValidCustomPropertyName(name string) bool {
 // at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f, which fail fast on a
 // malformed name token AND validate the fallback's token stream in one pass.
 func hasInvalidVarReference(value string) bool {
-	inString := byte(0)
 	for i := 0; i < len(value); i++ {
 		ch := value[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(value) {
-				i++
-				continue
-			}
-			if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 		if ch == '"' || ch == '\'' {
-			inString = ch
+			i, _ = stringTokenEnd(value, i)
 			continue
 		}
 		if ch == '(' && isVarFunctionAt(value, i) {
@@ -6406,32 +6240,21 @@ func isValidCustomPropertyValue(value string) bool {
 // topLevel is true the outer top-level checks apply; when false (recursing
 // into a var() fallback) the same rules apply to that fallback.
 func isValidDeclarationValueTokens(s string, topLevel bool) bool {
-	inString := byte(0)
 	parenDepth := 0
 	bracketDepth := 0
 	braceDepth := 0
 	i := 0
 	for i < len(s) {
 		ch := s[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(s) {
-				i += 2
-				continue
-			}
-			if ch == inString {
-				inString = 0
-			}
-			if ch == '\n' {
-				// Unescaped newline inside a string = <bad-string-token>.
-				return false
-			}
-			i++
-			continue
-		}
 		switch ch {
 		case '"', '\'':
-			inString = ch
-			i++
+			// A <bad-string-token>, or a string end of input closes, is
+			// no well-formed value here.
+			end, how := stringTokenEnd(s, i)
+			if how != stringClosed {
+				return false
+			}
+			i = end + 1
 		case '(':
 			// If the function name preceding `(` is `var` (case-insensitive),
 			// validate the fallback recursively against the same rules.
@@ -6510,7 +6333,7 @@ func isValidDeclarationValueTokens(s string, topLevel bool) bool {
 			i++
 		}
 	}
-	if inString != 0 || parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
+	if parenDepth != 0 || bracketDepth != 0 || braceDepth != 0 {
 		return false
 	}
 	return true
@@ -6561,32 +6384,21 @@ func isVarFunctionAt(s string, openIdx int) bool {
 // `var(--a, ])`.
 func closeUnmatchedTokens(s string) string {
 	stack := make([]byte, 0, 4)
-	inString := byte(0)
-	stringHasNewline := false
+	openQuote := byte(0) // the quote of a string end of input closes
+	sawBadString := false
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if ch == '\n' || ch == '\r' || ch == '\f' {
-				// CSS Syntax §4.3.5: a raw newline inside a string ends the
-				// string-token as a `<bad-string-token>`. The string is
-				// closed at the newline and the parser must treat the token
-				// as a parse error.
-				stringHasNewline = true
-				inString = 0
-				continue
-			}
-			if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch ch {
 		case '"', '\'':
-			inString = ch
+			// CSS Syntax §4.3.5: a raw newline inside a string ends the
+			// string-token as a `<bad-string-token>`, a parse error.
+			var end stringEnd
+			switch i, end = stringTokenEnd(s, i); end {
+			case stringBad:
+				sawBadString = true
+			case stringEOF:
+				openQuote = ch
+			}
 		case '(':
 			stack = append(stack, ')')
 		case '[':
@@ -6608,11 +6420,11 @@ func closeUnmatchedTokens(s string) string {
 	// newline-terminated → leave the bad token in place. Required by
 	// variable-reference-033 (EOF-close, fallback valid, var resolves) vs
 	// variable-reference-032 (newline-broken string, fallback invalid).
-	if inString != 0 && !stringHasNewline {
-		closed := append([]byte(s), inString)
+	if openQuote != 0 && !sawBadString {
+		closed := append([]byte(s), openQuote)
 		return closeUnmatchedTokens(string(closed))
 	}
-	if inString != 0 {
+	if openQuote != 0 {
 		// Bad-string-token: leave the bad token in place but still close
 		// any block-level `{` so the surrounding rule regains a proper
 		// boundary. `(` / `[` pushed after the bad token are inside it
@@ -6680,22 +6492,11 @@ func indexVarFunction(s string) int {
 // no match is found.
 func matchClosingParen(s string, openIdx int) int {
 	depth := 0
-	inString := byte(0)
 	for i := openIdx; i < len(s); i++ {
 		ch := s[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch ch {
 		case '"', '\'':
-			inString = ch
+			i, _ = stringTokenEnd(s, i)
 		case '(':
 			depth++
 		case ')':
@@ -6711,25 +6512,14 @@ func matchClosingParen(s string, openIdx int) int {
 // findTopLevelComma finds the index of the first comma at paren/bracket/brace
 // depth 0 (and outside strings). Returns -1 if none.
 func findTopLevelComma(s string) int {
-	inString := byte(0)
 	parenDepth := 0
 	bracketDepth := 0
 	braceDepth := 0
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 		switch ch {
 		case '"', '\'':
-			inString = ch
+			i, _ = stringTokenEnd(s, i)
 		case '(':
 			parenDepth++
 		case ')':
@@ -6770,9 +6560,8 @@ func SplitSelectorGroup(s string) []string {
 // parseFontFaceRule parses a @font-face { ... } rule string.
 func parseFontFaceRule(ruleStr string) *FontFaceRule {
 	// Extract the block between { and }
-	start := strings.Index(ruleStr, "{")
-	end := lastCloseBrace(ruleStr)
-	if start < 0 || end <= start {
+	start, end, ok := blockBounds(ruleStr)
+	if !ok {
 		return nil
 	}
 	block := ruleStr[start+1 : end]
@@ -6922,18 +6711,12 @@ func parseKeyframesRule(ruleStr string) (string, []KeyframeRule) {
 	}
 
 	// Find the opening brace — name is everything before it
-	bracePos := strings.Index(rest, "{")
-	if bracePos < 0 {
+	bracePos, innerEnd, ok := blockBounds(rest)
+	if !ok {
 		return "", nil
 	}
 	name := strings.TrimSpace(rest[:bracePos])
 	if name == "" {
-		return "", nil
-	}
-
-	// Extract the inner block (between outermost { and last })
-	innerEnd := lastCloseBrace(rest)
-	if innerEnd <= bracePos {
 		return "", nil
 	}
 	inner := rest[bracePos+1 : innerEnd]
@@ -6942,16 +6725,12 @@ func parseKeyframesRule(ruleStr string) (string, []KeyframeRule) {
 	var frames []KeyframeRule
 	for _, part := range splitRules(inner) {
 		part = strings.TrimSpace(part)
-		if !strings.Contains(part, "{") {
+		bp, declEnd, ok := blockBounds(part)
+		if !ok {
 			continue
 		}
-		bp := strings.Index(part, "{")
 		stop := strings.TrimSpace(part[:bp])
 		if stop == "" {
-			continue
-		}
-		declEnd := lastCloseBrace(part)
-		if declEnd <= bp {
 			continue
 		}
 		declStr := part[bp+1 : declEnd]
@@ -6974,17 +6753,11 @@ func parseCounterStyleRule(ruleStr string) CounterStyleRule {
 	ruleStr = strings.TrimSpace(ruleStr)
 
 	// Extract the name: everything between "@counter-style" and "{"
-	bracePos := strings.Index(ruleStr, "{")
-	if bracePos < 0 {
+	bracePos, innerEnd, ok := blockBounds(ruleStr)
+	if !ok {
 		return CounterStyleRule{}
 	}
 	nameStr := strings.TrimSpace(ruleStr[len("@counter-style"):bracePos])
-
-	// Extract the block body (between { and last })
-	innerEnd := lastCloseBrace(ruleStr)
-	if innerEnd <= bracePos {
-		return CounterStyleRule{}
-	}
 	body := ruleStr[bracePos+1 : innerEnd]
 
 	rule := CounterStyleRule{
