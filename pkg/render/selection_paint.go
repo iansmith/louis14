@@ -468,6 +468,13 @@ type selectionSegment struct {
 	// overwriting — the originating layer's shadows.
 	hasOwnTextShadow bool
 	textShadows      []css.TextShadow
+
+	// selectsSoftLineBreak: this segment holds the fragment's logical end
+	// and the selection continues past the soft line break after it, so
+	// its ::selection rect is widened by the font's space width
+	// (LayoutSelectionStatus.line_break == kSelected; see
+	// selectsSoftLineBreak).
+	selectsSoftLineBreak bool
 }
 
 // highlightColors bundles every override resolveHighlightColors extracts
@@ -624,16 +631,190 @@ func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []sele
 	if spans := targetTextOverlapsForTextNode(r.targetTextRanges, textNode, fragStart, fragEnd); len(spans) > 0 {
 		layers = append(layers, highlightLayer{id: highlightLayerName{kind: "target-text"}, spans: spans})
 	}
+	rtl := box.BidiLevel%2 == 1
+	breakSelected := false
 	if r.selectionRange != nil {
 		if selStart, selEnd, ok := selectionOverlapForTextNode(r.selectionRange, textNode, fragStart, fragEnd); ok {
 			layers = append(layers, highlightLayer{id: highlightLayerName{kind: "selection"}, spans: []highlightSpan{{start: selStart, end: selEnd}}})
+			// The selection reaches the fragment's logical end: its text
+			// end for LTR, its visual-order start for RTL.
+			reachesEnd := (!rtl && selEnd == len(text)) || (rtl && selStart == 0)
+			breakSelected = reachesEnd && r.selectsSoftLineBreak(box, textNode, fragEnd)
 		}
 	}
 	if len(layers) == 0 {
 		return whole
 	}
 
-	return r.highlightSegmentsFromLayers(box.Node, text, layers)
+	segs := r.highlightSegmentsFromLayers(box.Node, text, layers)
+	if breakSelected {
+		// The segment holding the fragment's logical end.
+		if rtl {
+			segs[0].selectsSoftLineBreak = true
+		} else {
+			segs[len(segs)-1].selectsSoftLineBreak = true
+		}
+	}
+	return segs
+}
+
+// selectsSoftLineBreak reports whether the selection covers the soft line
+// break after textBox, whose selected text reaches its logical end
+// (node-local byte offset fragEnd in textNode): Blink's
+// LayoutSelectionStatus.line_break == kSelected, the
+// `is_continuous && cursor.IsBeforeSoftLineBreak()` of
+// LayoutSelection::ComputeSelectionStatus
+// (core/editing/layout_selection.cc:695-760 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), with the
+// ShouldTruncateOverflowingText exclusion of
+// ExpandedSelectionRectForSoftLineBreakIfNeeded
+// (core/layout/inline/inline_cursor.cc:38-54, same SHA).
+//
+// is_continuous is `start_in_block <= fragment end < end_in_block` in the
+// block's text-content offsets, where the paint range ends in the last
+// selected laid-out text (LayoutSelection::Commit). The selected text
+// reaching the fragment's end gives the first half. louis14 has no
+// text-content offset mapping (no Blink analog for this stand-in; LOU-974),
+// so the second half is approximated from DOM order: on the block's last
+// line, whose last leaf ends the block's text content (collapsed trailing
+// white space is removed from it), the next rendered text after the line
+// must be selected; on an earlier line the selection must end after
+// (textNode, fragEnd).
+func (r *Renderer) selectsSoftLineBreak(textBox *layout.Box, textNode *html.Node, fragEnd int) bool {
+	line := containingLineBox(textBox)
+	if line == nil || !isBeforeSoftLineBreak(textBox, line) || blockFlowShouldTruncateOverflowingText(line) {
+		return false
+	}
+	rng := r.selectionRange
+	if isLastLineInBlock(line) {
+		block := line.Parent
+		if block == nil || (block.Style != nil && block.Style.IsAtomicInlineDisplay()) {
+			// IsLastLineInInlineBlock (inline_cursor.cc:351-365): Blink
+			// never selects the break after an inline-block's last line.
+			return false
+		}
+		next := r.nextRenderedTextAfter(textNode)
+		if next == nil {
+			return false
+		}
+		_, _, ok := selectionOverlapForTextNode(rng, next, 0, len(next.Text))
+		return ok
+	}
+	end, ok, excluded := nodeLocalBoundary(rng.EndContainer, rng.EndOffset, textNode, false)
+	if ok && rng.EndContainer == textNode {
+		return end > fragEnd
+	}
+	// The end boundary lies after textNode's subtree, or (an unrelated
+	// container) is treated as such, as selectionOverlapForTextNode does.
+	return !excluded
+}
+
+// nextRenderedTextAfter returns the first text node after n's subtree in
+// tree order that is laid out (its parent element has a box) and is not
+// all CSS document white space (space, tab, LF, FF, CR; not NBSP); nil if
+// there is none. Starting from the line's last leaf, this finds whether
+// any later selection leaf exists. Text is the only leaf considered: Blink's paint range can also end in a replaced
+// element or <br> (CanBeSelectionLeaf), and walks through display:contents
+// elements, which have no box here (LOU-974).
+func (r *Renderer) nextRenderedTextAfter(n *html.Node) *html.Node {
+	for ; n != nil && n.Parent != nil; n = n.Parent {
+		for _, sib := range n.Parent.Children[n.IndexInParent()+1:] {
+			if t := r.firstRenderedText(sib); t != nil {
+				return t
+			}
+		}
+	}
+	return nil
+}
+
+// firstRenderedText returns the first rendered text node in n's subtree in
+// tree order, as nextRenderedTextAfter defines rendered.
+func (r *Renderer) firstRenderedText(n *html.Node) *html.Node {
+	if n.Type == html.TextNode {
+		if _, laidOut := r.nodeBoxIndex[n.Parent]; laidOut && strings.Trim(n.Text, " \t\n\f\r") != "" {
+			return n
+		}
+		return nil
+	}
+	if _, laidOut := r.nodeBoxIndex[n]; !laidOut && n.Type == html.ElementNode {
+		return nil
+	}
+	for _, c := range n.Children {
+		if t := r.firstRenderedText(c); t != nil {
+			return t
+		}
+	}
+	return nil
+}
+
+// containingLineBox returns the line box textBox sits on: its nearest
+// IsLineBox ancestor, through any inline boxes (InlineCursor::
+// MoveToContainingLine).
+func containingLineBox(textBox *layout.Box) *layout.Box {
+	for b := textBox.Parent; b != nil; b = b.Parent {
+		if b.IsLineBox {
+			return b
+		}
+	}
+	return nil
+}
+
+// isBeforeSoftLineBreak mirrors InlineCursor::IsBeforeSoftLineBreak
+// (core/layout/inline/inline_cursor.cc:367-392 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), less its last-line-of-an-
+// inline-block exclusion (IsLastLineInInlineBlock, :351-365), which
+// selectsSoftLineBreak checks: the text fragment must be its line's last
+// logical leaf (MoveToLastLogicalLeaf,
+// :1107-1120 — the last child at every level of an LTR line, the first of
+// an RTL one, not descending into atomic inlines) with a resolved direction
+// equal to the line's base direction, its block's direction.
+//
+// Blink ends a forced-break line with a line-break item, so its text is
+// not the last leaf; the selected break item instead gets a space-width
+// rect of its own (CurrentLocalSelectionRectForText, :527-535), painting
+// the same band. louis14 emits no fragment for the break, so widening the
+// text stands in for it.
+func isBeforeSoftLineBreak(textBox, line *layout.Box) bool {
+	block := line.Parent
+	lineRTL := block != nil && block.Style != nil && block.Style.GetDirection() == css.DirectionRTL
+	leaf := line
+	for len(leaf.Children) > 0 && (leaf == line || leaf.Style == nil || !leaf.Style.IsAtomicInlineDisplay()) {
+		if lineRTL {
+			leaf = leaf.Children[0]
+		} else {
+			leaf = leaf.Children[len(leaf.Children)-1]
+		}
+	}
+	return leaf == textBox && lineRTL == (textBox.BidiLevel%2 == 1)
+}
+
+// isLastLineInBlock reports whether no line box follows line among its
+// block's children (InlineCursor::IsLastLineInInlineBlock's sibling walk,
+// which skips floats, out-of-flow boxes and list markers).
+func isLastLineInBlock(line *layout.Box) bool {
+	if line.Parent == nil {
+		return true
+	}
+	siblings := line.Parent.Children
+	for i := len(siblings) - 1; i >= 0 && siblings[i] != line; i-- {
+		if siblings[i].IsLineBox {
+			return false
+		}
+	}
+	return true
+}
+
+// blockFlowShouldTruncateOverflowingText is LayoutBlockFlow::
+// ShouldTruncateOverflowingText for line's block: the nearest ancestor with
+// a LayoutInputNode (an anonymous block has none and defers to its parent,
+// as LayoutInputNode.ShouldTruncateOverflowingText does).
+func blockFlowShouldTruncateOverflowingText(line *layout.Box) bool {
+	for b := line.Parent; b != nil; b = b.Parent {
+		if b.LayoutNode != nil {
+			return b.LayoutNode.ShouldTruncateOverflowingText()
+		}
+	}
+	return false
 }
 
 // highlightSegmentsFromLayers splits text at every layer's span boundary

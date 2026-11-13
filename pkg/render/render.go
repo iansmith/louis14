@@ -4785,11 +4785,18 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// see the sideways branch's "physical box already has
 		// Width=lineHeight, Height=textAdvance" comment a few hundred lines
 		// below).
+		advanceOrigin, advanceExtent := segBox.X, segWidth
+		if layer.IsVerticalText {
+			advanceOrigin = segBox.Y
+		}
+		if seg.selectsSoftLineBreak {
+			advanceOrigin, advanceExtent = r.widenForSoftLineBreak(box, fontID, advanceOrigin, advanceExtent)
+		}
 		var sx, sy, sw, sh float64
 		if layer.IsVerticalText {
-			sx, sy, sw, sh = pixelSnap(crossOrigin, segBox.Y, crossExtent, segWidth)
+			sx, sy, sw, sh = pixelSnap(crossOrigin, advanceOrigin, crossExtent, advanceExtent)
 		} else {
-			sx, sy, sw, sh = pixelSnap(segBox.X, crossOrigin, segWidth, crossExtent)
+			sx, sy, sw, sh = pixelSnap(advanceOrigin, crossOrigin, advanceExtent, crossExtent)
 		}
 
 		segLayer := *layer
@@ -4880,6 +4887,23 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		r.drawTextSegment(&segLayer)
 		r.dc.Pop()
 	}
+}
+
+// widenForSoftLineBreak widens a selected segment's background extent
+// along the advance axis by the font's space width at its inline end, so a
+// selection running past a soft line break visibly reaches it
+// (ExpandedSelectionRectForSoftLineBreakIfNeeded,
+// core/layout/inline/inline_cursor.cc:38-54 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, which grows the logical inline
+// size before the rect is snapped; SpaceWidth is the space glyph's advance,
+// without letter- or word-spacing). The inline end is the advance-axis end
+// of LTR text and its start for RTL text.
+func (r *Renderer) widenForSoftLineBreak(box *layout.Box, fontID int32, origin, extent float64) (float64, float64) {
+	space := r.dc.MeasureText(" ", fontID)
+	if box.BidiLevel%2 == 1 {
+		origin -= space
+	}
+	return origin, extent + space
 }
 
 // segmentClipRect computes the integer-pixel clip bounds (minX, minY, maxX,
