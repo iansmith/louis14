@@ -191,12 +191,13 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		if _, ok := item.style.GetPercentage(blockSizeProp); ok {
 			needsRelayout = true
 		}
-		// An item whose block size stretches (its rows auto behaviour).
-		if item.rows.stretches() {
-			// Only stretch if item has auto block-size.
-			if _, ok := item.style.Get(blockSizeProp); !ok {
-				needsRelayout = true
-			}
+		// An item whose block size stretches: its rows auto behaviour
+		// stretches and its size in the grid's block axis is auto (stretch
+		// applies only to auto sizes).
+		blockSize, _ := item.style.Get(blockSizeProp)
+		stretchBlock := item.rows.stretches() && (blockSize == "" || blockSize == "auto")
+		if stretchBlock {
+			needsRelayout = true
 		}
 
 		if needsRelayout && itemBlock > 0 {
@@ -230,7 +231,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 				SetPercentageResolutionSize(LogicalSize{InlineSize: itemInline, BlockSize: availBlock}).
 				SetPercentageResolutionInlineSize(itemInline).
 				SetIsFixedInlineSize(stretchInline).
-				SetIsFixedBlockSize(item.rows.stretches()).
+				SetIsFixedBlockSize(stretchBlock).
 				Build()
 			item.result = layoutElement(gla.ctx, item.node, childSpace2)
 		}
