@@ -502,6 +502,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		IsRenderedLegend:              frag.IsRenderedLegend(),
 		AppliedTextDecorations:        frag.AppliedTextDecorations,
 		HasCollapsedBorders:           frag.HasCollapsedBorders,
+		TableGridRect:                 frag.TableGridRect,
 		TableCollapsedBorders:         frag.TableCollapsedBorders,
 		TableCollapsedBordersGeometry: frag.TableCollapsedBordersGeometry,
 		PaintGroup:                    frag.PaintGroup,
