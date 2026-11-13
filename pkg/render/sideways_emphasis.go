@@ -7,6 +7,7 @@ import "math"
 // the mark font's ascent, descent and buffer height.
 type sidewaysEmphasisGeometry struct {
 	boxLeft, boxWidth       float64
+	overAdjust              float64
 	markAscent, markDescent float64
 	annotH                  int
 }

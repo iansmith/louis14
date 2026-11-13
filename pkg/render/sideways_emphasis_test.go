@@ -18,11 +18,15 @@ import "testing"
 // L + B - rel + markAscent - annotH clockwise and at L + rel - markAscent
 // counter-clockwise, rel being the mark baseline less the fragment top.
 //
-// Fragment at L = 100, width B = 17; mark ascent 6.09375, descent 1.90625,
-// buffer 8 px: rel = floor(-1.90625) = -2.
+// The item's annotation ascent lowers the over offset by its em-height
+// adjustment (SetEmphasisMark, text_painter.cc:529, from
+// AdjustTextOverUnderOffsetsForEmHeight, core/layout/inline/ruby_utils.cc:
+// 36-79, same SHA). Liberation Serif 16px: fragment at L = 100, width
+// B = 17, adjustment floor(14 - 12.203125) = 1; mark ascent 6.09375,
+// descent 1.90625, buffer 8 px: rel = 1 + floor(-1.90625) = -1.
 func TestSidewaysEmphasisMarkScreenX(t *testing.T) {
 	g := sidewaysEmphasisGeometry{
-		boxLeft: 100, boxWidth: 17,
+		boxLeft: 100, boxWidth: 17, overAdjust: 1,
 		markAscent: 6.09375, markDescent: 1.90625, annotH: 8,
 	}
 	for _, tc := range []struct {
@@ -30,8 +34,8 @@ func TestSidewaysEmphasisMarkScreenX(t *testing.T) {
 		clockwise bool
 		want      float64
 	}{
-		{"clockwise", true, 100 + 17 + 2 + 6.09375 - 8},
-		{"counter-clockwise", false, 100 - 2 - 6.09375},
+		{"clockwise", true, 100 + 17 + 1 + 6.09375 - 8},
+		{"counter-clockwise", false, 100 - 1 - 6.09375},
 	} {
 		if got := g.screenX(tc.clockwise); got != tc.want {
 			t.Errorf("%s: screenX = %v, want %v", tc.name, got, tc.want)
