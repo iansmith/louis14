@@ -242,7 +242,7 @@ func (item *gridItem) setAlignmentFallback(forColumns, hasSynthesizedBaseline bo
 	if !hasSynthesizedBaseline || (!d.spansIntrinsicTrack && !d.spansFlexibleTrack) {
 		return
 	}
-	itemWDM := NewWritingDirectionMode(item.style)
+	itemWDM := item.itemWDM
 	// The baseline axis is the item's block axis when it is parallel to
 	// the grid and the axis is the rows, or orthogonal and the columns.
 	prop := logicalInlineSizeProperty(itemWDM)

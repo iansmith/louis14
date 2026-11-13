@@ -967,7 +967,7 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 			// baseline (:705-714).
 			var shim float64
 			if aligned && item.result != nil {
-				shim = baselines.baselineShim(item, false, item.baselineFragment(false).logicalBaseline(false, baselines.central(), isLast))
+				shim = baselines.baselineShim(item, false, item.baselineFragment(false).logicalBaseline(baselines.central(), isLast))
 			}
 			block := blockSize + margins.BlockStart + margins.BlockEnd + shim
 			edges += shim

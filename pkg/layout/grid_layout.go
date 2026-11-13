@@ -48,6 +48,8 @@ type gridItem struct {
 	// columns and rows are the item's alignment in each axis
 	// (gridItemAxisData), resolved when the item is collected.
 	columns, rows gridItemAxisData
+	// itemWDM is the item's own writing direction (wdm is the grid's).
+	itemWDM WritingDirectionMode
 }
 
 // Layout performs CSS Grid layout.
@@ -281,6 +283,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	colBaselines := gla.computeGridItemBaselines(items, true, numCols)
 	rowBaselines := gla.computeGridItemBaselines(items, false, numRows)
+	baselines := newGridBaselineAccumulator(wdm.UsesCentralBaselineWithStyle(gla.style))
+	contentStart := geom.Border.BlockStart + geom.Padding.BlockStart
 
 	for _, item := range items {
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
@@ -306,37 +310,19 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		relativeOffset := ComputeRelativeOffsetForBoxFragment(item.result.Fragment, wdm,
 			LogicalSize{InlineSize: itemInline, BlockSize: itemBlock})
 		builder.AddChildWithRelativeOffset(item.result.Fragment, offset, relativeOffset)
+		baselines.accumulate(item, contentStart+blockOffset)
 		builder.PropagateOOFPositionedInfo(item.result, item.style, offset, relativeOffset)
 	}
 
-	// Set first/last baseline from baseline-participating items in first/last rows.
-	// Mirrors Blink GridLayoutAlgorithm::SetBaselineFromItems @ 4883d11f.
-	// CSS Grid §7.1: first baseline = first row; last baseline = last row.
-	lastRow := numRows - 1
-	var gridFirstBL, gridLastBL float64
-	for _, item := range items {
-		if item.result.Baseline > 0 && item.rowStart == 0 {
-			bl := geom.Border.BlockStart + geom.Padding.BlockStart +
-				rowOffsets[0] + item.margins.BlockStart + item.result.Baseline
-			if gridFirstBL == 0 || bl < gridFirstBL {
-				gridFirstBL = bl
-			}
-		}
-		if item.result.Baseline > 0 && item.rowStart == lastRow {
-			bl := geom.Border.BlockStart + geom.Padding.BlockStart +
-				rowOffsets[lastRow] + item.margins.BlockStart + item.result.Baseline
-			if gridLastBL == 0 || bl < gridLastBL {
-				gridLastBL = bl
-			}
-		}
+	// Propagate the baselines (grid_layout_algorithm.cc:1938-1946 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), offsets from the grid's
+	// border-box block-start edge.
+	baselines.accumulateRows(contentStart, rowOffsets, rowSizes, rowBaselines)
+	if b, ok := baselines.firstBaseline(); ok {
+		builder.SetBaseline(b)
 	}
-	if gridFirstBL > 0 {
-		builder.SetBaseline(gridFirstBL)
-	}
-	if gridLastBL > 0 {
-		builder.SetLastBaseline(gridLastBL)
-	} else if gridFirstBL > 0 {
-		builder.SetLastBaseline(gridFirstBL)
+	if b, ok := baselines.lastBaseline(); ok {
+		builder.SetLastBaseline(b)
 	}
 
 	// Compute final block-size: the explicit one, else the intrinsic one,
@@ -487,6 +473,7 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 			rowEnd:   -1,
 			colSpan:  1,
 			rowSpan:  1,
+			itemWDM:  childWDM,
 			columns:  newGridItemAxisData(true, gla.style, wdm, childStyle, childWDM, gla.replacedHasNaturalSize(child, wdm, true)),
 			rows:     newGridItemAxisData(false, gla.style, wdm, childStyle, childWDM, gla.replacedHasNaturalSize(child, wdm, false)),
 		})

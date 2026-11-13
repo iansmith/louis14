@@ -56,10 +56,22 @@ func (b *gridTrackBaselines) setTrackBaseline(item *gridItem, forColumns bool, b
 type gridBaselineFragment struct {
 	item *gridItem
 	wd   WritingDirectionMode
+	// own: wd is the item's own writing mode, so its fragment's baselines
+	// can be read (LogicalBoxFragment::IsWritingModeEqual).
+	own bool
 }
 
 func (item *gridItem) baselineFragment(forColumns bool) gridBaselineFragment {
-	return gridBaselineFragment{item: item, wd: WritingDirectionMode{WM: item.axis(forColumns).baselineWritingMode, Dir: item.wdm.Dir}}
+	a := item.axis(forColumns)
+	return gridBaselineFragment{item: item, wd: WritingDirectionMode{WM: a.baselineWritingMode, Dir: item.wdm.Dir}, own: a.hasOwnBaselines}
+}
+
+// containerFragment is the item's fragment read in the grid's writing
+// direction: LogicalBoxFragment(container_writing_direction, fragment), as
+// PlaceGridItems reads it (grid_layout_algorithm.cc:1846-1849 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (item *gridItem) containerFragment() gridBaselineFragment {
+	return gridBaselineFragment{item: item, wd: item.wdm, own: item.itemWDM.WM == item.wdm.WM}
 }
 
 // blockSize is the fragment's size along the baseline writing direction's
@@ -74,9 +86,9 @@ func (f gridBaselineFragment) blockSize() float64 {
 // Mirrors LogicalBoxFragment::FirstBaseline / LastBaseline. A louis14
 // LayoutResult with a first baseline has a last one; a zero LastBaseline
 // means the first.
-func (f gridBaselineFragment) baseline(forColumns, isLast bool) (float64, bool) {
+func (f gridBaselineFragment) baseline(isLast bool) (float64, bool) {
 	r := f.item.result
-	if !f.item.axis(forColumns).hasOwnBaselines || !r.HasBaseline {
+	if !f.own || !r.HasBaseline {
 		return 0, false
 	}
 	b := r.Baseline
@@ -95,15 +107,23 @@ func (f gridBaselineFragment) baseline(forColumns, isLast bool) (float64, bool) 
 // (grid_layout_utils.cc:41-48) with FirstBaselineOrSynthesize /
 // LastBaselineOrSynthesize and SynthesizedBaseline (logical_box_fragment.h:
 // 33-78 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func (f gridBaselineFragment) logicalBaseline(forColumns, centralBaseline, isLast bool) float64 {
-	b, ok := f.baseline(forColumns, isLast)
-	if !ok {
-		return f.synthesizedLogicalBaseline(f.blockSize(), centralBaseline, isLast)
-	}
+func (f gridBaselineFragment) logicalBaseline(centralBaseline, isLast bool) float64 {
 	if isLast {
-		return f.blockSize() - b
+		return f.blockSize() - f.baselineOrSynthesize(centralBaseline, true)
 	}
-	return b
+	return f.baselineOrSynthesize(centralBaseline, false)
+}
+
+// baselineOrSynthesize is the fragment's first (last) baseline from its
+// block-start edge, synthesized from its border box when it has none.
+// Mirrors LogicalBoxFragment::FirstBaselineOrSynthesize /
+// LastBaselineOrSynthesize (logical_box_fragment.h:53-78 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (f gridBaselineFragment) baselineOrSynthesize(centralBaseline, isLast bool) float64 {
+	if b, ok := f.baseline(isLast); ok {
+		return b
+	}
+	return f.synthesizedLogicalBaseline(f.blockSize(), centralBaseline, false)
 }
 
 // synthesizedLogicalBaseline is the baseline synthesized for a border box
@@ -186,7 +206,7 @@ func computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int
 			continue
 		}
 		f := item.baselineFragment(forColumns)
-		_, hasBaseline := f.baseline(forColumns, false)
+		_, hasBaseline := f.baseline(false)
 		item.setAlignmentFallback(forColumns, !hasBaseline)
 		a := item.axis(forColumns)
 		if !a.isBaselineAligned() {
@@ -196,7 +216,7 @@ func computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int
 			b = newGridTrackBaselines(trackCount, centralBaseline)
 		}
 		isLast := a.alignment == AxisEdgeLastBaseline
-		b.setTrackBaseline(item, forColumns, item.extraMarginForBaseline(forColumns)+f.logicalBaseline(forColumns, centralBaseline, isLast))
+		b.setTrackBaseline(item, forColumns, item.extraMarginForBaseline(forColumns)+f.logicalBaseline(centralBaseline, isLast))
 	}
 	return b
 }
@@ -212,9 +232,123 @@ func (b *gridTrackBaselines) baselineOffset(item *gridItem, forColumns bool, are
 		return 0
 	}
 	delta := b.trackBaseline(item, forColumns) -
-		item.baselineFragment(forColumns).logicalBaseline(forColumns, b.centralBaseline, a.alignment == AxisEdgeLastBaseline)
+		item.baselineFragment(forColumns).logicalBaseline(b.centralBaseline, a.alignment == AxisEdgeLastBaseline)
 	if a.baselineGroup == BaselineGroupMajor {
 		return delta
 	}
 	return areaSize - delta - itemSize
+}
+
+// gridBaselineAccumulator collects a grid container's first and last
+// baselines while its items are placed: its first (last) row's major or
+// minor shared baseline, else the first-baseline-or-synthesized (last) of
+// the start-most (end-most) item. Mirrors GridBaselineAccumulator
+// (grid/grid_baseline_accumulator.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); offsets are from the grid's
+// border-box block-start edge.
+type gridBaselineAccumulator struct {
+	centralBaseline             bool
+	firstRow, lastRow           int // rows with content, -1 when none
+	firstMajor, firstMinor      *gridSetBaseline
+	lastMajor, lastMinor        *gridSetBaseline
+	firstFallbackItem           *gridItem
+	lastFallbackItem            *gridItem
+	firstFallback, lastFallback float64
+}
+
+type gridSetBaseline struct {
+	row      int
+	baseline float64
+}
+
+func newGridBaselineAccumulator(centralBaseline bool) *gridBaselineAccumulator {
+	return &gridBaselineAccumulator{centralBaseline: centralBaseline, firstRow: -1, lastRow: -1}
+}
+
+// accumulate records a placed item whose border box starts blockOffset
+// below the grid's block-start edge (GridBaselineAccumulator::Accumulate).
+func (a *gridBaselineAccumulator) accumulate(item *gridItem, blockOffset float64) {
+	f := item.containerFragment()
+	if a.firstFallbackItem == nil || item.startsBefore(a.firstFallbackItem) {
+		a.firstFallbackItem, a.firstFallback = item, blockOffset+f.baselineOrSynthesize(a.centralBaseline, false)
+	}
+	if a.lastFallbackItem == nil || item.endsAfter(a.lastFallbackItem) {
+		a.lastFallbackItem, a.lastFallback = item, blockOffset+f.baselineOrSynthesize(a.centralBaseline, true)
+	}
+	if a.firstRow < 0 || item.rowStart < a.firstRow {
+		a.firstRow = item.rowStart
+	}
+	if a.lastRow < 0 || item.rowEnd-1 > a.lastRow {
+		a.lastRow = item.rowEnd - 1
+	}
+}
+
+// accumulateRows records the rows' shared baselines, row i starting at
+// contentStart+rowOffsets[i] and rowSizes[i] long
+// (GridBaselineAccumulator::AccumulateRows).
+func (a *gridBaselineAccumulator) accumulateRows(contentStart float64, rowOffsets, rowSizes []float64, b *gridTrackBaselines) {
+	if b == nil {
+		return
+	}
+	for i := range rowOffsets {
+		start := contentStart + rowOffsets[i]
+		if major := b.major[i]; !math.IsInf(major, -1) {
+			sb := &gridSetBaseline{i, start + major}
+			if a.firstMajor == nil {
+				a.firstMajor = sb
+			}
+			a.lastMajor = sb
+		}
+		if minor := b.minor[i]; !math.IsInf(minor, -1) {
+			sb := &gridSetBaseline{i, start + rowSizes[i] - minor}
+			if a.firstMinor == nil {
+				a.firstMinor = sb
+			}
+			a.lastMinor = sb
+		}
+	}
+}
+
+// firstBaseline is the grid's first baseline, or not ok without items.
+func (a *gridBaselineAccumulator) firstBaseline() (float64, bool) {
+	switch {
+	case a.firstMajor != nil && a.firstMajor.row == a.firstRow:
+		return a.firstMajor.baseline, true
+	case a.firstMinor != nil && a.firstMinor.row == a.firstRow:
+		return a.firstMinor.baseline, true
+	case a.firstFallbackItem != nil:
+		return a.firstFallback, true
+	}
+	return 0, false
+}
+
+// lastBaseline is the grid's last baseline, or not ok without items.
+func (a *gridBaselineAccumulator) lastBaseline() (float64, bool) {
+	switch {
+	case a.lastMinor != nil && a.lastMinor.row == a.lastRow:
+		return a.lastMinor.baseline, true
+	case a.lastMajor != nil && a.lastMajor.row == a.lastRow:
+		return a.lastMajor.baseline, true
+	case a.lastFallbackItem != nil:
+		return a.lastFallback, true
+	}
+	return 0, false
+}
+
+// startsBefore orders items by row start, then column start (the
+// accumulator's StartsBefore).
+func (item *gridItem) startsBefore(other *gridItem) bool {
+	if item.rowStart != other.rowStart {
+		return item.rowStart < other.rowStart
+	}
+	return item.colStart < other.colStart
+}
+
+// endsAfter orders items by row end, then column end, preferring the later
+// item on a tie (the accumulator's EndsAfter).
+func (item *gridItem) endsAfter(other *gridItem) bool {
+	if item.rowEnd != other.rowEnd {
+		return item.rowEnd > other.rowEnd
+	}
+	return item.colEnd >= other.colEnd
 }
