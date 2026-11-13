@@ -362,9 +362,8 @@ func TestPseudoClass_Specificity(t *testing.T) {
 }
 
 // TestDirPseudoClass covers :dir(ltr)/:dir(rtl) for the static cases
-// (explicit dir=ltr/rtl, inheritance, invalid values, default LTR).
-// Dynamic dir-attribute changes and dir=auto first-strong-Unicode detection
-// are out of scope for this matcher.
+// (explicit dir=ltr/rtl, inheritance, invalid values, default LTR);
+// TestDirPseudoClass_Auto covers dir=auto's first-strong detection.
 func TestDirPseudoClass(t *testing.T) {
 	mkDiv := func(parent *html.Node, dir string) *html.Node {
 		n := &html.Node{Type: html.ElementNode, TagName: "div"}
@@ -391,7 +390,7 @@ func TestDirPseudoClass(t *testing.T) {
 	// <div dir="foopy"> — invalid value, inherits from parent (rtl)
 	invalidDiv := mkDiv(root, "foopy")
 
-	// <div dir="auto"> — out-of-scope first-strong; falls through to inherit rtl
+	// <div dir="auto"> with no strong character falls through to inherit rtl
 	autoDiv := mkDiv(root, "auto")
 
 	// Orphan element with no dir, no parent → default ltr
@@ -936,5 +935,40 @@ func TestRuleSelectorListKeepsEscapedComma(t *testing.T) {
 	src := `<style>.a\,b, .c { color: red }</style><b id="t"></b>`
 	if got, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get("color"); got == "red" {
 		t.Errorf(`.a\,b, .c styled <b>: color = %q`, got)
+	}
+}
+
+// A dir value is valid only as exactly ltr, rtl or auto, ASCII
+// case-insensitively (HTMLElement::IsValidDirAttribute,
+// core/html/html_element.cc:357-361 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An invalid value, padded ones
+// included, takes the parent's directionality (OnDirAttrChanged, :4180-4235),
+// and a dir=auto walk skips only descendants whose dir is valid (or <bdi>,
+// ElementAffectsDirectionality, :3662-3669): an invalid dir's text counts.
+func TestDirPseudoClassExactDirValue(t *testing.T) {
+	const css = `<style>b:dir(rtl) { color: green } b:dir(ltr) { color: blue }</style>`
+	for _, tc := range []struct{ html, want string }{
+		{`<div dir=" rtl "><b id="t"></b></div>`, "blue"},
+		{`<div dir="RTL"><b id="t"></b></div>`, "green"},
+		{`<div dir="auto"><span dir="foo">ת</span><b id="t"></b></div>`, "green"},
+		{`<div dir="auto"><span dir=" ltr ">ת</span><b id="t"></b></div>`, "green"},
+		{`<div dir="auto"><span dir="ltr">ת</span>a<b id="t"></b></div>`, "blue"},
+		{`<div dir="ltr"><b id="t" dir=" auto ">ת</b></div>`, "blue"},
+	} {
+		if got, _ := styleByID(t, cascadeHTML(t, css+tc.html, nil), "t").Get("color"); got != tc.want {
+			t.Errorf("%s: color = %q, want %q", tc.html, got, tc.want)
+		}
+	}
+}
+
+// The dir presentational hint reads dir as :dir() does: a padded value is
+// invalid, so it sets no direction and the element inherits
+// (HTMLElement::CollectStyleForPresentationAttribute / IsValidDirAttribute,
+// core/html/html_element.cc:357-361, 424-445 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestDirHintPaddedValueInherits(t *testing.T) {
+	st := styleByID(t, cascadeHTML(t, `<div dir="ltr"><span id="t" dir=" rtl "></span></div>`, nil), "t")
+	if got := st.GetDirection(); got != DirectionLTR {
+		t.Errorf(`dir=" rtl " under dir=ltr: direction = %v, want ltr`, got)
 	}
 }
