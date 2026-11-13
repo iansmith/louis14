@@ -710,7 +710,7 @@ func FontTypoDescentFromFont(fontSize float64, fontPath string, reg *FontRegistr
 // (platform/fonts/simple_font_data.cc:168-176 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The ascent and descent are
 // the rounded ones FontAscentFromFont / FontDescentFromFont give
-// (FontMetrics::AscentDescentWithHacks, font_metrics.cc:113-117).
+// (FontMetrics::AscentDescentWithHacks, font_metrics.cc:116-118).
 //
 // reg is the optional FontRegistry for looking up CSS Fonts 4 ascent-,
 // descent- and line-gap-override values; an override replaces its term

@@ -176,7 +176,7 @@ func TestFontTest_IdeographicFullWidthUprightCjkVmtx(t *testing.T) {
 // (SimpleFontData::PlatformInit, platform/fonts/simple_font_data.cc:168-176
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the ascent and descent
 // already rounded by FontMetrics::AscentDescentWithHacks (font_metrics.cc:
-// 113-117, same SHA) and the line gap SkFontMetrics::fLeading, the hhea
+// 116-118, same SHA) and the line gap SkFontMetrics::fLeading, the hhea
 // line gap for a font without USE_TYPO_METRICS (SkScalerContext_FreeType::
 // generateFontMetrics, src/ports/SkFontHost_FreeType.cpp:1603-1611 @ skia
 // d19e557ac3175dc4f9e52d86dd1476c4dfe06a3e). Expected values come from an
