@@ -1,6 +1,9 @@
 package css
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // A legacy alias names the property it is an alias for: the parser resolves
 // it, so `grid-column-gap: 20px` sets column-gap (alias_for entries,
@@ -55,5 +58,24 @@ func TestAliasIsItsTargetInCSSOMAndSupports(t *testing.T) {
 		if !isSupportedCSSProperty(name) {
 			t.Errorf("isSupportedCSSProperty(%q) = false, want true", name)
 		}
+	}
+}
+
+// transition-property may name an alias; the transition is its target's.
+// Blink keeps the alias ident in the value (it serializes as written) and
+// resolves the property it names (ConsumeTransitionProperty,
+// core/css/properties/css_parsing_utils.cc:9612-9636 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the resolution is where a
+// transition is built, not in the parser.
+func TestTransitionPropertyAliasIsItsTarget(t *testing.T) {
+	s := NewStyle()
+	s.Set("transition-property", "-webkit-transform, grid-row-gap")
+	s.Set("transition-duration", "1s")
+	var got []string
+	for _, tr := range resolveTransitions(s) {
+		got = append(got, tr.property)
+	}
+	if want := []string{"transform", "row-gap"}; !slices.Equal(got, want) {
+		t.Errorf("transition properties = %q, want %q", got, want)
 	}
 }
