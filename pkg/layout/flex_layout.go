@@ -766,8 +766,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) {
 				replacedSpace := cs
-				if fla.hasDefiniteCross && fla.getFlexWrap() == "nowrap" &&
-					fla.itemStretchesInCrossAxis(item.style, item.wdm, isRow) {
+				if fla.stretchesToDefiniteCross(item.style, item.wdm, isRow, fla.hasDefiniteCross) {
 					if item.mainIsItemInline {
 						replacedSpace.BlockAutoBehavior = AutoSizeBehaviorStretchExplicit
 					} else {
@@ -2558,7 +2557,7 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 		// and no block size stretches to the available inline size
 		// (StretchFit, length_utils.cc:1173-1196).
 		blockAuto := AutoSizeBehaviorFitContent
-		if hasDefiniteCross && fla.getFlexWrap() == "nowrap" && fla.itemStretchesInCrossAxis(style, childWDM, isRow) {
+		if fla.stretchesToDefiniteCross(style, childWDM, isRow, hasDefiniteCross) {
 			blockAuto = AutoSizeBehaviorStretchExplicit
 		}
 		basisSpace := fla.crossConstraintSpace(parentWDM, childWDM,
@@ -3714,6 +3713,15 @@ func (fla *FlexLayoutAlgorithm) itemStretchesInCrossAxis(style *css.Style, child
 	return fla.getAlignSelf(style, alignItems) == "stretch" && !crossAS && !crossAE
 }
 
+// stretchesToDefiniteCross reports whether an item's layout space stretches
+// its cross axis before the line cross size is known: a single-line flexbox
+// with a definite cross size and a stretched item (BuildSpaceForLayout,
+// flex/flex_layout_algorithm.cc:767-776 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (fla *FlexLayoutAlgorithm) stretchesToDefiniteCross(style *css.Style, childWDM WritingDirectionMode, isRow, hasDefiniteCross bool) bool {
+	return hasDefiniteCross && fla.getFlexWrap() == "nowrap" && fla.itemStretchesInCrossAxis(style, childWDM, isRow)
+}
+
 // getAlignSelf returns the effective align-self for an item.
 func (fla *FlexLayoutAlgorithm) getAlignSelf(style *css.Style, alignItems string) string {
 	if style == nil {
@@ -4394,29 +4402,25 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			// flex/flex_layout_algorithm.cc:699-797 @
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			useAspectRatioStretch := false
-			hasExplicitMainSize := false
-			tmpSpace := NewConstraintSpaceBuilder(wdm, item.wdm, false).
-				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-				SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
-				SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
-				SetPercentageResolutionInlineSize(contentInlineSize).
-				Build()
-			if item.mainIsItemInline {
-				_, hasExplicitMainSize = ResolveInlineSize(item.style, item.wdm, tmpSpace, item.geom)
-			} else {
-				_, hasExplicitMainSize = ResolveBlockSize(item.style, item.wdm, tmpSpace, item.geom)
-			}
 			isReplaced := item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode)
-			if !hasExplicitMainSize && !isReplaced {
-				if ar := item.style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
-					// CSS aspect-ratio property on non-replaced elements.
-					// Only apply when flex-grow is 0 — if the item grew via flex,
-					// its main-size is already determined and shouldn't be overridden.
-					flexGrow := item.style.GetFlexGrow()
-					if flexGrow == 0 {
-						useAspectRatioStretch = true
-					}
+			if ar := item.style.GetAspectRatio(); !isReplaced && ar.IsSet && ar.Width > 0 && ar.Height > 0 &&
+				item.style.GetFlexGrow() == 0 {
+				// CSS aspect-ratio property on non-replaced elements, without
+				// an explicit main size. Only when flex-grow is 0: an item
+				// that grew via flex already has its main size.
+				tmpSpace := NewConstraintSpaceBuilder(wdm, item.wdm, false).
+					SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+					SetAvailableSize(LogicalSize{InlineSize: contentInlineSize, BlockSize: Indefinite}).
+					SetPercentageResolutionSize(LogicalSize{InlineSize: contentInlineSize}).
+					SetPercentageResolutionInlineSize(contentInlineSize).
+					Build()
+				hasExplicitMainSize := false
+				if item.mainIsItemInline {
+					_, hasExplicitMainSize = ResolveInlineSize(item.style, item.wdm, tmpSpace, item.geom)
+				} else {
+					_, hasExplicitMainSize = ResolveBlockSize(item.style, item.wdm, tmpSpace, item.geom)
 				}
+				useAspectRatioStretch = !hasExplicitMainSize
 			}
 
 			var cs ConstraintSpace
