@@ -32,3 +32,22 @@ func TestInkOverflow_FilterSourceCoversDescendantInk(t *testing.T) {
 	assertPixel(t, img, 120, 75, blue, "the filtered div's own box-shadow, above it")
 	assertPixel(t, img, 40, 85, white, "guard: no shadow under the child's own box")
 }
+
+// A text run's ink overflow joins its container's: the glyph bounds united
+// with its decorations' (ComputeDecorationOverflow) and grown by its
+// text-shadow outsets (ExpandForShadowOverflow; InkOverflow::
+// ComputeTextInkOverflow, core/layout/ink_overflow.cc:438-490 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). So with blur(0) an underline
+// offset below the filtered div, a text-shadow above it and an overline
+// above it all paint. Pixels from headless Chrome 157 2026-11-13.
+func TestInkOverflow_FilterSourceCoversTextInk(t *testing.T) {
+	blue := color.RGBA{0, 0, 255, 255}
+	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+		`<div style="position:absolute;left:20px;top:20px;font:20px/20px Ahem;color:transparent;filter:blur(0)"><span style="text-decoration:underline blue;text-decoration-thickness:4px;text-underline-offset:10px;text-decoration-skip-ink:none">XX</span></div>`+
+		`<div style="position:absolute;left:20px;top:80px;font:20px/20px Ahem;color:transparent;filter:blur(0);text-shadow:0 -10px 0 blue">XX</div>`+
+		`<div style="position:absolute;left:20px;top:140px;font:20px/20px Ahem;color:transparent;filter:blur(0);text-decoration:overline blue;text-decoration-thickness:4px">XX</div>`+
+		`</body></html>`, 200, 200)
+	assertPixel(t, img, 40, 47, blue, "an underline offset below the filtered div")
+	assertPixel(t, img, 40, 75, blue, "a text-shadow above the filtered div")
+	assertPixel(t, img, 40, 137, blue, "an overline above the filtered div")
+}
