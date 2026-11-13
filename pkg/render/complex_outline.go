@@ -76,16 +76,14 @@ func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 		// PaintDottedOrDashedOutline (:550-584), edge by edge along the
 		// center path (PaintStraightEdge, :727-746).
 		center := shrinkRightAnglePath(outer, width/2)
-		// An odd width draws wider to fill the clip when the stroke is
-		// dashed (StyledStrokeData::StrokeIsDashed, platform/graphics/
-		// styled_stroke_data.cc:174-176: dashed, or dotted at most 3 wide).
-		thickness := float64(width)
-		if width%2 == 1 && (style == "dashed" || width <= 3) {
-			thickness = float64(width + 2)
-		}
-		draw := r.drawDashedLine
+		st := dashedStroke
 		if style == "dotted" {
-			draw = r.drawDottedLine
+			st = dottedStroke
+		}
+		// An odd width draws wider to fill the clip when the stroke is dashed.
+		thickness := float64(width)
+		if width%2 == 1 && strokeIsDashed(float64(width), st) {
+			thickness = float64(width + 2)
 		}
 		joint := (width + 1) / 2
 		for _, c := range center {
@@ -99,7 +97,7 @@ func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 				} else {
 					start.X, end.X = start.X-joint, end.X+joint
 				}
-				draw(float64(start.X), float64(start.Y), float64(end.X), float64(end.Y), thickness)
+				r.drawLineWithStyle(start, end, st, thickness)
 			}
 		}
 	default:
