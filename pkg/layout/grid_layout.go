@@ -45,6 +45,9 @@ type gridItem struct {
 	result  *LayoutResult
 	wdm     WritingDirectionMode
 	margins LogicalEdges
+	// columns and rows are the item's alignment in each axis
+	// (gridItemAxisData), resolved when the item is collected.
+	columns, rows gridItemAxisData
 }
 
 // Layout performs CSS Grid layout.
@@ -185,9 +188,8 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		if _, ok := item.style.GetPercentage(blockSizeProp); ok {
 			needsRelayout = true
 		}
-		// Default alignment for grid items is stretch.
-		selfAlign := gla.getAlignSelf(item.style)
-		if selfAlign == "stretch" || selfAlign == "normal" {
+		// An item whose block size stretches (its rows auto behaviour).
+		if item.rows.stretches() {
 			// Only stretch if item has auto block-size.
 			if _, ok := item.style.Get(blockSizeProp); !ok {
 				needsRelayout = true
@@ -251,7 +253,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 				SetPercentageResolutionSize(LogicalSize{InlineSize: reLayoutInline, BlockSize: availBlock}).
 				SetPercentageResolutionInlineSize(reLayoutInline).
 				SetIsFixedInlineSize(isFixedInline).
-				SetIsFixedBlockSize(selfAlign == "stretch" || selfAlign == "normal").
+				SetIsFixedBlockSize(item.rows.stretches()).
 				Build()
 			item.result = layoutElement(gla.ctx, item.node, childSpace2)
 		}
@@ -278,25 +280,13 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
 		itemBlock := gla.spannedSize(rowSizes, item.rowStart, item.rowEnd, rowGap)
 
-		// Item position = track offset + margin.
+		// Item position = track offset + its alignment offset in the grid
+		// area, margins included (grid_layout_algorithm.cc:1866-1877 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		margins := item.margins
-		inlineOffset := colOffsets[item.colStart] + margins.InlineStart
-		blockOffset := rowOffsets[item.rowStart] + margins.BlockStart
-
-		// Align item within its grid area.
 		fragSize := ToLogicalSize(geomSizeToOld(item.result.Fragment.Size), wdm.WM)
-		fragInline := fragSize.InlineSize
-		fragBlock := fragSize.BlockSize
-		availInline := itemInline - margins.InlineStart - margins.InlineEnd
-		availBlock := itemBlock - margins.BlockStart - margins.BlockEnd
-
-		// justify-self alignment.
-		justifySelf := gla.getJustifySelf(item.style)
-		inlineOffset += gla.alignOffset(fragInline, availInline, justifySelf)
-
-		// align-self alignment.
-		selfAlign := gla.getAlignSelf(item.style)
-		blockOffset += gla.alignOffset(fragBlock, availBlock, selfAlign)
+		inlineOffset := colOffsets[item.colStart] + item.columns.alignmentOffset(itemInline, fragSize.InlineSize, margins.InlineStart, margins.InlineEnd)
+		blockOffset := rowOffsets[item.rowStart] + item.rows.alignmentOffset(itemBlock, fragSize.BlockSize, margins.BlockStart, margins.BlockEnd)
 
 		offset := LogicalOffset{InlineOffset: inlineOffset, BlockOffset: blockOffset}
 		// Grid is special in that %-based offsets resolve against the grid
@@ -476,6 +466,7 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 		if childStyle.GetDisplay() == css.DisplayNone {
 			continue
 		}
+		childWDM := NewWritingDirectionMode(childStyle)
 		items = append(items, &gridItem{
 			node:     child,
 			style:    childStyle,
@@ -486,6 +477,8 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 			rowEnd:   -1,
 			colSpan:  1,
 			rowSpan:  1,
+			columns:  newGridItemAxisData(true, gla.style, wdm, childStyle, childWDM, gla.replacedHasNaturalSize(child, wdm, true)),
+			rows:     newGridItemAxisData(false, gla.style, wdm, childStyle, childWDM, gla.replacedHasNaturalSize(child, wdm, false)),
 		})
 	}
 
@@ -1063,28 +1056,6 @@ func (gla *GridLayoutAlgorithm) computeTrackOffsets(sizes []float64, gap, contai
 	return offsets
 }
 
-// getAlignSelf returns the resolved align-self for a grid item.
-func (gla *GridLayoutAlgorithm) getAlignSelf(itemStyle *css.Style) string {
-	if v, ok := itemStyle.Get("align-self"); ok && v != "" && v != "auto" {
-		return v
-	}
-	if v, ok := gla.style.Get("align-items"); ok && v != "" {
-		return v
-	}
-	return "normal"
-}
-
-// getJustifySelf returns the resolved justify-self for a grid item.
-func (gla *GridLayoutAlgorithm) getJustifySelf(itemStyle *css.Style) string {
-	if v, ok := itemStyle.Get("justify-self"); ok && v != "" && v != "auto" {
-		return v
-	}
-	if v, ok := gla.style.Get("justify-items"); ok && v != "" {
-		return v
-	}
-	return "normal"
-}
-
 // gridItemInlineAutoBehavior is the behaviour of a grid item's auto
 // size along the grid's inline axis: stretch when its justify-self
 // stretches it, fit-content otherwise (a replaced item under `normal`
@@ -1098,41 +1069,12 @@ func gridItemInlineAutoBehavior(stretchInline bool) AutoSizeBehavior {
 }
 
 // shouldStretchInline returns true when the grid item should be stretched
-// to its track's inline-size — i.e. when justify-self resolves to stretch
-// AND the item has no explicit inline-size. Per CSS Box Alignment 3 §6.1,
-// stretch only applies when the box has no explicit size in the relevant
-// axis. Blink mirrors this in
-// third_party/blink/renderer/core/layout/grid/grid_layout_algorithm.cc
-// where the per-item constraint space only sets kFixedInlineSize under
-// the same conditions (justify-self stretch on an auto-sized item).
+// to its track's inline-size: when its columns auto behaviour stretches
+// (gridItemAxisData; a replaced item under `normal`, auto margins and every
+// non-stretch alignment are fit-content) AND it has no explicit inline-size,
+// as CSS Box Alignment 3 §6.1 has stretch apply only to auto sizes.
 func (gla *GridLayoutAlgorithm) shouldStretchInline(item *gridItem, wdm WritingDirectionMode) bool {
-	itemStyle := item.style
-	if itemStyle == nil {
-		return true
-	}
-	justify := gla.getJustifySelf(itemStyle)
-	if justify != "stretch" && justify != "normal" {
-		return false
-	}
-	// CSS Box Alignment 3 §6.1 / CSS Grid §6.6: under the default `normal`
-	// self-alignment a replaced grid item with a natural size in the inline
-	// axis resolves to fit-content (its natural size), not stretch — only an
-	// explicit `stretch` stretches a replaced item. Mirrors Blink's
-	// AxisEdgeFromItemPosition in
-	// third_party/blink/renderer/core/layout/grid/grid_item.cc
-	// (Chromium 4883d11fef4a8713e32cd582ecef6dc5457c8c3f): for ItemPosition::kNormal,
-	// auto_behavior = is_replaced ? kFitContent : kStretchImplicit.
-	if justify == "normal" && gla.replacedHasNaturalSize(item.node, wdm, true) {
-		return false
-	}
-	inlineProp := "width"
-	if wdm.IsVertical() {
-		inlineProp = "height"
-	}
-	if v, ok := itemStyle.Get(inlineProp); ok && v != "" && v != "auto" {
-		return false
-	}
-	return true
+	return item.columns.stretches() && isAutoOrUnsetInline(item.style, wdm)
 }
 
 // replacedHasNaturalSize reports whether the grid item node is a replaced
@@ -1160,23 +1102,6 @@ func (gla *GridLayoutAlgorithm) replacedHasNaturalSize(node *LayoutInputNode, wd
 		return info.HasHeight
 	}
 	return info.HasWidth
-}
-
-// alignOffset computes offset for alignment within available space.
-func (gla *GridLayoutAlgorithm) alignOffset(itemSize, available float64, align string) float64 {
-	if itemSize >= available {
-		return 0
-	}
-	switch align {
-	case "center":
-		return (available - itemSize) / 2
-	case "end", "flex-end", "last baseline":
-		return available - itemSize
-	case "stretch", "normal", "start", "flex-start", "baseline", "first baseline":
-		return 0
-	default:
-		return 0
-	}
 }
 
 // gridArea is a rectangle in the grid container's content-box coordinates.
