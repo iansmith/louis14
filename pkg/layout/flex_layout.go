@@ -3532,48 +3532,15 @@ func sortFlexItems(items []*flexItem) {
 	}
 }
 
-// getItemAutoMargins returns which logical margin edges of a flex item are "auto",
-// mapped to main-axis (start/end) and cross-axis (start/end).
-//
-// Uses the same physical→logical mapping as ToLogicalEdges in writing_mode_converter.go,
-// applied to the boolean Auto flags of each physical margin property.
+// getItemAutoMargins returns which of a flex item's margins are auto, on its
+// main axis (start, end) and cross axis (start, end): its physical auto
+// flags mapped through writing direction wdm (PhysicalAutoMarginsToLogical),
+// then onto the axes: wdm's inline axis is the main axis iff isRow.
 func getItemAutoMargins(style *css.Style, wdm WritingDirectionMode, isRow bool) (mainAutoStart, mainAutoEnd, crossAutoStart, crossAutoEnd bool) {
-	m := style.GetMargin()
-
-	// Step 1: Map physical auto flags to logical (inline-start, inline-end, block-start, block-end).
-	// This mirrors ToLogicalEdges exactly.
-	var iAS, iAE, bAS, bAE bool
-	switch wdm.WM {
-	case WritingModeHorizontalTB:
-		iAS, iAE = m.AutoLeft, m.AutoRight
-		bAS, bAE = m.AutoTop, m.AutoBottom
-	case WritingModeVerticalRL, WritingModeSidewaysRL:
-		// inline axis: top→bottom; block axis: right→left
-		iAS, iAE = m.AutoTop, m.AutoBottom
-		bAS, bAE = m.AutoRight, m.AutoLeft
-	case WritingModeVerticalLR:
-		// inline axis: top→bottom; block axis: left→right
-		iAS, iAE = m.AutoTop, m.AutoBottom
-		bAS, bAE = m.AutoLeft, m.AutoRight
-	case WritingModeSidewaysLR:
-		// inline axis: bottom→top (reversed); block axis: left→right
-		iAS, iAE = m.AutoBottom, m.AutoTop
-		bAS, bAE = m.AutoLeft, m.AutoRight
-	}
-
-	// Step 2: Apply RTL direction — swaps inline-start and inline-end.
-	if wdm.Dir == DirectionRTL {
-		iAS, iAE = iAE, iAS
-	}
-
-	// Step 3: Map logical edges to main/cross axis.
-	// isRow here acts as mainIsItemInline (caller must pass the correct value
-	// for orthogonal items).
+	iAS, iAE, bAS, bAE := PhysicalAutoMarginsToLogical(style.GetMargin(), wdm)
 	if isRow {
-		// main axis = item's inline, cross axis = item's block
 		return iAS, iAE, bAS, bAE
 	}
-	// main axis = item's block, cross axis = item's inline
 	return bAS, bAE, iAS, iAE
 }
 
