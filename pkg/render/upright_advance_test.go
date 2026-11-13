@@ -56,7 +56,7 @@ func TestUprightVerticalRuneAdvance_MatchesLayout(t *testing.T) {
 // 5992657f556bcd9d207a4aca187488462f027cab. Serif
 // (Liberation Serif, no vmtx) at 20px advances its 22px height fallback per
 // glyph, so a 5-glyph line-through ends at 5 x 22, past 5em.
-func TestDrawVerticalTextDecoration_LengthIsUprightAdvance(t *testing.T) {
+func TestDrawLineRelativeTextDecoration_LengthIsUprightAdvance(t *testing.T) {
 	const size, x0, y0 = 20.0, 20, 10
 	target := image.NewRGBA(image.Rect(0, 0, 80, 140))
 	r := NewRendererForImage(target)
@@ -71,7 +71,7 @@ func TestDrawVerticalTextDecoration_LengthIsUprightAdvance(t *testing.T) {
 	const height = 22.0
 	fontID := r.fontIDForLayer(layer)
 	advances := uprightVerticalAdvances(layer, box.Text, r.fontPathForLayer(layer))
-	r.drawVerticalTextDecoration(layer, box.Text, advances, box, fontID, float64(r.dc.GetFontMetrics(fontID).Ascent)/64)
+	r.drawLineRelativeTextDecoration(layer, box, uprightAdvanceExtent(advances, layer, true), fontID, float64(r.dc.GetFontMetrics(fontID).Ascent)/64, nil, true)
 
 	rowHasRed := func(y int) bool {
 		for x := 0; x < target.Bounds().Dx(); x++ {

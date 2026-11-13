@@ -362,6 +362,19 @@ func TestDecorationLine_VerticalUnderlinePaintsBeneathGlyphs(t *testing.T) {
 	}
 }
 
+// A rotated run skips ink only where its line crosses the glyphs' ink, not
+// anywhere in the line box: an underline in the half-leading of a
+// line-height: 100px column runs on unbroken (ClipDecorationLine finds no
+// intercepts there). Chrome 2026-11-13: x 118-123, past both glyphs.
+func TestDecorationLine_MixedSkipInkOnlyAcrossGlyphInk(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html lang="en"><body style="margin:0">`+
+		`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:mixed;font:40px/100px Ahem;color:transparent;`+
+		`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:5px">X X</div></body></html>`, 300, 160)
+	for _, y := range []int{30, 70, 110} {
+		assertPixel(t, img, 120, y, black, "the underline in the half-leading, unbroken")
+	}
+}
+
 // A rotated run's decoration spans its inline extent, letter-spacing
 // included (the text fragment's inline size). Chrome 2026-11-13: with
 // letter-spacing: 10px "XXX" runs y 10-159.
