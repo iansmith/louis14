@@ -751,22 +751,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			item.propagatedOOF = result.PropagatedOOFCandidates
 			lf := NewLogicalFragment(wdm, item.fragment)
 
-			// For replaced elements with aspect ratios, the layout may have
-			// enlarged the main-size due to cross min/max constraints transferring
-			// through the aspect ratio (e.g., min-height on a row flex img).
-			// Update resolvedMain to match the actual fragment.
-			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) {
-				var actualMain float64
-				if isRow {
-					actualMain = lf.InlineSize() - item.mainBorderPadding()
-				} else {
-					actualMain = lf.BlockSize() - item.mainBorderPadding()
-				}
-				if actualMain > item.resolvedMain {
-					item.resolvedMain = actualMain
-				}
-			}
-
 			var itemCross float64
 			if isRow {
 				itemCross = lf.BlockSize()
@@ -775,46 +759,27 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			}
 			item.crossSize = itemCross
 
-			// Replaced elements: derive cross size from main size via aspect ratio,
-			// but ONLY when the item does not have an explicit cross-size set in CSS.
-			// When both width and height are explicit, the layout pass already uses
-			// the explicit height; overriding with the aspect ratio would be wrong
-			// (e.g., a 100x100 image with CSS width:10px height:20px should be 20px
-			// tall, not 10px from the 1:1 intrinsic ratio).
-			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) &&
-				!fla.hasExplicitCrossSize(item.style, wdm, isRow) {
-				info := GetNaturalSizingInfo(fla.ctx, item.node)
-				if !info.AspectRatio.IsEmpty() {
-					// Convert physical ratio (width/height) to logical (inline/block).
-					logicalRatio := info.logicalRatio(item.wdm)
-					mainContent := item.resolvedMain
-					var crossContent float64
+			// A replaced item's cross size is ComputeReplacedSize's in its
+			// layout space: the flexed main size fixed, the cross axis
+			// stretched for a single-line stretched item with a definite
+			// cross size (PlaceFlexItems, flex/flex_layout_algorithm.cc:
+			// 1489-1508; BuildSpaceForLayout :770-776 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) {
+				replacedSpace := cs
+				if fla.hasDefiniteCross && fla.getFlexWrap() == "nowrap" &&
+					fla.itemStretchesInCrossAxis(item.style, item.wdm, isRow) {
 					if item.mainIsItemInline {
-						// Main = inline axis → cross = block axis.
-						// logicalRatio = inline/block → block = inline/ratio.
-						crossContent = mainContent / logicalRatio
-						// Clamp by min/max block (cross) size.
-						minCross := ResolveMinBlockSize(item.style, item.wdm, cs, item.geom).Float64()
-						if crossContent < minCross {
-							crossContent = minCross
-						}
-						if maxCrossLU, hasMax := ResolveMaxBlockSize(item.style, item.wdm, cs, item.geom); hasMax && crossContent > maxCrossLU.Float64() {
-							crossContent = maxCrossLU.Float64()
-						}
+						replacedSpace.BlockAutoBehavior = AutoSizeBehaviorStretchExplicit
 					} else {
-						// Main = block axis → cross = inline axis.
-						// logicalRatio = inline/block → inline = block * ratio.
-						crossContent = mainContent * logicalRatio
-						// Clamp by min/max inline (cross) size.
-						minCross := ResolveMinInlineSize(item.style, item.wdm, cs, item.geom).Float64()
-						if crossContent < minCross {
-							crossContent = minCross
-						}
-						if maxCrossLU, hasMax := ResolveMaxInlineSize(item.style, item.wdm, cs, item.geom); hasMax && crossContent > maxCrossLU.Float64() {
-							crossContent = maxCrossLU.Float64()
-						}
+						replacedSpace.InlineAutoBehavior = AutoSizeBehaviorStretchExplicit
 					}
-					item.crossSize = crossContent + item.crossBorderPadding()
+				}
+				size := ComputeReplacedSize(fla.ctx, item.node, replacedSpace, ReplacedSizeModeNormal)
+				if item.mainIsItemInline {
+					item.crossSize = size.BlockSize
+				} else {
+					item.crossSize = size.InlineSize
 				}
 			}
 
