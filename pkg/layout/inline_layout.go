@@ -284,9 +284,8 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 // line at the given static offset within the containing block's content
 // box, its edges from its justify-self / align-self against its parent's
 // writing direction (justify-items and align-items do not apply in inline
-// layout; start and end swap in an RTL parent). A center or end
-// block edge is resolved against the line box by moveToLineBoxBlockEdge
-// once the line's block size is known. Mirrors
+// layout). A center or end block edge is resolved against the line box by
+// moveToLineBoxBlockEdge once the line's block size is known. Mirrors
 // FragmentBuilder::AddOutOfFlowInlineChildCandidate (fragment_builder.cc:
 // 545-585 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func inlineOOFCandidate(node *LayoutInputNode, inlineOffset, blockOffset float64, isFixed bool, inlineContainer *html.Node) OutOfFlowCandidate {
@@ -297,7 +296,7 @@ func inlineOOFCandidate(node *LayoutInputNode, inlineOffset, blockOffset float64
 		if parent := node.Parent(); parent != nil && parent.Style() != nil {
 			containerWDM = NewWritingDirectionMode(parent.Style())
 		}
-		inlineEdge = InlineStaticPositionEdge(style, nil, oofWDM, containerWDM, !containerWDM.IsLTR())
+		inlineEdge = InlineStaticPositionEdge(style, nil, oofWDM, containerWDM)
 		blockEdge = BlockStaticPositionEdge(style, nil, oofWDM, containerWDM)
 	}
 	return OutOfFlowCandidate{
