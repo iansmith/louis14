@@ -226,3 +226,47 @@ func TestOOFStaticPositionWithPercentagePadding(t *testing.T) {
 		"g": {{30, 105, 5, 5}},
 	}, chrome152)
 }
+
+// chrome157 labels expected values probed with getBoundingClientRect in
+// headless Chrome 157 (157.0.8103.52).
+const chrome157 = "Chrome 157 getBoundingClientRect"
+
+// TestOOFStaticPositionAlignment pins a block-level out-of-flow box with
+// auto insets at its static position, aligned by its justify-self (auto: the
+// parent's justify-items; normal: start) within a zero-thickness line
+// across the parent's content box, and by its align-self (align-items does
+// not apply in block layout) against a zero-height line, so end puts the
+// whole box above its static block position. Blink sets the static
+// position's edges from them (InlineStaticPositionEdge /
+// BlockStaticPositionEdge, block_layout_algorithm_utils.cc:236-326, in
+// BlockLayoutAlgorithm::HandleOutOfFlowPositioned,
+// block_layout_algorithm.cc:1688-1716 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `a` (20x20) is the only child
+// of a 75x50 block with a 5px border at the top-left of the 1px-bordered
+// positioned container, so its static point is (6,6).
+func TestOOFStaticPositionAlignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, abs, parent string
+		want              fragRect
+	}{
+		{"start", "justify-self:start", "", fragRect{6, 6, 20, 20}},
+		{"center", "justify-self:center", "", fragRect{33.5, 6, 20, 20}},
+		{"end", "justify-self:end", "", fragRect{61, 6, 20, 20}},
+		{"auto, justify-items:end", "", "justify-items:end", fragRect{61, 6, 20, 20}},
+		{"auto, justify-items:center", "", "justify-items:center", fragRect{33.5, 6, 20, 20}},
+		{"align-self:end", "align-self:end", "", fragRect{6, -14, 20, 20}},
+		{"align-self:center", "align-self:center", "", fragRect{6, -4, 20, 20}},
+		{"self-end, vertical-rl", "justify-self:self-end;writing-mode:vertical-rl", "", fragRect{6, 6, 20, 20}},
+		{"self-end, rtl", "justify-self:self-end;direction:rtl", "", fragRect{6, 6, 20, 20}},
+		{"left", "justify-self:left", "", fragRect{6, 6, 20, 20}},
+		{"right, rtl parent", "justify-self:right", "direction:rtl", fragRect{6, 6, 20, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+				`<div style="position:relative;width:100px;height:100px;border:1px solid">`+
+				`<div style="width:75px;height:50px;border:5px solid;`+tc.parent+`">`+
+				`<div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div></div></div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
