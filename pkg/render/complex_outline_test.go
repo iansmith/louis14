@@ -1,6 +1,7 @@
 package render
 
 import (
+	"image"
 	"image/color"
 	"testing"
 )
@@ -67,4 +68,70 @@ func TestComplexOutline_TranslucentDashedCornerOverlap(t *testing.T) {
 			t.Errorf("pixel (%d,%d) = %v, want about (0, 0, 128): %s", p.x, p.y, got, p.why)
 		}
 	}
+}
+
+// TestComplexOutline_RoundedDottedFollowsCorners: a dashed or dotted
+// multi-rect outline with border-radius strokes its whole rounded centre
+// path with one dash pattern sized to the path's length
+// (ComplexOutlinePainter::PaintDottedOrDashedOutline, rounded branch,
+// core/paint/outline_painter.cc:564-572 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), rather than dotting each
+// straight edge. The span's two 80px fragments (20,20)-(100,40) and
+// (20,40)-(100,60) unite into one rect; outset by the 6px width it is
+// (14,14)-(106,66), and its centre path, shrunk by 3px, is 86x46 with
+// 13px radii: 241px around (Path::length, truncated). Round dots 6px
+// across fit 20 to that closed path (SelectBestDashGap,
+// platform/graphics/styled_stroke_data.cc:40-58), so the outline is 20
+// separate dots.
+func TestComplexOutline_RoundedDottedFollowsCorners(t *testing.T) {
+	doc := ParsePage(t, `<!doctype html><style>
+body { margin: 0; background: black }
+#d { position: absolute; left: 20px; top: 20px; width: 80px; font: 20px/20px Ahem; color: transparent }
+#s { outline: 6px dotted blue; border-radius: 10px }
+</style><div id=d><span id=s>XXXX XXXX</span></div>`)
+	img, _ := RenderDocument(t, doc, 120, 80)
+	isDot := func(c color.Color) bool {
+		_, _, b, _ := c.RGBA()
+		return b>>8 >= 128
+	}
+	if got := countBlobs(img, isDot); got != 20 {
+		t.Errorf("outline has %d dots, want 20", got)
+	}
+}
+
+// countBlobs counts the 8-connected regions of img's pixels for which in
+// is true.
+func countBlobs(img *image.RGBA, in func(color.Color) bool) int {
+	b := img.Bounds()
+	seen := make([]bool, b.Dx()*b.Dy())
+	visit := func(p image.Point) bool {
+		i := (p.Y-b.Min.Y)*b.Dx() + p.X - b.Min.X
+		if !p.In(b) || seen[i] || !in(img.At(p.X, p.Y)) {
+			return false
+		}
+		seen[i] = true
+		return true
+	}
+	n := 0
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if !visit(image.Pt(x, y)) {
+				continue
+			}
+			n++
+			stack := []image.Point{image.Pt(x, y)}
+			for len(stack) > 0 {
+				q := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				for dy := -1; dy <= 1; dy++ {
+					for dx := -1; dx <= 1; dx++ {
+						if r := q.Add(image.Pt(dx, dy)); visit(r) {
+							stack = append(stack, r)
+						}
+					}
+				}
+			}
+		}
+	}
+	return n
 }

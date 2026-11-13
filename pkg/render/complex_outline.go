@@ -19,9 +19,7 @@ import (
 // painted in the outline style, with border-radius baked into both paths.
 //
 // louis14 folds groove/ridge/inset/outset into solid (pkg/css), so solid,
-// double, dashed and dotted are the reachable styles. Not ported:
-// dashed/dotted strokes along a rounded path (each straight edge of the
-// right-angle center path is dashed instead).
+// double, dashed and dotted are the reachable styles.
 func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 	// LayoutObject::OutlineInfo's int width and offset truncate.
 	width, offset := int(layer.OutlineWidth), int(layer.OutlineOffset)
@@ -36,16 +34,17 @@ func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 	if len(outer) == 0 {
 		return
 	}
-	// path traces contours, with border-radius outset to the given convex
-	// and concave outsets baked in (ComputeRadii, :666-669).
-	path := func(contours [][]image.Point, convexOutset, concaveOutset int) {
+	// path traces contours on b, with border-radius outset to the given
+	// convex and concave outsets baked in (ComputeRadii, :666-669).
+	rounded := hasBorderRadius(layer)
+	path := func(b pathBuilder, contours [][]image.Point, convexOutset, concaveOutset int) {
 		for _, c := range contours {
-			if !hasBorderRadius(layer) {
-				addContourPath(r.dc, c)
+			if !rounded {
+				addContourPath(b, c)
 				continue
 			}
 			cv, cc := float64(offset+convexOutset), float64(offset+concaveOutset)
-			addCornerRadiiToPath(r.dc, c, layer.BorderRadius.Outset(cv, cv, cv, cv), layer.BorderRadius.Outset(cc, cc, cc, cc))
+			addCornerRadiiToPath(b, c, layer.BorderRadius.Outset(cv, cv, cv, cv), layer.BorderRadius.Outset(cc, cc, cc, cc))
 		}
 	}
 	// A translucent dashed or dotted outline paints opaque into a layer at
@@ -66,9 +65,9 @@ func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 	r.dc.Push()
 	defer r.dc.Pop()
 	r.dc.SetFillRule(textshape.FillRuleWinding)
-	path(outer, width, 0)
+	path(r.dc, outer, width, 0)
 	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
-	path(shrinkRightAnglePath(outer, width), 0, width)
+	path(r.dc, shrinkRightAnglePath(outer, width), 0, width)
 	r.clipOutTracedPath(bounds)
 	r.setColor(color)
 
@@ -76,15 +75,16 @@ func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 	case "double":
 		// PaintDoubleOutline (:528-548).
 		stripe := int(math.Round(float64(width) / 3))
-		path(shrinkRightAnglePath(outer, width-stripe), stripe, width-stripe)
+		path(r.dc, shrinkRightAnglePath(outer, width-stripe), stripe, width-stripe)
 		r.dc.Fill()
-		path(shrinkRightAnglePath(outer, stripe), width-stripe, stripe)
+		path(r.dc, shrinkRightAnglePath(outer, stripe), width-stripe, stripe)
 		r.clipOutTracedPath(bounds)
 		fillBounds()
 	case "dashed", "dotted":
-		// PaintDottedOrDashedOutline (:550-584), edge by edge along the
-		// center path (PaintStraightEdge, :727-746).
-		center := shrinkRightAnglePath(outer, width/2)
+		// PaintDottedOrDashedOutline (:550-584) along the center path
+		// (CenterPath, :673-685).
+		outsetFromInner := (width + 1) / 2
+		center := shrinkRightAnglePath(outer, width-outsetFromInner)
 		st := dashedStroke
 		if style == "dotted" {
 			st = dottedStroke
@@ -94,7 +94,16 @@ func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 		if width%2 == 1 && strokeIsDashed(float64(width), st) {
 			thickness = float64(width + 2)
 		}
-		joint := (width + 1) / 2
+		if rounded {
+			// The whole rounded path, one dash pattern sized to its length.
+			r.strokeStyledPath(func(b pathBuilder) {
+				path(b, center, outsetFromInner, outsetFromInner)
+			}, st, thickness, float64(width))
+			break
+		}
+		// Edge by edge, so the corners get their own dots or dashes
+		// (PaintStraightEdge, :727-746).
+		joint := outsetFromInner
 		for _, c := range center {
 			for i, start := range c {
 				end := c[(i+1)%len(c)]

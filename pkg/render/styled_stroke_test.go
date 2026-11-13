@@ -56,3 +56,23 @@ func TestDrawLineWithStyle_DotsAreSeparate(t *testing.T) {
 	assertPixel(t, img, 15, 35, lime, "padding beside the left side's dots")
 	assertPixel(t, img, 35, 15, lime, "padding below the top side's dots")
 }
+
+// A dotted border side with border-radius strokes round dots along the
+// border's rounded centreline (DrawCurvedDashedDottedBoxSide,
+// core/paint/box_border_painter.cc:1827-1861 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the path starting at the
+// top-left corner's end and running clockwise (PathBuilder::AddRoundedRect,
+// platform/geometry/path_builder.cc:228-232, same SHA). A 100x60 box at
+// (10,10) with a 6px dotted border and 20px radius has the centreline
+// (13,13)-(107,67) with 17px radii, 266px long, so 22 dots of 6px are
+// spaced 12.08px apart (SelectBestDashGap on a closed path) from (30,13):
+// the top edge's dots centre on x 30, 42.08, ... and the top-right
+// corner's arc carries dots too, with gaps between them.
+func TestDrawCurvedDashedDottedBoxSide_DotsFollowCorner(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+		`<div style="position:absolute;left:10px;top:10px;width:88px;height:48px;border:6px dotted black;border-radius:20px"></div></body></html>`, 130, 90)
+	assertPixel(t, img, 30, 13, black, "dot centred at x 30 on the top edge")
+	assertPixel(t, img, 36, 13, white, "gap between the dots at x 30 and 42.08")
+	assertPixel(t, img, 101, 17, black, "dot 72.48 along the path, on the top-right arc")
+	assertPixel(t, img, 96, 14, white, "gap on the top-right arc, 66.4 along the path")
+}

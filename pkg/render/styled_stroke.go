@@ -4,6 +4,8 @@ import (
 	"image"
 	"math"
 
+	"mazarin/textshape"
+
 	"louis14/pkg/geometry"
 )
 
@@ -12,8 +14,8 @@ import (
 // (core/paint/box_border_painter.cc:401-560 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and the StyledStrokeData dash
 // setup it drives (platform/graphics/styled_stroke_data.cc:40-176, same
-// SHA). Skia's SkDashPathEffect does the dashing in Blink; textshape does
-// not apply dash patterns, so strokeAxisLine lays the dashes out itself.
+// SHA). The dashing itself is Skia's SkDashPathEffect, which textshape's
+// SetDash implements.
 
 // strokeStyle is Blink's StrokeStyle for a styled line (stroke_data.h).
 type strokeStyle int
@@ -146,7 +148,7 @@ func (r *Renderer) drawLineWithStyle(p1, p2 image.Point, style strokeStyle, thic
 			a.Y, b.Y = a.Y+0.5, b.Y+0.5
 		}
 	}
-	r.strokeAxisLine(a, b, vertical, thickness, dash, dashed)
+	r.strokeAxisLine(a, b, thickness, dash, dashed)
 }
 
 // enforceDotsAtEndpoints is EnforceDotsAtEndpoints
@@ -197,61 +199,47 @@ func (r *Renderer) enforceDotsAtEndpoints(p1, p2 *geometry.PointF, length, width
 	}
 }
 
-// strokeAxisLine strokes the line a→b, vertical or horizontal, width wide
-// with butt caps, dashed by dash when dashed, filling every dash and dot as
-// one path (SkDashPathEffect with phase 0: an on-interval starts every
-// on+off from a, toward b, while it starts before b, the last one cut at
-// b; a zero-length one with round caps is a dot).
-func (r *Renderer) strokeAxisLine(a, b geometry.PointF, vertical bool, width float64, dash dashDescription, dashed bool) {
-	start, end, across := a.X, b.X, a.Y
-	if vertical {
-		start, end, across = a.Y, b.Y, a.X
+// strokeAxisLine strokes the line a→b, width wide with butt caps, dashed
+// by dash when dashed.
+func (r *Renderer) strokeAxisLine(a, b geometry.PointF, width float64, dash dashDescription, dashed bool) {
+	r.strokeWithDash(func(p pathBuilder) {
+		p.MoveTo(a.X, a.Y)
+		p.LineTo(b.X, b.Y)
+	}, width, dash, dashed)
+}
+
+// strokeStyledPath strokes the path build adds, styled dashed or dotted:
+// StyledStrokeData::ConvertToStrokeData sized to the path's length and
+// closedness (styled_stroke_data.cc:163-172), then
+// GraphicsContext::StrokePath. dashWidth is the dash pattern's thickness,
+// which can differ from the stroke's thickness.
+func (r *Renderer) strokeStyledPath(build func(pathBuilder), style strokeStyle, thickness, dashWidth float64) {
+	var m pathMeasure
+	build(&m)
+	dash, dashed := dashEffectFromStrokeStyle(style, dashWidth, math.Trunc(m.length), m.closed)
+	r.strokeWithDash(build, thickness, dash, dashed)
+}
+
+// strokeWithDash strokes the path build adds with a StrokeData: thickness
+// wide, miter joins, butt caps or the dash's round caps, dashed by dash
+// when dashed (an on+off SkDashPathEffect with phase 0).
+func (r *Renderer) strokeWithDash(build func(pathBuilder), thickness float64, dash dashDescription, dashed bool) {
+	r.dc.Push()
+	defer r.dc.Pop()
+	r.dc.SetLineWidth(thickness)
+	r.dc.SetLineJoin(textshape.LineJoinMiter)
+	r.dc.SetMiterLimit(4)
+	r.dc.SetLineCap(textshape.LineCapButt)
+	if dash.roundCap {
+		r.dc.SetLineCap(textshape.LineCapRound)
 	}
-	dir, length := 1.0, end-start
-	if length < 0 {
-		dir, length = -1, -length
+	r.dc.SetDash()
+	if dashed {
+		r.dc.SetDash(dash.on, dash.off)
 	}
-	half := width / 2
-	// segment adds the run from start+dir*s to start+dir*e.
-	segment := func(s, e float64) {
-		lo, hi := start+dir*s, start+dir*e
-		if lo > hi {
-			lo, hi = hi, lo
-		}
-		if hi <= lo {
-			return
-		}
-		if vertical {
-			r.dc.DrawRectangle(across-half, lo, width, hi-lo)
-		} else {
-			r.dc.DrawRectangle(lo, across-half, hi-lo, width)
-		}
-	}
-	if !dashed {
-		segment(0, length)
-		r.dc.Fill()
-		return
-	}
-	if period := dash.on + dash.off; period > 0 {
-		for s := 0.0; s < length; s += period {
-			if dash.on > 0 {
-				segment(s, math.Min(s+dash.on, length))
-				continue
-			}
-			if dash.roundCap {
-				cx, cy := start+dir*s, across
-				if vertical {
-					cx, cy = across, cx
-				}
-				// DrawCircle continues from the current point, so start
-				// each dot as its own subpath at the circle's first
-				// point; otherwise a line joins it to the last dot.
-				r.dc.MoveTo(cx+half, cy)
-				r.dc.DrawCircle(cx, cy, half)
-			}
-		}
-	}
-	r.dc.Fill()
+	r.dc.SetDashPhase(0)
+	build(r.dc)
+	r.dc.Stroke()
 }
 
 // fillRectF fills a rect in the current color.

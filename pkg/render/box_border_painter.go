@@ -25,10 +25,9 @@ import (
 //     pkg/css folds groove/ridge/inset/outset into solid, so their painting
 //     (DrawRidgeOrGrooveBoxSide, CalculateInsetOutsetColor,
 //     DrawCurvedRidgeGrooveBoxSide) is unreachable and not ported.
-//   - Straight dashed/dotted sides paint through drawLineWithStyle
-//     (styled_stroke.go, DrawLineWithStyle + StyledStrokeData); curved
-//     dashed/dotted sides fill like solid ones in place of
-//     DrawCurvedDashedDottedBoxSide's dashed centerline stroke (:1827-1861).
+//   - Dashed/dotted sides paint through styled_stroke.go's ports of
+//     DrawLineWithStyle (straight) and StyledStrokeData, dashed by
+//     textshape's SetDash.
 //   - No bleed avoidance: louis14 always paints with Blink's
 //     kBackgroundBleedNone, so DrawBleedAdjustedDRRect is a plain FillDRRect.
 //   - PaintSingleRectOutline serves double, dashed and dotted outlines
@@ -563,11 +562,19 @@ func (p *BoxBorderPainter) paintBorderFastPath() bool {
 
 // doubleStripeOutsets (box_border_painter.cc:2467-2475).
 func (p *BoxBorderPainter) doubleStripeOutsets(outerStripe bool) geometry.PhysicalBoxStrut {
-	o := [4]layoutunit.LayoutUnit{p.outerOutsets.Top, p.outerOutsets.Right, p.outerOutsets.Bottom, p.outerOutsets.Left}
-	w := func(s BoxSide) layoutunit.LayoutUnit {
-		return o[s].Sub(layoutunit.New(p.edges[s].GetDoubleBorderStripeWidth(outerStripe)))
+	return p.outsetsLess(func(s BoxSide) int { return p.edges[s].GetDoubleBorderStripeWidth(outerStripe) })
+}
+
+// outsetsLess is the outer outsets less a per-side width.
+func (p *BoxBorderPainter) outsetsLess(width func(BoxSide) int) geometry.PhysicalBoxStrut {
+	o := p.outerOutsets
+	less := func(v layoutunit.LayoutUnit, s BoxSide) layoutunit.LayoutUnit { return v.Sub(layoutunit.New(width(s))) }
+	return geometry.PhysicalBoxStrut{
+		Top:    less(o.Top, BoxSideTop),
+		Right:  less(o.Right, BoxSideRight),
+		Bottom: less(o.Bottom, BoxSideBottom),
+		Left:   less(o.Left, BoxSideLeft),
 	}
-	return geometry.PhysicalBoxStrut{Top: w(BoxSideTop), Right: w(BoxSideRight), Bottom: w(BoxSideBottom), Left: w(BoxSideLeft)}
 }
 
 // drawDoubleBorder paints a uniform double border as two nested stripe
@@ -706,13 +713,14 @@ func (p *BoxBorderPainter) paintOneBorderSide(rect intRect, side, adj1, adj2 Box
 		p.r.dc.Push()
 		defer p.r.dc.Pop()
 		p.clipBorderSidePolygon(side, m1, m2)
+		strokeThickness := max(edge.width, e1.width, e2.width)
 		if !p.inner.IsRenderable() {
 			if adjusted := calculateAdjustedInnerBorder(p.inner, side); !adjusted.IsEmpty() {
-				p.r.paintClippedOut(adjusted, func() { p.drawCurvedBoxSide(edge.width, side, c, edge.style) })
+				p.r.paintClippedOut(adjusted, func() { p.drawCurvedBoxSide(edge.width, strokeThickness, c, edge.style) })
 				return
 			}
 		}
-		p.drawCurvedBoxSide(edge.width, side, c, edge.style)
+		p.drawCurvedBoxSide(edge.width, strokeThickness, c, edge.style)
 		return
 	}
 	m1 := p.computeMiter(side, adj1, completed)
@@ -736,17 +744,46 @@ func (p *BoxBorderPainter) paintOneBorderSide(rect intRect, side, adj1, adj2 Box
 
 // drawCurvedBoxSide paints a curved side through the side clip set up by
 // paintOneBorderSide (BoxBorderPainter::DrawCurvedBoxSide,
-// box_border_painter.cc:1785-1825). Dashed/dotted sides fill like solid
-// ones (see the file comment).
-func (p *BoxBorderPainter) drawCurvedBoxSide(thickness int, side BoxSide, c css.Color, style css.BorderStyle) {
+// box_border_painter.cc:1785-1825). strokeThickness is the widest of the
+// side and its neighbours.
+func (p *BoxBorderPainter) drawCurvedBoxSide(thickness, strokeThickness int, c css.Color, style css.BorderStyle) {
 	if thickness <= 0 {
 		return
 	}
-	if style == css.BorderStyleDouble {
+	switch style {
+	case css.BorderStyleDashed, css.BorderStyleDotted:
+		p.drawCurvedDashedDottedBoxSide(thickness, strokeThickness, c, style)
+	case css.BorderStyleDouble:
 		p.drawCurvedDoubleBoxSide(c)
-		return
+	default:
+		p.r.fillIntRect(toIntRect(p.outer.Rect), c)
 	}
-	p.r.fillIntRect(toIntRect(p.outer.Rect), c)
+}
+
+// drawCurvedDashedDottedBoxSide strokes the border's rounded centreline
+// with the side's dash pattern (BoxBorderPainter::
+// DrawCurvedDashedDottedBoxSide, box_border_painter.cc:1827-1861). A
+// dashed stroke runs 2.2 times the widest adjacent width so the side clip,
+// not the stroke, makes the border's edges.
+func (p *BoxBorderPainter) drawCurvedDashedDottedBoxSide(borderThickness, strokeThickness int, c css.Color, style css.BorderStyle) {
+	centerline := PixelSnappedContouredBorderWithOutsets(p.radii, p.borderRect, p.centerOutsets())
+	st := dashedStroke
+	if style == css.BorderStyleDotted {
+		st = dottedStroke
+	}
+	thickness := float64(borderThickness)
+	if strokeIsDashed(thickness, st) {
+		const thicknessMultiplier = 2 * 1.1
+		thickness = float64(strokeThickness) * thicknessMultiplier
+	}
+	p.r.setColor(c)
+	p.r.strokeStyledPath(centerline.addPath, st, thickness, float64(borderThickness))
+}
+
+// centerOutsets is the border's outer outsets less half of each side's
+// used width, truncated (CenterOutsets, box_border_painter.cc:2477-2483).
+func (p *BoxBorderPainter) centerOutsets() geometry.PhysicalBoxStrut {
+	return p.outsetsLess(func(s BoxSide) int { return p.edges[s].UsedWidth() / 2 })
 }
 
 // drawCurvedDoubleBoxSide (BoxBorderPainter::DrawCurvedDoubleBoxSide,
