@@ -1946,7 +1946,7 @@ func (fla *FlexLayoutAlgorithm) resolveFlexBasis(
 				stretches := fla.itemStretchesInCrossAxis(style, isRow)
 				hasExplCross := fla.hasExplicitCrossSize(style, parentWDM, isRow)
 				if stretches && !hasExplCross {
-					crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, isRow)
+					crossMargins := resolveItemCrossMargins(style, childWDM, contentInlineSize, mainIsItemInline)
 					if mainIsItemInline {
 						itemCrossContent = containerCrossSize - childGeom.BlockBorderPadding() - crossMargins
 					} else {
