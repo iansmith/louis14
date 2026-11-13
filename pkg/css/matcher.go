@@ -127,11 +127,11 @@ func parseNestedArgument(arg string, ctx matchContext) nestedArgument {
 	if a, ok := nestedSelectorCache.Load(key); ok {
 		return a.(nestedArgument)
 	}
-	branches := splitSelectorGroup(strings.TrimSpace(arg))
+	branches := SplitTopLevelCommas(arg)
 	a := nestedArgument{hasPseudoElement: containsPseudoElementArg(branches)}
 	// The branches are parsed uncached: the argument is cached whole.
 	for i, sel := range branches {
-		if sel = strings.TrimSpace(sel); sel != "" {
+		if sel != "" {
 			a.branches = append(a.branches, parseNestedSelectorUncached(sel, ctx.defaultNamespace, ctx.resistDefaultNamespace && i == len(branches)-1))
 		}
 	}
@@ -588,12 +588,9 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		// matches the argument. Per Selectors 4 §15, directionality follows
 		// the HTML "directionality of an element" algorithm.
 		//
-		// Scope: handles the static cases — explicit `dir=ltr`/`dir=rtl`
-		// attributes, inheritance from ancestor, and default LTR. The
-		// `dir=auto` case (which would require first-strong-Unicode
-		// detection over text content) is treated as "no explicit
-		// directionality on this element" and falls through to ancestor
-		// inheritance / default LTR. Any value other than ltr/rtl on the
+		// elementDirectionality resolves it: a valid dir=ltr|rtl, dir=auto's
+		// first strong character (else inheritance), inheritance from the
+		// ancestors, default LTR. Any value other than ltr/rtl on the
 		// pseudo-class argument never matches (per the spec).
 		arg := strings.ToLower(strings.TrimSpace(functionalPseudoArg(pc, "dir(")))
 		switch arg {
@@ -643,6 +640,20 @@ func isVisitedLink(node *html.Node) bool {
 	return isLink && strings.TrimSpace(href) == ""
 }
 
+// toValidDirValue returns the dir keyword ("ltr", "rtl" or "auto") that dir
+// spells exactly, ASCII case-insensitively and untrimmed, or "" for an
+// invalid value (ToValidDirValue / IsValidDirAttribute,
+// core/html/html_element.cc:357-361, 3620-3634 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func toValidDirValue(dir string) string {
+	for _, kw := range [...]string{"ltr", "rtl", "auto"} {
+		if strings.EqualFold(dir, kw) {
+			return kw
+		}
+	}
+	return ""
+}
+
 // elementDirectionality returns the element's directionality per the HTML
 // "directionality of an element" algorithm
 // (https://html.spec.whatwg.org/#the-directionality):
@@ -656,8 +667,11 @@ func isVisitedLink(node *html.Node) bool {
 //  3. Otherwise (no `dir`, or an invalid value), inherit from the parent
 //     element; document default is LTR.
 //
-// Mirrors Blink's Element::CachedDirectionality / ResolveAutoDirectionality
-// (third_party/blink/renderer/core/dom/element.cc @ 4883d11fef4a). Without
+// Mirrors Blink's Element::ParentDirectionality and
+// ResolveAutoDirectionality (core/dom/element.cc:6260-6271, 6416-6507 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) with
+// HTMLElement::CalculateAndAdjustAutoDirectionality
+// (core/html/html_element.cc:3690-3716 @ a9f50e52). Without
 // the per-element cache and invalidation graph Blink keeps — louis14's static
 // renderer recomputes per :dir() query, which is correct but O(descendants)
 // per match. For the WPT selectors corpus this is fine.
@@ -670,7 +684,7 @@ func elementDirectionality(node *html.Node) Direction {
 		if !ok {
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(dirAttr)) {
+		switch toValidDirValue(dirAttr) {
 		case "ltr":
 			return DirectionLTR
 		case "rtl":
@@ -692,12 +706,15 @@ func elementDirectionality(node *html.Node) Direction {
 // the corresponding direction. Per HTML "auto directionality" algorithm
 // (https://html.spec.whatwg.org/#auto-directionality), descendant subtrees
 // rooted at a `bdi`, `script`, `style`, `textarea` element, or any element
-// that itself has a `dir` attribute (other than the starting element)
-// are skipped. Returns (_, false) if no strong character is found.
+// that itself has a valid `dir` attribute (other than the starting
+// element; ElementAffectsDirectionality, core/html/html_element.cc:
+// 3662-3669 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) are skipped. An
+// invalid dir is no boundary: its text counts. Returns (_, false) if no
+// strong character is found.
 //
-// Mirrors Blink's HTMLElement::ResolveAutoDirectionality and the bidi-class
-// walk in core/html/canvas/text_metrics.cc-derived helpers (Blink @
-// 4883d11fef4a). Uses golang.org/x/text/unicode/bidi for the class lookup.
+// Mirrors Blink's Element::ResolveAutoDirectionality (core/dom/element.cc:
+// 6416-6507 @ a9f50e52). Uses golang.org/x/text/unicode/bidi for the class
+// lookup.
 func autoDirectionality(root *html.Node) (Direction, bool) {
 	var walk func(n *html.Node, isRoot bool) (Direction, bool)
 	walk = func(n *html.Node, isRoot bool) (Direction, bool) {
@@ -723,7 +740,11 @@ func autoDirectionality(root *html.Node) (Direction, bool) {
 			case "bdi", "script", "style", "textarea":
 				return DirectionLTR, false
 			}
-			if _, has := n.GetAttribute("dir"); has {
+			// Only a valid dir sets a boundary
+			// (HTMLElement::ElementAffectsDirectionality,
+			// core/html/html_element.cc:3662-3669 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			if dir, has := n.GetAttribute("dir"); has && toValidDirValue(dir) != "" {
 				return DirectionLTR, false
 			}
 		}
@@ -909,7 +930,7 @@ func isNthOfRightBoundary(ch byte) bool {
 // matches) — Blink's CSSSelectorParser rejects them at parse time, which
 // has the same effect.
 func matchesNthChildOf(node *html.Node, anb, ofSel string, fromEnd bool, ctx matchContext) bool {
-	branches := splitSelectorGroup(ofSel)
+	branches := SplitTopLevelCommas(ofSel)
 	for i, b := range branches {
 		// Per spec, pseudo-elements are not allowed inside the `of` list.
 		// A branch containing one never matches anything; blanking it (rather
@@ -1219,9 +1240,8 @@ func containsHas(s string) bool {
 func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 	ctx.insideHas = true
 	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1686 @ d4ecdfed88f9
-	selectors := splitSelectorGroup(strings.TrimSpace(selectorStr))
+	selectors := SplitTopLevelCommas(selectorStr)
 	for i, sel := range selectors {
-		sel = strings.TrimSpace(sel)
 		if sel == "" {
 			continue
 		}

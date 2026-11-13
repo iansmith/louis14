@@ -12707,7 +12707,13 @@ func (s *Style) WillChangeEstablishesInlineContainingBlock() bool {
 // SplitTopLevelCommas splits s at its top-level commas (indexTopLevel:
 // outside every block, string and escape), each part trimmed: a
 // comma-separated CSS list value (background layers, shadows, transitions,
-// font-family, @font-face src, function arguments).
+// font-family, @font-face src, function arguments) and the selector-list
+// splitter (e.g. rules, :is()/:where()/:not()/:has() arguments, @scope
+// bounds, :nth-child(of S)). Its escape and block-stack handling is therefore
+// load-bearing for selectors too: CSSSelectorParser::
+// ConsumeComplexSelectorList splits only at commas left at the top level of
+// the token stream (core/css/parser/css_selector_parser.cc:311-359 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func SplitTopLevelCommas(s string) []string {
 	var parts []string
 	for {

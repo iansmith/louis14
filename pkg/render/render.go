@@ -4568,33 +4568,6 @@ func isKanaOrHangulLocale(lang string) bool {
 	return false
 }
 
-// flipUnderlineOverlineBits returns a copy of decorations with the underline
-// and overline bits swapped on each entry's Lines bitfield. Used when
-// shouldFlipUnderlineAndOverline() reports true to mirror Blink's
-// `std::swap(decoration.has_underline, decoration.has_overline)` at
-// text_decoration_info.cc:233 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-func flipUnderlineOverlineBits(decorations []css.AppliedTextDecoration) []css.AppliedTextDecoration {
-	if len(decorations) == 0 {
-		return decorations
-	}
-	out := make([]css.AppliedTextDecoration, len(decorations))
-	for i, td := range decorations {
-		out[i] = td
-		hasUnder := td.Lines.Has(css.TextDecorationLineUnderline)
-		hasOver := td.Lines.Has(css.TextDecorationLineOverline)
-		// Clear both bits, then set them according to the swapped values.
-		lines := td.Lines &^ (css.TextDecorationLineUnderline | css.TextDecorationLineOverline)
-		if hasOver {
-			lines |= css.TextDecorationLineUnderline
-		}
-		if hasUnder {
-			lines |= css.TextDecorationLineOverline
-		}
-		out[i].Lines = lines
-	}
-	return out
-}
-
 // sidewaysUnderlineGoesRight reports whether the underline for a rotated
 // (IsSidewaysRL or IsSidewaysLR) text run should paint on the physical RIGHT
 // side of the line column. Per CSS Text Decor 4 §3.3:
@@ -4617,52 +4590,20 @@ func flipUnderlineOverlineBits(decorations []css.AppliedTextDecoration) []css.Ap
 //
 // louis14 doesn't yet type the property; the raw string lives on
 // PaintLayer.TextUnderlinePosition and we do substring-contains checks here.
-// The IsUprightVertical guard distinguishes "true sideways" (sideways-rl /
-// sideways-lr / vertical-*+text-orientation:sideways) from "central-baseline
-// vertical" (vertical-rl / vertical-lr with mixed or upright text-orientation),
-// because louis14 collapses the latter into IsSidewaysRL=true at engine.go:374.
+// Only true sideways runs (sideways-rl / sideways-lr /
+// vertical-*+text-orientation:sideways) reach it: central-baseline vertical
+// runs, which louis14 also marks IsSidewaysRL (engine.go:374), decorate
+// line-relative (drawLineRelativeTextDecoration).
 func sidewaysUnderlineGoesRight(layer *PaintLayer) bool {
 	pos := layer.TextUnderlinePosition
-	if layer.IsUprightVertical {
-		// Central-baseline vertical: left/right keywords ARE applied to
-		// select the physical side of the inline-axis run. Mirrors Blink's
-		// ResolveUnderlinePosition() for non-CJK + central-baseline:
-		//   - kLeft (or auto) → kUnder (block-end side; LEFT in vertical-rl,
-		//     RIGHT in vertical-lr because IsSidewaysRL is set with
-		//     IsWritingModeVerticalLR=true). For our caller (which only
-		//     cares about LEFT vs RIGHT physically), kUnder in vertical-rl
-		//     is LEFT, in vertical-lr is RIGHT.
-		//   - kRight → kOver, then flip_underline_and_overline_=true
-		//     swaps the lines so underline_position becomes kUnder.
-		//     After the swap, the underline still ends up on the kUnder
-		//     side. So even with `right`, the final underline placement
-		//     after the swap is the kUnder side (LEFT in vertical-rl).
-		//
-		// The flip is applied in shouldFlipUnderlineAndOverline + the
-		// caller's flipUnderlineOverlineBits call; sidewaysUnderlineGoesRight
-		// returns the post-flip placement.
-		if strings.Contains(pos, "left") || strings.Contains(pos, "right") {
-			// Both resolve (post-flip if needed) to the kUnder side.
-			// kUnder in vertical-rl = LEFT, in vertical-lr = RIGHT.
-			return layer.IsWritingModeVerticalLR
-		}
-	}
 	// `under` keyword: follows block-end direction.
 	//   vertical-rl / sideways-rl: block-end = LEFT (block progresses to left).
 	//   vertical-lr / sideways-lr: block-end = RIGHT.
 	if strings.Contains(pos, "under") {
 		return layer.IsWritingModeVerticalLR || layer.IsSidewaysLR
 	}
-	// auto / from-font / empty (and left|right when ignored): follow rotation
-	// direction. CCW (IsSidewaysLR) → RIGHT; CW (everything else) → LEFT.
-	//
-	// Note: the Japanese/Korean default flip (underline auto-resolves to
-	// kOver for ja/ko in vertical text) is realized through
-	// shouldFlipUnderlineAndOverline + flipUnderlineOverlineBits — the
-	// decoration bits swap upstream, then sidewaysUnderlineGoesRight reports
-	// the post-flip placement (still kUnder side). The "RIGHT = over-side"
-	// physical placement of the originally-overline (now-underline) flows
-	// through the overline-painting branch in drawText.
+	// auto / from-font / empty (and left|right, ignored here): follow
+	// rotation direction. CCW (IsSidewaysLR) → RIGHT; CW → LEFT.
 	return layer.IsSidewaysLR
 }
 
@@ -5336,20 +5277,10 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		descent := float64(metrics.Descent) / 64.0
 		textWidth := r.measureTextStr(text, fontID, layer.featureInputs())
 
-		// A central-baseline run whose underline resolves to the over side
-		// (shouldFlipUnderlineAndOverline) swaps its underline and overline
-		// bits, as Blink's flip_underline_and_overline_ does
-		// (core/paint/text_decoration_info.cc:224-235 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). We apply the swap to
-		// a local copy and substitute it on the layer for the duration of the
-		// sideways paint so the downstream painters see the flipped lines.
-		if shouldFlipUnderlineAndOverline(layer) && len(layer.AppliedTextDecorations) > 0 {
-			origDecorations := layer.AppliedTextDecorations
-			layer.AppliedTextDecorations = flipUnderlineOverlineBits(origDecorations)
-			defer func() { layer.AppliedTextDecorations = origDecorations }()
-		}
-
-		hasDecor := len(layer.AppliedTextDecorations) > 0 || (layer.TextDecoration != css.TextDecorationNone && layer.TextDecoration != "")
+		// A central-baseline (vertical-*, mixed) run's decorations paint
+		// line-relative after the blit instead (drawLineRelativeTextDecoration).
+		centralBaseline := layer.IsUprightVertical
+		hasDecor := !centralBaseline && layer.hasTextDecoration()
 
 		// underToRight: true when the underline paints on the physical RIGHT
 		// side of the line column. See the block comment above for the rotation
@@ -5551,14 +5482,8 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		// upward from text-top, so srcY < textOff). After rotation:
 		//   CW (vertical-rl/-lr mixed, sideways-rl): above-text → physical RIGHT
 		//   CCW (sideways-lr): above-text → physical LEFT
-		// This matches the non-CJK default. For Japanese/Korean vertical
-		// (TextScriptIsKanaOrHangul), shouldFlipUnderlineAndOverline swaps the
-		// underline/overline bits upstream, so a `text-decoration: overline`
-		// reaches this branch as underline (painted on physical LEFT in
-		// vertical-rl, matching the lang=en underline reference), and a
-		// `text-decoration: underline` reaches the overline-painting path
-		// (physical RIGHT in vertical-rl, the Japanese/Korean over-side
-		// default).
+		// Only true sideways runs reach here; central-baseline (mixed) runs
+		// decorate line-relative instead (drawLineRelativeTextDecoration).
 		if hasDecor {
 			origDC := r.dc
 			r.dc = childDC
@@ -5660,7 +5585,25 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		} else {
 			blitY -= inlineEndExt
 		}
+		// A central-baseline run decorates line-relative across its advance,
+		// letter- and word-spacing included as Blink's text fragment's inline
+		// size is (measureSegmentAdvance): under- and overlines
+		// beneath the glyphs, line-through over them. Rotated glyphs skip
+		// ink, unlike upright ones (InterceptsFromBlobs,
+		// platform/fonts/font.cc:161-162 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		var glyphs []glyphExtent
+		var inlineLen float64
+		lineRelativeDecor := centralBaseline && layer.hasTextDecoration()
+		if lineRelativeDecor {
+			glyphs = r.skipInkGlyphs(layer, text, fontID, box.Y)
+			inlineLen = r.measureSegmentAdvance(text, fontID, layer)
+			r.drawLineRelativeTextDecoration(layer, box, inlineLen, fontID, ascent, glyphs, false)
+		}
 		r.dc.DrawImage(rot, blitX, blitY)
+		if lineRelativeDecor {
+			r.drawLineRelativeTextDecoration(layer, box, inlineLen, fontID, ascent, glyphs, true)
+		}
 
 		// Per-character emphasis marks: each mark renders as its own small
 		// rotated off-screen buffer at the annotation-equivalent screen
@@ -5683,6 +5626,17 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 	if layer.IsVerticalText {
 		y := box.Y
 		advances := uprightVerticalAdvances(layer, text, fontPath)
+		// Decorations paint line-relative along the glyphs' upright advances
+		// plus letter-spacing: under- and overlines beneath the glyphs,
+		// line-through over them (TextFragmentPainter::Paint,
+		// core/paint/text_fragment_painter.cc @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Upright glyphs skip no
+		// ink: Blink computes no intercepts for upright blobs
+		// (InterceptsFromBlobs, platform/fonts/font.cc:161-162).
+		inlineLen := uprightAdvanceExtent(advances, layer, true)
+		if layer.hasTextDecoration() {
+			r.drawLineRelativeTextDecoration(layer, box, inlineLen, fontID, ascent, nil, false)
+		}
 		for i, ch := range []rune(text) {
 			charStr := string(ch)
 			charW := r.measureTextStr(charStr, fontID, layer.featureInputs())
@@ -5694,11 +5648,9 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 			r.drawTextStr(charStr, fontID, box.X+xOffset, y+ascent, layer.featureInputs())
 			y += advances[i]
 		}
-		// Paint text decorations for upright vertical text (Strategy B).
-		// Mirrors Blink's writing-mode dispatch at
-		// third_party/blink/renderer/core/paint/text_fragment_painter.cc:609-618
-		// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-		r.drawVerticalTextDecoration(layer, text, advances, box, fontID, ascent)
+		if layer.hasTextDecoration() {
+			r.drawLineRelativeTextDecoration(layer, box, inlineLen, fontID, ascent, nil, true)
+		}
 		return
 	}
 
@@ -6407,8 +6359,7 @@ func trailingWhitespaceSuffix(text string) string {
 // onlyLineThrough controls the paint phase (see drawOneAppliedTextDecoration).
 func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layout.Box, fontID int32, ascent float64, onlyLineThrough bool) {
 	// Fast path when there are no accumulated decorations and no legacy entry.
-	if len(layer.AppliedTextDecorations) == 0 &&
-		(layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "") {
+	if !layer.hasTextDecoration() {
 		return
 	}
 
@@ -6466,14 +6417,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// TODO: pass the font's underline-thickness metric here once it's
 		// plumbed through textshape.FontMetrics; 0 makes from-font fall back
 		// to auto (which is correct, just lossy).
-		// For upright vertical text in the sideways paint path, use newVerticalTextDecorationInfo
-		// so that text-underline-position: under applies only to alphabetic-baseline runs.
-		var info textDecorationInfo
-		if layer.IsUprightVertical && (layer.IsSidewaysRL || layer.IsSidewaysLR) {
-			info = newVerticalTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0, layer.blockUnderDirection())
-		} else {
-			info = newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
-		}
+		info := newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
 		// CSS Text Decor 4 §1.1.5 text-decoration-skip-ink: when `auto`
 		// (default), the under/overline is interrupted where it crosses a
 		// glyph's ink bounding box.
@@ -6490,10 +6434,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// glyph-ink-bbox API ships through textshape, gate skip-ink on
 		// `FontAhem` so it stays a no-op for real fonts and matches the
 		// Blink references on those.
-		var glyphs []glyphExtent
-		if layer.TextDecorationSkipInk == css.TextDecorationSkipInkAuto && layer.FontAhem {
-			glyphs = r.buildGlyphExtentsHorizontal(text, fontID, layer.featureInputs(), box.X, layer.LetterSpacing, layer.WordSpacing)
-		}
+		glyphs := r.skipInkGlyphs(layer, text, fontID, box.X)
 		for _, td := range layer.AppliedTextDecorations {
 			r.drawOneAppliedTextDecoration(td, info, box, textWidth, skipStartWidth, skipEndWidth, glyphs, onlyLineThrough)
 		}
@@ -6887,33 +6828,39 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	}
 }
 
-// drawVerticalTextDecoration paints underline, overline, or line-through for
-// upright vertical text (writing-mode: vertical-rl or vertical-lr with
-// text-orientation: upright). This is Strategy B from the C54 plan.
-//
-// For upright vertical text, the inline axis is physical-Y and the block axis
-// is physical-X. The decoration is a VERTICAL rect (full height of the text
-// column, some perpendicular X coordinate). Mirrors the writing-mode dispatch at
-// third_party/blink/renderer/core/paint/text_fragment_painter.cc:609-618
-// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-//
-// The box passed in is the physical bounding box of the upright vertical run.
-// box.Width is the line height (physical block extent). box.Height is the
-// text column height (physical inline extent). advances is the run's
-// uprightVerticalAdvances, computed once by the caller's paint loop.
-func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, advances []float64, box *layout.Box, fontID int32, ascent float64) {
-	if len(layer.AppliedTextDecorations) == 0 &&
-		(layer.TextDecoration == css.TextDecorationNone || layer.TextDecoration == "") {
-		return
+// hasTextDecoration reports whether the layer carries any text decoration.
+func (layer *PaintLayer) hasTextDecoration() bool {
+	return len(layer.AppliedTextDecorations) > 0 ||
+		(layer.TextDecoration != css.TextDecorationNone && layer.TextDecoration != "")
+}
+
+// skipInkGlyphs returns a run's glyph extents along its inline axis from
+// inlineStart, for skip-ink, or nil when the run skips none. Gated on Ahem,
+// whose glyphs fill their advance: louis14 has no glyph ink bounds yet, and
+// on other fonts the advance over-skips (see drawTextDecoration).
+func (r *Renderer) skipInkGlyphs(layer *PaintLayer, text string, fontID int32, inlineStart float64) []glyphExtent {
+	if layer.TextDecorationSkipInk != css.TextDecorationSkipInkAuto || !layer.FontAhem {
+		return nil
 	}
+	return r.buildGlyphExtentsHorizontal(text, fontID, layer.featureInputs(), inlineStart, layer.LetterSpacing, layer.WordSpacing)
+}
+
+// drawLineRelativeTextDecoration paints a central-baseline vertical run's
+// decorations line-relative, inlineLen long down from box.Y: upright runs,
+// and mixed-orientation runs whose glyphs rotate, which Blink decorates
+// alike (TextFragmentPainter::Paint rotates the context by the writing-mode
+// rotation either way, core/paint/text_fragment_painter.cc:369-379 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). glyphs are the run's glyph
+// extents along the inline axis for skip-ink, nil when it skips none.
+// onlyLineThrough picks the line-through, painted after the glyphs, over
+// the under- and overlines, painted before them, as drawTextDecoration's
+// does.
+func (r *Renderer) drawLineRelativeTextDecoration(layer *PaintLayer, box *layout.Box, inlineLen float64, fontID int32, ascent float64, glyphs []glyphExtent, onlyLineThrough bool) {
+	r.dc.Push() // the decorations' colours stay off the glyphs
+	defer r.dc.Pop()
 
 	metrics := r.dc.GetFontMetrics(fontID)
 	descent := float64(metrics.Descent) / 64.0
-
-	// The inline extent: the glyphs' upright advances plus letter-spacing,
-	// as the paint loop steps them. This is the physical HEIGHT of the
-	// vertical text column.
-	inlineLen := uprightAdvanceExtent(advances, layer, true)
 
 	// Upright text's line-under side is physical left in vertical-rl and
 	// vertical-lr alike: Blink rotates both clockwise (TextFragmentPainter::
@@ -6928,7 +6875,7 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, ad
 
 	if len(layer.AppliedTextDecorations) > 0 {
 		for _, td := range layer.AppliedTextDecorations {
-			r.drawOneAppliedVerticalDecoration(td, info)
+			r.drawOneAppliedVerticalDecoration(td, info, glyphs, onlyLineThrough)
 		}
 		return
 	}
@@ -6937,6 +6884,9 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, ad
 	thickness := math.Max(1.0, math.Round(layer.TextDecorationThickness))
 	r.setColor(layer.TextDecorationColor)
 
+	if (layer.TextDecoration == css.TextDecorationLineThrough) != onlyLineThrough {
+		return // painted in the other pass
+	}
 	var rectLeft float64
 	switch layer.TextDecoration {
 	case css.TextDecorationUnderline:
@@ -6958,7 +6908,7 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, ad
 // derived from textDecorationInfo with axis=decorationAxisVertical; the line
 // itself paints line-relative (see paintLine), each line on the side
 // underlineRectLeft / overlineRectLeft resolve.
-func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration, info textDecorationInfo) {
+func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration, info textDecorationInfo, glyphs []glyphExtent, onlyLineThrough bool) {
 	if td.Lines.IsNone() {
 		return
 	}
@@ -6973,9 +6923,9 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 	// decoration_line_painter.cc:437-476). Rotating 90° clockwise about
 	// (rectLeft + thickness, 0) maps the line-relative rect at (lineStart, 0),
 	// inlineLen x thickness, onto the physical column [rectLeft,
-	// rectLeft + thickness] running down from lineStart. Upright vertical
-	// text skips no ink: Blink computes no intercepts for upright blobs
-	// (InterceptsFromBlobs, platform/fonts/font.cc:161-162).
+	// rectLeft + thickness] running down from lineStart, trimmed or extended
+	// by text-decoration-inset. skipInk lets an under- or overline that
+	// crosses the glyphs' column skip their ink, as horizontal text does.
 	//
 	// doubleOffset is where a double decoration's second line sits,
 	// line-relative along y: thickness + 1 away from the text for under and
@@ -6986,24 +6936,45 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 	// DecorationLinePainter::Paint's kDoubleStroke,
 	// decoration_line_painter.cc:464-473). Under the rotation, line-relative
 	// +y is physical -x.
-	paintLine := func(rectLeft, doubleOffset, wavyOffset float64) {
+	rtl := td.SourceStyle != nil && td.SourceStyle.GetDirection() == css.DirectionRTL
+	lineStart, lineEnd := applyDecorationInset(info.box.Y, info.box.Y+info.width, td, rtl)
+	if lineEnd <= lineStart {
+		return
+	}
+	paintLine := func(rectLeft, doubleOffset, wavyOffset float64, skipInk bool) {
+		// The line's bounds across it, physical x: its rect, or a wavy
+		// line's paint rect mapped through the rotation (line-relative y
+		// runs from rectLeft + thickness toward physical -x).
+		lo, hi := rectLeft, rectLeft+thickness
+		if td.Style == "wavy" {
+			top, height := wavyPaintRect(0, thickness, wavyOffset)
+			lo, hi = rectLeft+thickness-(top+height), rectLeft+thickness-top
+		}
+		var keep []inkSegment
+		if skipInk && len(glyphs) > 0 && decorationBandCrossesGlyphs(lo, hi, info.box.X, info.box.X+info.box.Width) {
+			keep = skipInkSegments(lineStart, lineEnd, thickness, glyphs)
+		}
 		r.dc.Push()
 		defer r.dc.Pop()
 		r.dc.Translate(rectLeft+thickness, 0)
 		r.dc.Rotate(math.Pi / 2)
-		lineStart, inlineLen := info.box.Y, info.width
 		if st, ok := decorationStrokeStyle(td.Style); ok {
-			r.drawLineAsStroke(lineStart, 0, inlineLen, thickness, st, nil)
+			r.drawLineAsStroke(lineStart, 0, lineEnd-lineStart, thickness, st, keep)
 			return
 		}
-		switch td.Style {
-		case "double":
-			r.drawLineAsRect(lineStart, 0, inlineLen, thickness)
-			r.drawLineAsRect(lineStart, doubleOffset, inlineLen, thickness)
-		case "wavy":
-			r.drawWavyLine(lineStart, 0, inlineLen, thickness, wavyOffset, nil)
-		default: // "solid"
-			r.drawLineAsRect(lineStart, 0, inlineLen, thickness)
+		if td.Style == "wavy" {
+			r.drawWavyLine(lineStart, 0, lineEnd-lineStart, thickness, wavyOffset, keep)
+			return
+		}
+		segments := keep
+		if segments == nil {
+			segments = []inkSegment{{Start: lineStart, End: lineEnd}}
+		}
+		for _, seg := range segments {
+			r.drawLineAsRect(seg.Start, 0, seg.End-seg.Start, thickness)
+			if td.Style == "double" {
+				r.drawLineAsRect(seg.Start, doubleOffset, seg.End-seg.Start, thickness)
+			}
 		}
 	}
 
@@ -7011,16 +6982,16 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 	// the line lands on.
 	paintOnSide := func(rectLeft float64, side blockUnderDir) {
 		offset := awayFromText(side) * doubleOffsetFromThickness(thickness)
-		paintLine(rectLeft, offset, offset)
+		paintLine(rectLeft, offset, offset, true)
 	}
-	if td.Lines.Has(css.TextDecorationLineUnderline) {
+	if !onlyLineThrough && td.Lines.Has(css.TextDecorationLineUnderline) {
 		paintOnSide(info.underlineRectLeft(td.UnderlineOffset, thickness))
 	}
-	if td.Lines.Has(css.TextDecorationLineOverline) {
+	if !onlyLineThrough && td.Lines.Has(css.TextDecorationLineOverline) {
 		paintOnSide(info.overlineRectLeft(thickness))
 	}
-	if td.Lines.Has(css.TextDecorationLineLineThrough) {
-		paintLine(info.computeLineThroughPerpX()-thickness/2, awayFromText(info.underDir)*math.Floor(doubleOffsetFromThickness(thickness)), 0)
+	if onlyLineThrough && td.Lines.Has(css.TextDecorationLineLineThrough) {
+		paintLine(info.computeLineThroughPerpX()-thickness/2, awayFromText(info.underDir)*math.Floor(doubleOffsetFromThickness(thickness)), 0, false)
 	}
 }
 
