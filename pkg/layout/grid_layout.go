@@ -276,17 +276,29 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// alignment by default).
 	rowOffsets := gla.computeTrackOffsets(rowSizes, rowGap, resolvedBlockSize, alignContent, numRows)
 
+	// The shared baselines from the items' final layout
+	// (CompleteFinalBaselineAlignment, grid_layout_algorithm.cc:1334-1340 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), read in the grid's font
+	// baseline (ComputedStyle::GetFontBaseline).
+	centralBaseline := wdm.UsesCentralBaselineWithStyle(gla.style)
+	colBaselines := computeGridItemBaselines(items, true, numCols, centralBaseline)
+	rowBaselines := computeGridItemBaselines(items, false, numRows, centralBaseline)
+
 	for _, item := range items {
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
 		itemBlock := gla.spannedSize(rowSizes, item.rowStart, item.rowEnd, rowGap)
 
 		// Item position = track offset + its alignment offset in the grid
-		// area, margins included (grid_layout_algorithm.cc:1866-1877 @
+		// area, margins included (grid_layout_algorithm.cc:1851-1877 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		margins := item.margins
 		fragSize := ToLogicalSize(geomSizeToOld(item.result.Fragment.Size), wdm.WM)
-		inlineOffset := colOffsets[item.colStart] + item.columns.alignmentOffset(itemInline, fragSize.InlineSize, margins.InlineStart, margins.InlineEnd)
-		blockOffset := rowOffsets[item.rowStart] + item.rows.alignmentOffset(itemBlock, fragSize.BlockSize, margins.BlockStart, margins.BlockEnd)
+		inlineBaselineOffset := colBaselines.baselineOffset(item, true, itemInline, fragSize.InlineSize)
+		blockBaselineOffset := rowBaselines.baselineOffset(item, false, itemBlock, fragSize.BlockSize)
+		inlineOffset := colOffsets[item.colStart] + AlignmentOffset(itemInline, fragSize.InlineSize,
+			margins.InlineStart, margins.InlineEnd, inlineBaselineOffset, item.columns.alignment, item.columns.isOverflowSafe)
+		blockOffset := rowOffsets[item.rowStart] + AlignmentOffset(itemBlock, fragSize.BlockSize,
+			margins.BlockStart, margins.BlockEnd, blockBaselineOffset, item.rows.alignment, item.rows.isOverflowSafe)
 
 		offset := LogicalOffset{InlineOffset: inlineOffset, BlockOffset: blockOffset}
 		// Grid is special in that %-based offsets resolve against the grid
@@ -839,13 +851,7 @@ func collapseAutoFitEmptyTracks(tracks []css.GridTrack, items []*gridItem, isCol
 		}
 		occupied := false
 		for _, item := range items {
-			var start, end int
-			if isColumn {
-				start, end = item.colStart, item.colEnd
-			} else {
-				start, end = item.rowStart, item.rowEnd
-			}
-			if start <= i && i < end {
+			if start, end := item.span(isColumn); start <= i && i < end {
 				occupied = true
 				break
 			}

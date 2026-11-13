@@ -31,6 +31,10 @@ type gridItemAxisData struct {
 	isOverflowSafe      bool
 	baselineWritingMode WritingMode
 	baselineGroup       BaselineGroup
+	// hasOwnBaselines: the baseline writing mode is the item's own, so its
+	// fragment's baselines can be read (LogicalBoxFragment::
+	// IsWritingModeEqual).
+	hasOwnBaselines bool
 }
 
 // newGridItemAxisData resolves an item's alignment in the columns
@@ -43,6 +47,7 @@ func newGridItemAxisData(forColumns bool, container *css.Style, containerWDM Wri
 	// The rows are a parallel alignment context, the columns are not
 	// (grid_item.cc:170-176).
 	d.baselineWritingMode = DetermineBaselineWritingMode(containerWDM, itemWDM.WM, !forColumns)
+	d.hasOwnBaselines = d.baselineWritingMode == itemWDM.WM
 	d.baselineGroup = DetermineBaselineGroup(containerWDM, d.baselineWritingMode, !forColumns,
 		d.alignment == AxisEdgeLastBaseline, false)
 	return d
@@ -180,19 +185,27 @@ func AlignmentOffset(containerSize, size, marginStart, marginEnd, baselineOffset
 	return start.Float64()
 }
 
-// alignmentOffset is the item's AlignmentOffset in a grid area of
-// areaSize along this axis. louis14 has no track baselines yet, so a
-// baseline-aligned item is placed at its baseline group's edge (the major
-// group's start, the minor group's end) in place of ComputeBaselineOffset
-// (grid_layout_utils.cc:86-113 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
-// which LOU-978 PR B ports.
-func (d gridItemAxisData) alignmentOffset(areaSize, size, marginStart, marginEnd float64) float64 {
-	edge := d.alignment
-	if edge == AxisEdgeFirstBaseline || edge == AxisEdgeLastBaseline {
-		edge = AxisEdgeStart
-		if d.baselineGroup == BaselineGroupMinor {
-			edge = AxisEdgeEnd
-		}
+// isBaselineAligned reports whether the item aligns to a shared baseline in
+// this axis. Mirrors GridItemData::IsBaselineAligned (grid_item.h:67-71 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) before any alignment fallback
+// (LOU-978 PR D).
+func (d gridItemAxisData) isBaselineAligned() bool {
+	return d.alignment == AxisEdgeFirstBaseline || d.alignment == AxisEdgeLastBaseline
+}
+
+// span is the item's [start, end) tracks in the columns (forColumns) or
+// rows.
+func (item *gridItem) span(forColumns bool) (start, end int) {
+	if forColumns {
+		return item.colStart, item.colEnd
 	}
-	return AlignmentOffset(areaSize, size, marginStart, marginEnd, 0, edge, d.isOverflowSafe)
+	return item.rowStart, item.rowEnd
+}
+
+// axis is the item's alignment data in the columns (forColumns) or rows.
+func (item *gridItem) axis(forColumns bool) gridItemAxisData {
+	if forColumns {
+		return item.columns
+	}
+	return item.rows
 }
