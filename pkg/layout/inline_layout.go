@@ -3277,18 +3277,6 @@ func createLineBoxEx(
 	return result.Fragment, lineHeight, maxAscent, alignOffset, residualSpanStack, lineOOFCandidates
 }
 
-// needsSidewaysVLRBaselineSwap reports whether alphabetic ascent/descent must
-// be swapped for line-metric and text-placement purposes. This applies only to
-// writing-mode: vertical-lr combined with text-orientation: sideways: the
-// glyphs are rotated 90° CW and the block-start side is on the LEFT, so the
-// alphabetic baseline lands at the typographic descent from block-start (not
-// ascent). sideways-lr uses CCW rotation and sideways-rl / vertical-rl +
-// sideways place block-start on the RIGHT, so those keep the normal mapping.
-// See CSS Writing Modes 3 §4.3 and §5.1.
-func needsSidewaysVLRBaselineSwap(wdm WritingDirectionMode, centralBaseline bool) bool {
-	return wdm.WM == WritingModeVerticalLR && !centralBaseline
-}
-
 // blockAscentDescent returns a font's ascent and descent measured from the
 // baseline toward the line's block-start and block-end edges. On the
 // alphabetic baseline these are the font's integer ascent and descent; on the
@@ -3298,7 +3286,7 @@ func needsSidewaysVLRBaselineSwap(wdm WritingDirectionMode, centralBaseline bool
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the split InlineBoxState::
 // ComputeTextMetrics uses for both the line box and the text fragment
 // (core/layout/inline/inline_box_state.cc:130-136 @ same SHA). Line-over is
-// block-end in vertical-lr, so there the two swap.
+// block-end in the flipped-lines mode (vertical-lr), so there the two swap.
 func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistry, wdm WritingDirectionMode, centralBaseline bool) (ascent, descent float64) {
 	ascent = text.FontAscentFromFont(fontSize, fontPath, reg)
 	descent = text.FontDescentFromFont(fontSize, fontPath, reg)
@@ -3307,7 +3295,7 @@ func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistr
 		descent = CentralBaselineUnderSide(height)
 		ascent = height - descent
 	}
-	if wdm.WM == WritingModeVerticalLR {
+	if wdm.IsFlippedLines() {
 		ascent, descent = descent, ascent
 	}
 	return ascent, descent

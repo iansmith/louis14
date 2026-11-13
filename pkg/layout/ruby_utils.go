@@ -55,7 +55,7 @@ func baseFontAscentFromSubLine(
 		// double-count the override delta and push the annotation into the base.
 		fontPath := resolveFontPath(r.Item.Style, fonts)
 		var asc float64
-		if wdm.WM == WritingModeVerticalLR {
+		if wdm.IsFlippedLines() {
 			// louis14 places vertical-lr annotations on the block-start
 			// (line-under) side, so this measures that side, less the
 			// em-height adjustment.
@@ -105,7 +105,7 @@ func annotationEmHeightFromSubLine(
 	if line == nil {
 		return 0, 0
 	}
-	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
+	sidewaysVLR := wdm.IsFlippedLines() && !centralBaseline
 	for _, r := range line.Results {
 		if r.Item == nil || r.Item.Type != InlineItemText || r.Item.Style == nil {
 			continue
