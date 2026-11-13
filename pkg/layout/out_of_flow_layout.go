@@ -487,7 +487,7 @@ func (p *OutOfFlowLayoutPart) CalculateOffset(candidate OutOfFlowCandidate) (Off
 
 	// IMCB (padding-box coords). align_self_direction defaults to Block —
 	// align-self binds to the block axis in Blink unless explicitly set.
-	imcb := ComputeUnclampedIMCB(
+	imcb := ComputeInsetModifiedContainingBlock(child.IsTable(),
 		LogicalSize{InlineSize: cbInline, BlockSize: cbBlock},
 		ComputeAlignment(childStyle),
 		oofInsets,
@@ -507,10 +507,10 @@ func (p *OutOfFlowLayoutPart) CalculateOffset(candidate OutOfFlowCandidate) (Off
 	// insets in an axis are specified and the size is auto, the size is
 	// instead fixed to the IMCB minus non-auto margins minus border+padding
 	// (auto margins are zero for this step, per CSS 2.1 §10.3.7).
-	availInline := max(0, imcb.InlineSize())
+	availInline := imcb.InlineSize()
 	availBlock := cbBlock
 	if cbBlock != Indefinite {
-		availBlock = max(0, imcb.BlockSize())
+		availBlock = imcb.BlockSize()
 	}
 	useFixedInline := false
 	useFixedBlock := false

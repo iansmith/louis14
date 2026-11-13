@@ -17,9 +17,8 @@ import "louis14/pkg/css"
 //
 // Explicit non-ports (Blink has them, we will port when needed):
 //   - Anchor positioning (LogicalAnchorCenterPosition, anchor-center)
-//   - Table-specific IMCB clamp in ComputeInsetModifiedContainingBlock
 //   - Fragmentation column/page context for OOF
-// TODO(anchor-positioning) / TODO(table-imcb-clamp) / TODO(fragmentation)
+// TODO(anchor-positioning) / TODO(fragmentation)
 // markers are placed where Blink's signature takes these.
 
 // InsetBias identifies which edge of the IMCB "wins" when distributing
@@ -418,9 +417,7 @@ func ResizeIMCBInOneAxis(bias InsetBias, amount float64, insetStart, insetEnd *f
 // static position: `staticOffset{Inline,Block}` with the StaticPositionEdge
 // values already mapped to InsetBias via BiasFromStaticEdge.
 //
-// Returns an IMCB ready to be clamped (the caller may negative-clamp if
-// the sum of insets exceeds availableSize; Blink does that inside
-// ComputeInsetModifiedContainingBlock, which we add when wiring the caller).
+// Returns an IMCB ready to be clamped by ComputeInsetModifiedContainingBlock.
 func ComputeUnclampedIMCB(
 	availableSize LogicalSize,
 	alignment LogicalAlignment,
@@ -478,6 +475,52 @@ func ComputeUnclampedIMCB(
 		)
 	_ = blockHasDef
 
+	return imcb
+}
+
+// ComputeInsetModifiedContainingBlock is ComputeUnclampedIMCB clamped: a
+// negative size (insets past each other) grows back to 0, and a table's
+// IMCB shrinks to the containing block's size (a table is never larger
+// than its container), each from the edge its default (else its) inset
+// bias names; the block axis only when availableSize's block size is
+// definite. Mirrors ComputeInsetModifiedContainingBlock
+// (absolute_utils.cc:566-602 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func ComputeInsetModifiedContainingBlock(
+	isTable bool,
+	availableSize LogicalSize,
+	alignment LogicalAlignment,
+	insets LogicalOofInsets,
+	staticOffsetInline, staticOffsetBlock float64,
+	staticInlineBias, staticBlockBias InsetBias,
+	alignSelfDirectionIsInline bool,
+	containerWDM, selfWDM WritingDirectionMode,
+) InsetModifiedContainingBlock {
+	imcb := ComputeUnclampedIMCB(availableSize, alignment, insets,
+		staticOffsetInline, staticOffsetBlock, staticInlineBias, staticBlockBias,
+		alignSelfDirectionIsInline, containerWDM, selfWDM)
+	inlineBias := imcb.InlineInsetBias
+	if imcb.HasInlineDefaultInsetBias {
+		inlineBias = imcb.InlineDefaultInsetBias
+	}
+	blockBias := imcb.BlockInsetBias
+	if imcb.HasBlockDefaultInsetBias {
+		blockBias = imcb.BlockDefaultInsetBias
+	}
+	if size := imcb.InlineSize(); size < 0 {
+		ResizeIMCBInOneAxis(inlineBias, size, &imcb.InlineStart, &imcb.InlineEnd)
+	}
+	blockDefinite := availableSize.BlockSize != Indefinite
+	if size := imcb.BlockSize(); blockDefinite && size < 0 {
+		ResizeIMCBInOneAxis(blockBias, size, &imcb.BlockStart, &imcb.BlockEnd)
+	}
+	if isTable {
+		if excess := imcb.InlineSize() - availableSize.InlineSize; excess > 0 {
+			ResizeIMCBInOneAxis(inlineBias, excess, &imcb.InlineStart, &imcb.InlineEnd)
+		}
+		if excess := imcb.BlockSize() - availableSize.BlockSize; blockDefinite && excess > 0 {
+			ResizeIMCBInOneAxis(blockBias, excess, &imcb.BlockStart, &imcb.BlockEnd)
+		}
+	}
 	return imcb
 }
 
