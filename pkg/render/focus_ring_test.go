@@ -190,6 +190,24 @@ func TestFocusRing_AnchorOutOfFlowChildren(t *testing.T) {
 	}, 200, 80)
 }
 
+// TestFocusRing_FilteredInline: a filter's source covers the element's ink
+// overflow, its outline included (PaintLayer::LocalBoundingBox is the
+// visual overflow rect, core/paint/paint_layer.cc:2172-2179; the outline
+// joins it inflated by OutlinePainter::OutlineOutsetExtent,
+// core/layout/physical_box_fragment.cc:1161-1174, outline_painter.cc:
+// 1050-1061 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a focused
+// inline with blur(0) paints its ring outside its box as without the
+// filter.
+func TestFocusRing_FilteredInline(t *testing.T) {
+	blue := color.RGBA{0, 0, 255, 255}
+	runRingCases(t, []ringCase{
+		{"filtered inline anchor", `<div style="position:absolute;left:20px;top:20px;font:20px/20px Ahem;color:transparent">X<a href="#" style="filter:blur(0);outline:auto 1px blue">XX</a></div>`,
+			[]ringProbe{
+				{60, 19, blue, "the anchor's top ring edge, above its box"},
+			}},
+	}, 200, 80)
+}
+
 // TestFocusRing_TransformedDescendant: a descendant with a layer adds its
 // rects in its own space, mapped to the focused element's through its
 // transform (AddOutlineRectsForDescendant's HasLayer branch,
