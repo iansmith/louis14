@@ -399,7 +399,7 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 	case pc == "empty":
 		return len(node.Children) == 0
 	case strings.HasPrefix(pc, "nth-child("):
-		arg := pc[len("nth-child(") : len(pc)-1] // strip "nth-child(" and ")"
+		arg := functionalPseudoArg(pc, "nth-child(")
 		anb, ofSel, hasOf := splitNthChildArg(arg)
 		if hasOf {
 			return matchesNthChildOf(node, anb, ofSel, false, ctx)
@@ -408,7 +408,7 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 	case strings.HasPrefix(pc, "not("):
 		// kPseudoNot dispatch, core/css/selector_checker.cc:2310-2311 @
 		// d4ecdfed88f962439247c2ad36b8fe47805b1520.
-		return checkPseudoNot(node, pc[len("not("):len(pc)-1], ctx)
+		return checkPseudoNot(node, functionalPseudoArg(pc, "not("), ctx)
 	case pc == "hover", pc == "active":
 		// Dynamic pseudo-classes never match in a static renderer
 		return false
@@ -537,15 +537,15 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		// for element matching. We apply the same rule to authored :is()
 		// containing a pseudo-element (matches Blink behavior for tests like
 		// `:is(*, ::before) *`).
-		arg := pc[len("is(") : len(pc)-1]
+		arg := functionalPseudoArg(pc, "is(")
 		return matchesIsLike(node, arg, ctx)
 	case strings.HasPrefix(pc, "where("):
 		// :where() is identical to :is() but with zero specificity. Same
 		// contextual-invalidation rule applies for pseudo-element arguments.
-		arg := pc[len("where(") : len(pc)-1]
+		arg := functionalPseudoArg(pc, "where(")
 		return matchesIsLike(node, arg, ctx)
 	case strings.HasPrefix(pc, "has("):
-		arg := pc[len("has(") : len(pc)-1]
+		arg := functionalPseudoArg(pc, "has(")
 		// Per CSS Selectors 4 §17.1.4 and CSSWG resolution
 		// (https://github.com/w3c/csswg-drafts/issues/9600), :has() inside
 		// :has() is invalid — the whole selector matches nothing. Detect
@@ -565,14 +565,14 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 	case pc == "only-of-type":
 		return countOfType(node) == 1
 	case strings.HasPrefix(pc, "nth-of-type("):
-		arg := pc[len("nth-of-type(") : len(pc)-1]
+		arg := functionalPseudoArg(pc, "nth-of-type(")
 		return matchesAnPlusB(nthOfTypeIndex(node), arg)
 	case strings.HasPrefix(pc, "nth-last-of-type("):
-		arg := pc[len("nth-last-of-type(") : len(pc)-1]
+		arg := functionalPseudoArg(pc, "nth-last-of-type(")
 		posFromEnd := countOfType(node) - nthOfTypeIndex(node) + 1
 		return matchesAnPlusB(posFromEnd, arg)
 	case strings.HasPrefix(pc, "nth-last-child("):
-		arg := pc[len("nth-last-child(") : len(pc)-1]
+		arg := functionalPseudoArg(pc, "nth-last-child(")
 		anb, ofSel, hasOf := splitNthChildArg(arg)
 		if hasOf {
 			return matchesNthChildOf(node, anb, ofSel, true, ctx)
@@ -597,7 +597,7 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		// directionality on this element" and falls through to ancestor
 		// inheritance / default LTR. Any value other than ltr/rtl on the
 		// pseudo-class argument never matches (per the spec).
-		arg := strings.ToLower(strings.TrimSpace(pc[len("dir(") : len(pc)-1]))
+		arg := strings.ToLower(strings.TrimSpace(functionalPseudoArg(pc, "dir(")))
 		switch arg {
 		case "ltr":
 			return elementDirectionality(node) == DirectionLTR
