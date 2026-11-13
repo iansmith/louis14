@@ -127,11 +127,11 @@ func parseNestedArgument(arg string, ctx matchContext) nestedArgument {
 	if a, ok := nestedSelectorCache.Load(key); ok {
 		return a.(nestedArgument)
 	}
-	branches := SplitTopLevelCommas(strings.TrimSpace(arg))
+	branches := SplitTopLevelCommas(arg)
 	a := nestedArgument{hasPseudoElement: containsPseudoElementArg(branches)}
 	// The branches are parsed uncached: the argument is cached whole.
 	for i, sel := range branches {
-		if sel = strings.TrimSpace(sel); sel != "" {
+		if sel != "" {
 			a.branches = append(a.branches, parseNestedSelectorUncached(sel, ctx.defaultNamespace, ctx.resistDefaultNamespace && i == len(branches)-1))
 		}
 	}
@@ -1219,9 +1219,8 @@ func containsHas(s string) bool {
 func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 	ctx.insideHas = true
 	ctx.resistDefaultNamespace = true // css_selector_parser.cc:1686 @ d4ecdfed88f9
-	selectors := SplitTopLevelCommas(strings.TrimSpace(selectorStr))
+	selectors := SplitTopLevelCommas(selectorStr)
 	for i, sel := range selectors {
-		sel = strings.TrimSpace(sel)
 		if sel == "" {
 			continue
 		}

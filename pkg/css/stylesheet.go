@@ -1491,7 +1491,6 @@ func parseRules(ruleStr string) ([]Rule, error) {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	rules := make([]Rule, 0, len(selectors))
 	for _, sel := range selectors {
-		sel = strings.TrimSpace(sel)
 		if sel == "" || !isValidSelector(sel) {
 			return nil, fmt.Errorf("invalid selector in group: %q", sel)
 		}
@@ -2816,7 +2815,6 @@ func validateLogicalPseudoArg(name, body string) bool {
 		return false
 	}
 	for _, item := range SplitTopLevelCommas(body) {
-		item = strings.TrimSpace(item)
 		if item == "" {
 			return false
 		}
@@ -3998,10 +3996,10 @@ func parseSelector(selectorStr string) Selector {
 			if strings.HasPrefix(pc, "is(") {
 				// :is() takes specificity of its most specific argument
 				arg := functionalPseudoArg(pc, "is(")
-				sels := SplitTopLevelCommas(strings.TrimSpace(arg))
+				sels := SplitTopLevelCommas(arg)
 				maxSpec := 0
 				for _, sel := range sels {
-					innerSel := parseSelector(strings.TrimSpace(sel))
+					innerSel := parseSelector(sel)
 					if innerSel.Specificity > maxSpec {
 						maxSpec = innerSel.Specificity
 					}
@@ -4024,7 +4022,7 @@ func parseSelector(selectorStr string) Selector {
 				if _, ofSel, hasOf := splitNthChildArg(arg); hasOf {
 					maxSpec := 0
 					for _, sel := range SplitTopLevelCommas(ofSel) {
-						innerSel := parseSelector(strings.TrimSpace(sel))
+						innerSel := parseSelector(sel)
 						if innerSel.Specificity > maxSpec {
 							maxSpec = innerSel.Specificity
 						}

@@ -85,7 +85,6 @@ func consumeScopeBoundary(s string, relativeToScope bool) (selectors []Selector,
 func parseScopeBoundarySelectors(list string, relativeToScope bool) ([]Selector, bool) {
 	var selectors []Selector
 	for _, sel := range SplitTopLevelCommas(list) {
-		sel = strings.TrimSpace(sel)
 		if !isValidSelector(sel) {
 			return nil, false
 		}
@@ -363,7 +362,7 @@ func scopedRuleText(rule string) string {
 func mapSelectorGroup(list string, f func(string) string) string {
 	branches := SplitTopLevelCommas(list)
 	for i, sel := range branches {
-		branches[i] = f(strings.TrimSpace(sel))
+		branches[i] = f(sel)
 	}
 	return strings.Join(branches, ", ")
 }

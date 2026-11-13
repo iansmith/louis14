@@ -98,8 +98,8 @@ func (s *StyleSheetContents) bindDeclarations(sheet *Stylesheet) {
 			continue
 		}
 		flat := sheet.Rules[k].Selector
-		for _, sel := range SplitTopLevelCommas(strings.TrimSpace(sheet.RuleTexts[i][:openPos])) {
-			if own := ParseSelector(strings.TrimSpace(sel)); own.Raw == flat.Raw && own.PseudoElement == flat.PseudoElement {
+		for _, sel := range SplitTopLevelCommas(sheet.RuleTexts[i][:openPos]) {
+			if own := ParseSelector(sel); own.Raw == flat.Raw && own.PseudoElement == flat.PseudoElement {
 				s.rules[i].decls = sheet.Rules[k].DeclarationResult
 				break
 			}
@@ -224,8 +224,8 @@ func isValidTopLevelRule(text string) bool {
 	if !ok || !strings.HasSuffix(text, "}") || strings.TrimSpace(text[:openPos]) == "" {
 		return false
 	}
-	for _, sel := range SplitTopLevelCommas(strings.TrimSpace(text[:openPos])) {
-		if sel = strings.TrimSpace(sel); sel == "" || !isValidSelector(sel) {
+	for _, sel := range SplitTopLevelCommas(text[:openPos]) {
+		if sel == "" || !isValidSelector(sel) {
 			return false
 		}
 	}
