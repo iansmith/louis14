@@ -1,6 +1,9 @@
 package css
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // Phase 3 tests: Stylesheet parsing
 
@@ -247,6 +250,42 @@ func TestParseKeyframesRule_ImportantDropped(t *testing.T) {
 			if got != "green" {
 				t.Errorf("stop %q: %s = %q, want %q (important declaration must be dropped)", frame.Stop, longhand, got, "green")
 			}
+		}
+	}
+}
+
+// A comma is top-level only outside every (), [] and {} block, string and
+// escape. A closer ends a block only when it matches the innermost opener:
+// Blink's tokenizer keeps one block stack (CSSTokenizer::BlockStart /
+// BlockEnd, core/css/parser/css_tokenizer.cc:66-87 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so in `([)], x` the `)` is
+// no block end and the comma stays inside `(`. `\,` is an escaped ident
+// code point, not a comma token (css_tokenizer.cc:214-215 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestTopLevelCommaBlocks(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{"a [b, c], d", []string{"a [b, c]", "d"}},
+		{"a {b, c}, d", []string{"a {b, c}", "d"}},
+		{"([)], x", []string{"([)], x"}},
+		{`a\, b, c`, []string{`a\, b`, "c"}},
+	} {
+		if got := SplitTopLevelCommas(tc.in); !slices.Equal(got, tc.want) {
+			t.Errorf("SplitTopLevelCommas(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"[a], b", 3},
+		{"([)], x", -1},
+		{`a\, b`, -1},
+	} {
+		if got := findTopLevelComma(tc.in); got != tc.want {
+			t.Errorf("findTopLevelComma(%q) = %d, want %d", tc.in, got, tc.want)
 		}
 	}
 }
