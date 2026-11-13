@@ -1129,6 +1129,7 @@ func (b *BoxFragmentBuilder) TransferOutOfFlowCandidates(destination *BoxFragmen
 		candidate.StaticPosition.Offset.InlineOffset += additionalOffset.InlineOffset
 		candidate.StaticPosition.Offset.BlockOffset += additionalOffset.BlockOffset
 		if multicol != nil && multicol.FixedposContainingBlock.Fragment != nil && candidate.IsFixedPosition {
+			candidate.ContainingNode = fixedposContainingNode(multicol.FixedposContainingBlock, multicol.FixedposInlineContainer)
 			destination.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
 				Candidate:               candidate,
 				ContainingBlock:         multicol.FixedposContainingBlock,

@@ -634,6 +634,11 @@ type PhysicalFragment struct {
 	// Carried on the fragment so fragmentToBox doesn't need a style map.
 	Style *css.Style
 
+	// OutOfFlowContainingNode is, for an out-of-flow box's fragment, the
+	// element whose containing block it was laid out against, or nil for
+	// the initial containing block (OutOfFlowCandidate.ContainingNode).
+	OutOfFlowContainingNode *html.Node
+
 	// LayoutNode is the LayoutInputNode that produced this fragment.
 	// Set for element-level boxes (not text, not anonymous).
 	// Used by fragmentToBox to connect LayoutInputNode ↔ Box for DOM-ordered paint.

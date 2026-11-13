@@ -501,6 +501,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		IsFieldsetContainer:           frag.IsFieldsetContainer,
 		IsRenderedLegend:              frag.IsRenderedLegend(),
 		AppliedTextDecorations:        frag.AppliedTextDecorations,
+		OutOfFlowContainer:            frag.OutOfFlowContainingNode,
 		HasCollapsedBorders:           frag.HasCollapsedBorders,
 		TableGridRect:                 frag.TableGridRect,
 		TableCollapsedBorders:         frag.TableCollapsedBorders,

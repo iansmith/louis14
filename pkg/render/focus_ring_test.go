@@ -172,6 +172,16 @@ func TestFocusRing_AnchorOutOfFlowChildren(t *testing.T) {
 				{60, 19, blue, "guard: the anchor's own top edge"},
 				{130, 19, blue, "the absolute child, whose containing block the anchor is"},
 			}},
+		// A static inline with will-change: filter is a containing block too
+		// (LayoutObject::ContainerForAbsolutePosition,
+		// core/layout/layout_object.cc:1752-1758 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), not only a positioned
+		// one; layout records it (LOU-990).
+		{"inline will-change anchor", `<div style="position:absolute;left:20px;top:20px;font:20px/20px Ahem;color:transparent">X<a href="#" style="will-change:filter;outline:auto 1px blue">XX` + child + `</a></div>`,
+			[]ringProbe{
+				{60, 19, blue, "guard: the anchor's own top edge"},
+				{130, 19, blue, "the absolute child, whose containing block the will-change: filter anchor is"},
+			}},
 		{"block div", `<div style="position:absolute;left:20px;top:20px;width:50px;height:20px;outline:auto 1px blue">` + child + `</div>`,
 			[]ringProbe{
 				{45, 19, blue, "guard: the div's own top edge"},

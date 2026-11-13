@@ -77,7 +77,7 @@ func (r *Renderer) focusRingOutlineRects(l *PaintLayer) []geometry.RectF {
 			container := f.Parent.Parent
 			containers[container] = true
 			for _, oof := range container.Children {
-				if oof != nil && isOutOfFlow(oof) && r.absoluteContainer(oof.Node) == l.Box.Node {
+				if oof != nil && isOutOfFlow(oof) && oof.OutOfFlowContainer == l.Box.Node {
 					c.addDescendantBox(oof)
 				}
 			}
@@ -213,38 +213,6 @@ func (c *focusRingRectCollector) add(r geometry.RectF) {
 // isOutOfFlow reports whether b is absolutely or fixed positioned.
 func isOutOfFlow(b *layout.Box) bool {
 	return b.Position == css.PositionAbsolute || b.Position == css.PositionFixed
-}
-
-// absoluteContainer approximates LayoutObject::ContainerForAbsolutePosition
-// (core/layout/layout_object.cc:1752-1758 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for n: its nearest ancestor
-// whose computed style is positioned. Transforms, filters, backdrop
-// filters, will-change and containment also make a container; layout
-// resolves the real one (OutOfFlowCandidate's container) but does not carry
-// it onto the out-of-flow box, so they are not considered here (LOU-990
-// carries the container onto the box; this function and elementStyle then
-// go away).
-func (r *Renderer) absoluteContainer(n *html.Node) *html.Node {
-	for a := n; a != nil && a.Parent != nil; {
-		a = a.Parent
-		if s := elementStyle(r.nodeBoxIndex[a]); s != nil && s.GetPosition() != css.PositionStatic {
-			return a
-		}
-	}
-	return nil
-}
-
-// elementStyle is the computed style of b's element. A positioned inline's
-// box fragments paint with an in-flow clone of it (position static,
-// CloneInFlowFragment); its paint group item keeps the element's own.
-func elementStyle(b *layout.Box) *css.Style {
-	if b == nil {
-		return nil
-	}
-	if b.IsOwnPaintGroupFragment() {
-		return b.PaintGroup.Style
-	}
-	return b.Style
 }
 
 // isTextFragment reports whether b is a text fragment's box: no layout node

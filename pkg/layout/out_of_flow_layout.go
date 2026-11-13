@@ -56,6 +56,15 @@ type OutOfFlowCandidate struct {
 	// Mirrors Blink's NGOutOfFlowPositionedNode::inline_container.
 	InlineContainer *html.Node
 
+	// ContainingNode is the element whose containing block the candidate
+	// is laid out against, set when that containing block takes it: an
+	// inline containing block's element, the containing block's own, or
+	// nil for the initial containing block (Blink's LayoutView). Blink's
+	// LayoutObject::ContainerForAbsolutePosition / ContainerForFixedPosition
+	// (core/layout/layout_object.cc:1752-1767 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as layout resolved it.
+	ContainingNode *html.Node
+
 	// BreakToken is the resume-from break token for this OOF, populated
 	// when the OOF spans multiple fragmentainers (e.g. an abspos taller
 	// than a column). At resume time it carries OofStartOffset (set on a
@@ -95,6 +104,9 @@ type OutOfFlowLayoutPart struct {
 	// / is_fixed_container_, out_of_flow_layout_part.cc:544-545).
 	isAbsoluteContainer bool
 	isFixedContainer    bool
+	// isRootElement is set for the root element's part, which stands in
+	// for the LayoutView.
+	isRootElement bool
 
 	// shouldAddOuterFragmentainerChildren defers the candidates the
 	// container contains to the fragmentation context root, because the
@@ -178,6 +190,7 @@ func NewOutOfFlowLayoutPart(ctx *LayoutContext, builder *BoxFragmentBuilder, spa
 			BlockOffset:  -rootEdges.BlockStart - inView.BlockOffset,
 		}
 		p.isAbsoluteContainer, p.isFixedContainer = true, true
+		p.isRootElement = true
 		return p
 	}
 	if node := builder.layoutNode; node != nil {
@@ -243,6 +256,7 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(candidates []OutOfFlowCandidate) 
 	for _, candidate := range candidates {
 		if candidate.InlineContainer != nil {
 			if inlinePart := p.inlineContainingBlockPart(candidate.InlineContainer); inlinePart != nil {
+				candidate.ContainingNode = candidate.InlineContainer
 				propagated = append(propagated, p.LayoutCandidates(inlinePart.layoutCandidate(candidate))...)
 				continue
 			}
@@ -256,6 +270,7 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(candidates []OutOfFlowCandidate) 
 			propagated = append(propagated, candidate)
 			continue
 		}
+		candidate.ContainingNode = p.containingNode(candidate)
 		if p.shouldAddOuterFragmentainerChildren && !p.isInitialColumnBalancingPass {
 			// The static position arrives fragment-local in this CB's
 			// content-box coordinates; AdjustFragmentainerDescendant makes
@@ -279,6 +294,20 @@ func (p *OutOfFlowLayoutPart) LayoutCandidates(candidates []OutOfFlowCandidate) 
 		propagated = append(propagated, p.LayoutCandidates(cbPart.layoutCandidate(candidate))...)
 	}
 	return propagated
+}
+
+// containingNode is the element of this containing block for candidate: the
+// container's, or for the root element — which stands in for the
+// LayoutView and contains every candidate — nil (the initial containing
+// block) unless the root element is itself a containing block for it.
+func (p *OutOfFlowLayoutPart) containingNode(candidate OutOfFlowCandidate) *html.Node {
+	if p.isRootElement {
+		n := p.containerBuilder.layoutNode
+		if n == nil || (candidate.IsFixedPosition && !n.IsFixedContainer()) || (!candidate.IsFixedPosition && !n.IsAbsoluteContainer()) {
+			return nil
+		}
+	}
+	return p.containerBuilder.node
 }
 
 // inlineContainingBlockPart returns the OutOfFlowLayoutPart that lays out a
@@ -314,6 +343,7 @@ func (p *OutOfFlowLayoutPart) layoutCandidate(candidate OutOfFlowCandidate) []Ou
 		InlineOffset: info.Offset.InlineOffset + p.cbOriginInBuilder.InlineOffset,
 		BlockOffset:  info.Offset.BlockOffset + p.cbOriginInBuilder.BlockOffset,
 	}
+	info.result.Fragment.OutOfFlowContainingNode = candidate.ContainingNode
 	p.containerBuilder.AddChild(info.result.Fragment, offset)
 	if p.isInitialColumnBalancingPass {
 		p.containerBuilder.PropagateTallestUnbreakableBlockSize(info.result.TallestUnbreakableBlockSize)
@@ -1250,6 +1280,7 @@ func (p *fragmentationContextOOFPart) AddOOFToFragmentainer(n *NodeToLayout, fra
 	}
 	for i, cand := range p.propagatedDescendants(result, n.offsetInfo, inRoot) {
 		if fixedpos != nil && cand.IsFixedPosition {
+			fixedpos[i].ContainingNode = fixedposContainingNode(fixedposCB, n.descendant.FixedposInlineContainer)
 			p.containerBuilder.AddOutOfFlowFragmentainerDescendant(LogicalOofNodeForFragmentation{
 				Candidate:               fixedpos[i],
 				ContainingBlock:         fixedposCB,
@@ -1297,7 +1328,11 @@ func (p *fragmentationContextOOFPart) GenerateFragment(n *NodeToLayout, fragment
 	SetupSpaceBuilderForFragmentation(p.fragmentainerSpace(), n.offset.BlockOffset, fragmentainerBlockSize,
 		n.descendant.Candidate.RequiresContentBeforeBreaking, &csb)
 	csb.SetBreakToken(n.breakToken)
-	return layoutElement(p.ctx, n.descendant.Candidate.Node, csb.Build())
+	result := layoutElement(p.ctx, n.descendant.Candidate.Node, csb.Build())
+	if result != nil && result.Fragment != nil {
+		result.Fragment.OutOfFlowContainingNode = n.descendant.Candidate.ContainingNode
+	}
+	return result
 }
 
 // fragmentainerSpace is the part of a fragmentainer's constraint space the
