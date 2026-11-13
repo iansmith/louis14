@@ -34,40 +34,6 @@ func computeMinMaxSizesImpl(ctx *LayoutContext, node *LayoutInputNode, space Con
 	wdm := space.WritingDirection
 	geom := NodeFragmentGeometry(node, style, wdm)
 
-	// Table with table-layout:fixed + percentage inline-size: max-content is effectively
-	// infinite. Mirrors Blink's TableLayoutAlgorithm::ComputeMinMaxSizes
-	// (table_layout_algorithm.cc:727): `if (is_fixed_layout && Style().LogicalWidth().HasPercent())
-	// min_max.max_size = TableTypes::kTableMaxInlineSize`. This lets ancestors doing
-	// max-content sizing (flex basis:auto, shrink-to-fit) see the table as "wants as
-	// much space as available", rather than summing potentially-zero column max-contents.
-	// Skip the fast path so we don't collapse to a 0-resolved percent width.
-	if node.IsTable() &&
-		style.GetTableLayout() == css.TableLayoutFixed &&
-		hasPercentLogicalWidth(style, wdm) {
-		minResult := measureBlockMinMax(node, ctx, space, false)
-		result := MinMaxSizes{
-			MinContent: minResult.MinContent,
-			MaxContent: kTableMaxInlineSize,
-		}
-		minInline := ResolveMinInlineSize(style, wdm, space, geom).Float64()
-		if result.MinContent < minInline {
-			result.MinContent = minInline
-		}
-		if result.MaxContent < minInline {
-			result.MaxContent = minInline
-		}
-		if maxInlineLU, hasMax := ResolveMaxInlineSize(style, wdm, space, geom); hasMax {
-			maxInline := maxInlineLU.Float64()
-			if result.MinContent > maxInline {
-				result.MinContent = maxInline
-			}
-			if result.MaxContent > maxInline {
-				result.MaxContent = maxInline
-			}
-		}
-		return result
-	}
-
 	// A replaced box contributes its replaced size, which accounts for its
 	// lengths, aspect ratio and size containment itself
 	// (ComputeMinAndMaxContentContribution, length_utils.cc:468-469 @
@@ -363,10 +329,9 @@ func measureNodeContentMinMax(node *LayoutInputNode, ctx *LayoutContext, style *
 	if node.IsFieldsetContainer() {
 		return measureFieldsetMinMax(node, ctx, space)
 	}
-	// An auto-layout table measures its columns (TableLayoutAlgorithm::
-	// ComputeMinMaxSizes); a fixed-layout table is still measured as a
-	// block (LOU-901 follow-up).
-	if node.IsTable() && style.GetTableLayout() != css.TableLayoutFixed {
+	// A table measures its columns (TableLayoutAlgorithm::
+	// ComputeMinMaxSizes).
+	if node.IsTable() {
 		return NewTableLayoutAlgorithm(ctx, node, space).ComputeMinMaxSizes()
 	}
 	display := style.GetDisplay()

@@ -111,23 +111,34 @@ func consumeURLToken(s string) (value string, n int, ok bool) {
 	return out.String(), len(s), true // end of input closes the token
 }
 
-// skipStringToken is the extent of the string token consumeStringToken
-// reads, without building its value: s is after the opening quote, and n
-// the bytes the token takes, the closing quote included. A newline ends it
-// before the newline as a bad string (bad true); an escaped character,
-// newline included, is skipped; end of input closes it.
-func skipStringToken(s string, quote byte) (n int, bad bool) {
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
+// stringEnd is how a string token ends (CSSTokenizer::ConsumeStringTokenUntil,
+// css_tokenizer.cc:393 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+type stringEnd uint8
+
+const (
+	stringClosed stringEnd = iota // at its closing quote: a <string-token>
+	stringBad                     // before a newline: a <bad-string-token>
+	stringEOF                     // at end of input: a <string-token>
+)
+
+// stringTokenEnd is the index of the last byte of the string token whose
+// opening quote is s[i], and how it ended: its closing quote; the byte
+// before a newline, which ends a bad string; or s's last byte when end of
+// input closes it. An escaped character, newline included, is skipped. A
+// scanner resuming after it sees a bad string's newline.
+func stringTokenEnd(s string, i int) (int, stringEnd) {
+	quote := s[i]
+	for j := i + 1; j < len(s); j++ {
+		switch s[j] {
 		case quote:
-			return i + 1, false
+			return j, stringClosed
 		case '\n', '\r', '\f':
-			return i, true
+			return j - 1, stringBad
 		case '\\':
-			i++
+			j++
 		}
 	}
-	return len(s), false
+	return len(s) - 1, stringEOF
 }
 
 // consumeStringToken mirrors CSSTokenizer::ConsumeStringTokenUntil

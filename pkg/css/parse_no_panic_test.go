@@ -30,13 +30,7 @@ func TestBraceInStringOrCommentDoesNotEndBlock(t *testing.T) {
 		`.p { & a { content: "}" } } b { color: red }`,
 	} {
 		t.Run(css, func(t *testing.T) {
-			sheet := mustParseSheet(t, css, nil)
-			var b *Rule
-			for i := range sheet.Rules {
-				if sheet.Rules[i].Selector.Raw == "b" {
-					b = &sheet.Rules[i]
-				}
-			}
+			b := ruleBySelector(mustParseSheet(t, css, nil), "b")
 			if b == nil || b.Declarations["color"] != "red" {
 				t.Errorf("rule b { color: red } missing or wrong: %+v", b)
 			}
@@ -74,4 +68,66 @@ func FuzzParseSelector(f *testing.F) {
 	f.Fuzz(func(t *testing.T, sel string) {
 		ParseSelector(sel)
 	})
+}
+
+// ruleBySelector is the last rule of sheet whose selector is raw, nil if none.
+func ruleBySelector(sheet *Stylesheet, raw string) *Rule {
+	var found *Rule
+	for i := range sheet.Rules {
+		if sheet.Rules[i].Selector.Raw == raw {
+			found = &sheet.Rules[i]
+		}
+	}
+	return found
+}
+
+// A `{` inside a string does not open a rule's block: Blink sees it inside a
+// string token, so the block opens at the first `{` outside strings
+// (CSSParserImpl::ConsumeQualifiedRule @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestBraceInStringDoesNotOpenBlock(t *testing.T) {
+	for _, q := range []string{`"`, `'`} {
+		sel := `a[title=` + q + `{` + q + `]`
+		for _, css := range []string{
+			sel + ` { color: red }`,
+			sel + `, b { color: red }`,
+			`@media all { ` + sel + ` { color: red } }`,
+			`@supports (display: block) { ` + sel + ` { color: red } }`,
+			`@layer l { ` + sel + ` { color: red } }`,
+			`@container (min-width: 0) { ` + sel + ` { color: red } }`,
+			`.p { & ` + sel + ` { color: red } }`,
+		} {
+			want := sel
+			if css[0] == '.' {
+				want = `:is(.p) ` + sel
+			}
+			t.Run(css, func(t *testing.T) {
+				sheet := mustParseSheet(t, css, nil)
+				if r := ruleBySelector(sheet, want); r == nil || r.Declarations["color"] != "red" {
+					t.Errorf("rule %s { color: red } missing or wrong: %+v", want, sheet.Rules)
+				}
+			})
+		}
+	}
+}
+
+// A string ends at an unescaped newline as a bad-string token, so a `}` on
+// the next line closes the block; an escaped newline continues the string
+// (CSSTokenizer::ConsumeStringTokenUntil, css_tokenizer.cc:393 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestBadStringEndsAtNewline(t *testing.T) {
+	for _, q := range []string{`"`, `'`} {
+		for _, tc := range []struct{ css, sel string }{
+			{"a { content: " + q + "x\n} b { color: red }", "b"},
+			{"@media all { a { content: " + q + "x\n} b { color: red } }", "b"},
+			{"a { content: " + q + "x\\\n}" + q + "; color: red }", "a"},
+		} {
+			t.Run(tc.css, func(t *testing.T) {
+				sheet := mustParseSheet(t, tc.css, nil)
+				if r := ruleBySelector(sheet, tc.sel); r == nil || r.Declarations["color"] != "red" {
+					t.Errorf("rule %s { color: red } missing or wrong: %+v", tc.sel, sheet.Rules)
+				}
+			})
+		}
+	}
 }

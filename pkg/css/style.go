@@ -8814,21 +8814,12 @@ func parseAttrNameAndFallback(arg string) (name, fallback string) {
 func splitCounterArgs(arg string) (name, rest, style string) {
 	// Find first top-level comma (respecting nested parens and quotes).
 	depth := 0
-	inQuote := byte(0)
 	first := -1
 	for i := 0; i < len(arg); i++ {
 		ch := arg[i]
-		if inQuote != 0 {
-			if ch == inQuote {
-				inQuote = 0
-			} else if ch == '\\' && i+1 < len(arg) {
-				i++
-			}
-			continue
-		}
 		switch ch {
 		case '"', '\'':
-			inQuote = ch
+			i, _ = stringTokenEnd(arg, i)
 		case '(':
 			depth++
 		case ')':
@@ -12813,17 +12804,12 @@ func (s *Style) WillChangeEstablishesInlineContainingBlock() bool {
 func splitTopLevelCommas(s string) []string {
 	var parts []string
 	depth := 0
-	inQ := byte(0)
 	start := 0
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case inQ != 0:
-			if c == inQ {
-				inQ = 0
-			}
 		case c == '"' || c == '\'':
-			inQ = c
+			i, _ = stringTokenEnd(s, i)
 		case c == '(':
 			depth++
 		case c == ')':
@@ -12844,18 +12830,17 @@ func splitTopLevelCommas(s string) []string {
 func splitTopLevelFields(s string) []string {
 	var fields []string
 	depth := 0
-	inQ := byte(0)
 	start := -1
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		isSpace := c == ' ' || c == '\t' || c == '\n' || c == '\r'
 		switch {
-		case inQ != 0:
-			if c == inQ {
-				inQ = 0
-			}
 		case c == '"' || c == '\'':
-			inQ = c
+			if start < 0 {
+				start = i
+			}
+			i, _ = stringTokenEnd(s, i)
+			continue
 		case c == '(':
 			depth++
 		case c == ')':
@@ -12863,7 +12848,7 @@ func splitTopLevelFields(s string) []string {
 				depth--
 			}
 		}
-		if depth == 0 && inQ == 0 && isSpace {
+		if depth == 0 && isSpace {
 			if start >= 0 {
 				fields = append(fields, s[start:i])
 				start = -1
