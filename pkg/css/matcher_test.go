@@ -2,6 +2,7 @@ package css
 
 import (
 	"louis14/pkg/html"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -903,5 +904,31 @@ func TestPseudoElementInHasInvalidatesRule(t *testing.T) {
 				t.Errorf("#t color = %q, want %s", got, tc.want)
 			}
 		})
+	}
+}
+
+// A selector list splits at the commas left at the top level of the token
+// stream (CSSSelectorParser::ConsumeComplexSelectorList,
+// core/css/parser/css_selector_parser.cc:311-359 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an escaped `\,` is part of
+// its ident, and a `]` that matches no open `[` is a plain token inside
+// `:is(` (CSSTokenizer::BlockEnd, core/css/parser/css_tokenizer.cc:80-87 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the `)` after it still
+// closes `:is(` and the comma after that separates the list.
+func TestSplitSelectorGroupTopLevel(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{`.a\,b, .c`, []string{`.a\,b`, ".c"}},
+		{`:is(.a]), .b`, []string{`:is(.a])`, ".b"}},
+	} {
+		got := SplitSelectorGroup(tc.in)
+		for i := range got {
+			got[i] = strings.TrimSpace(got[i])
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("SplitSelectorGroup(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
