@@ -1,6 +1,10 @@
 package layout
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/text"
+)
 
 // TestCalculateLeadingSpace_AscentSideFloored pins how a line's leading is
 // split: the ascent side gets floor((line-height − font height) / 2) and the
@@ -53,4 +57,25 @@ func findTextBox(b *Box, s string) *Box {
 		}
 	}
 	return nil
+}
+
+// TestApplyInitialLetter_LeadingNotFlippedInVerticalLR: the initial letter's
+// paragraph line descent takes CalculateLeadingSpace's descent share, which
+// Blink computes without reference to the writing mode (core/layout/inline/
+// line_utils.cc:36-45 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the
+// paragraph's ascent and descent are line-relative, so vertical-lr's
+// flipped-lines mapping does not apply. Ahem 16px (13 + 3) on a 19px line has
+// 3px of leading: 1 over, 2 under, in every writing mode.
+func TestApplyInitialLetter_LeadingNotFlippedInVerticalLR(t *testing.T) {
+	fc := text.DefaultFontConfig()
+	marginTop := func(wm string) string {
+		para := newFontTestStyle(fc, map[string]string{"font-family": "Ahem", "font-size": "16px", "line-height": "19px", "writing-mode": wm})
+		fl := newFontTestStyle(fc, map[string]string{"font-family": "Ahem", "font-size": "16px", "initial-letter": "2"})
+		(&LayoutTreeBuilder{fontConfig: fc}).applyInitialLetter(fl, para)
+		v, _ := fl.Get("margin-top")
+		return v
+	}
+	if h, v := marginTop("horizontal-tb"), marginTop("vertical-lr"); v != h {
+		t.Errorf("vertical-lr initial-letter margin-top = %q, want horizontal-tb's %q", v, h)
+	}
 }
