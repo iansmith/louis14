@@ -601,7 +601,7 @@ func (s *Style) resolveVarsWithStatus(value string) (string, bool) {
 		varName := content
 		fallback := ""
 		hasFallback := false
-		if commaIdx := findCommaOutsideParens(content); commaIdx >= 0 {
+		if commaIdx := findTopLevelComma(content); commaIdx >= 0 {
 			varName = strings.TrimSpace(content[:commaIdx])
 			fallback = strings.TrimSpace(content[commaIdx+1:])
 			hasFallback = true
@@ -744,7 +744,7 @@ func resolveEnvValue(val string) string {
 		inner := strings.TrimSpace(val[start+4 : end])
 
 		// Split on the first comma (outside parens) to get variable name and optional fallback
-		commaIdx := findCommaOutsideParens(inner)
+		commaIdx := findTopLevelComma(inner)
 		varName := strings.ToLower(strings.TrimSpace(inner))
 		fallback := "0px"
 		if commaIdx >= 0 {
@@ -760,24 +760,6 @@ func resolveEnvValue(val string) string {
 		val = val[:start] + resolved + val[end+1:]
 	}
 	return val
-}
-
-// findCommaOutsideParens finds the index of the first comma not inside parentheses.
-func findCommaOutsideParens(s string) int {
-	depth := 0
-	for i, ch := range s {
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				return i
-			}
-		}
-	}
-	return -1
 }
 
 func (s *Style) Set(property, value string) {
@@ -1011,28 +993,6 @@ func (s *Style) GetPercentage(property string) (float64, bool) {
 // accessor resolves through (*Style).GetLengthForVal instead.
 func ParseLength(val string) (float64, bool) {
 	return ParseLengthFull(val, initialFontSize, 0, 0)
-}
-
-// splitCSSFunctionArgs splits comma-separated args respecting nested parens
-func splitCSSFunctionArgs(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-	for i, ch := range s {
-		switch ch {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				parts = append(parts, s[start:i])
-				start = i + 1
-			}
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
 }
 
 // ParseLengthFull parses a length value with em, rem, and viewport unit support
@@ -1543,7 +1503,7 @@ func tokenizeCalc(expr string) []string {
 		// preserved as a distinct token so extractNestedMathCall can
 		// reconstruct min()/max()/clamp() argument lists faithfully.
 		// (calcContext-level evaluators never see commas — they only
-		// appear in re-fed sub-call strings, which splitCSSFunctionArgs
+		// appear in re-fed sub-call strings, which SplitTopLevelCommas
 		// then splits on.)
 		if ch == ',' {
 			tokens = append(tokens, ",")
@@ -8822,7 +8782,7 @@ func ParseContentValues(raw string) []ContentValue {
 func parseAttrNameAndFallback(arg string) (name, fallback string) {
 	arg = strings.TrimSpace(arg)
 	// Split at the first top-level comma (separates name[+type] from fallback).
-	commaIdx := findCommaOutsideParens(arg)
+	commaIdx := findTopLevelComma(arg)
 	rawName := arg
 	rawFallback := ""
 	hasFallback := false
@@ -8861,26 +8821,7 @@ func parseAttrNameAndFallback(arg string) (name, fallback string) {
 // For counter() (two parts) name and style. For counters() (two or
 // three parts) call splitCountersSepAndStyle on `rest` afterward.
 func splitCounterArgs(arg string) (name, rest, style string) {
-	// Find first top-level comma (respecting nested parens and quotes).
-	depth := 0
-	first := -1
-	for i := 0; i < len(arg); i++ {
-		ch := arg[i]
-		switch ch {
-		case '"', '\'':
-			i, _ = stringTokenEnd(arg, i)
-		case '(':
-			depth++
-		case ')':
-			if depth > 0 {
-				depth--
-			}
-		case ',':
-			if depth == 0 && first < 0 {
-				first = i
-			}
-		}
-	}
+	first := findTopLevelComma(arg)
 	if first < 0 {
 		return strings.TrimSpace(arg), "", ""
 	}
@@ -9064,23 +9005,7 @@ func expandRepeatTracks(parts []string) []string {
 		if strings.HasPrefix(part, "repeat(") && strings.HasSuffix(part, ")") {
 			inner := strings.TrimSpace(part[7 : len(part)-1]) // strip "repeat(" and ")"
 			// Find the first comma at depth 0
-			commaIdx := -1
-			depth := 0
-			for i := 0; i < len(inner); i++ {
-				switch inner[i] {
-				case '(':
-					depth++
-				case ')':
-					depth--
-				case ',':
-					if depth == 0 {
-						commaIdx = i
-					}
-				}
-				if commaIdx >= 0 {
-					break
-				}
-			}
+			commaIdx := findTopLevelComma(inner)
 			if commaIdx < 0 {
 				// Malformed repeat(), pass through as-is
 				result = append(result, part)
@@ -10065,20 +9990,8 @@ func extractImageSetFirstURL(val string) (string, bool) {
 	innerStart := setIdx + len("image-set(")
 
 	// Find the matching close paren for the image-set() call
-	depth := 1
-	innerEnd := innerStart
-	for innerEnd < len(val) && depth > 0 {
-		switch val[innerEnd] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		}
-		if depth > 0 {
-			innerEnd++
-		}
-	}
-	if depth != 0 {
+	innerEnd := matchClosingParen(val, innerStart-1)
+	if innerEnd < 0 {
 		return "", false
 	}
 
@@ -10086,7 +9999,7 @@ func extractImageSetFirstURL(val string) (string, bool) {
 	inner := val[innerStart:innerEnd]
 
 	// Split into comma-separated candidates respecting nested parens
-	entries := splitCSSFunctionArgs(inner)
+	entries := SplitTopLevelCommas(inner)
 	if len(entries) == 0 {
 		return "", false
 	}
@@ -10101,18 +10014,9 @@ func extractImageSetFirstURL(val string) (string, bool) {
 	// Case 1: entry starts with url(...)
 	if strings.HasPrefix(strings.ToLower(first), "url(") {
 		// Extract just the url(...) portion
-		urlEnd := 4 // past "url("
-		d := 1
-		for urlEnd < len(first) && d > 0 {
-			switch first[urlEnd] {
-			case '(':
-				d++
-			case ')':
-				d--
-			}
-			if d > 0 {
-				urlEnd++
-			}
+		urlEnd := matchClosingParen(first, len("url"))
+		if urlEnd < 0 {
+			return "", false
 		}
 		urlPart := first[:urlEnd+1]
 		return ParseURLValue(urlPart)

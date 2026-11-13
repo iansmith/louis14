@@ -407,3 +407,20 @@ func TestImageValueLayersSplitOutsideStrings(t *testing.T) {
 		t.Errorf("isValidImageValue(%q) = true, want false", v)
 	}
 }
+
+// An image-set() candidate list splits at commas outside parentheses and
+// string tokens, and the call ends at its own `)`, not one inside a string:
+// a quoted `,` or `)` is string text (CSSTokenizer::ConsumeStringTokenUntil,
+// core/css/parser/css_tokenizer.cc:393-435 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestImageSetFirstURLOutsideStrings(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`image-set("a,b.png" 1x, "c.png" 2x)`, "a,b.png"},
+		{`image-set("a).png" 1x, "c.png" 2x)`, "a).png"},
+		{`image-set(url("a).png") 1x, url(c.png) 2x)`, "a).png"},
+	} {
+		if got, ok := extractImageSetFirstURL(tc.in); !ok || got != tc.want {
+			t.Errorf("extractImageSetFirstURL(%q) = %q, %v; want %q, true", tc.in, got, ok, tc.want)
+		}
+	}
+}

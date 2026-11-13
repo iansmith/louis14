@@ -59,7 +59,7 @@ func parseLinearGradient(val string, style *css.Style) (direction gradientDirect
 	}
 	inner = strings.TrimSpace(inner)
 
-	args := splitGradientArgs(inner)
+	args := css.SplitTopLevelCommas(inner)
 	if len(args) == 0 {
 		return gradientDirection{}, nil, false, false
 	}
@@ -277,28 +277,6 @@ func parseStopPosition(s string) (pos float64, ok bool, isPercent bool) {
 		}
 	}
 	return 0, false, false
-}
-
-// splitGradientArgs splits a gradient argument list respecting nested parens.
-func splitGradientArgs(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				parts = append(parts, s[start:i])
-				start = i + 1
-			}
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
 }
 
 // resolveStopPositions fills in unspecified stop positions by interpolation.
@@ -972,7 +950,7 @@ func parseRadialGradient(val string, boxW, boxH float64, style *css.Style) (cx, 
 		inner = inner[:idx]
 	}
 	inner = strings.TrimSpace(inner)
-	args := splitGradientArgs(inner)
+	args := css.SplitTopLevelCommas(inner)
 	if len(args) < 2 {
 		return 0, 0, 0, 0, nil, false, false
 	}
@@ -1456,7 +1434,7 @@ func parseConicGradient(val string, boxW, boxH float64, style *css.Style) (cx, c
 	// A single color stop with two positions ("green 0 0") already yields
 	// the two stops the grammar requires, so the stop count is checked after
 	// expansion below, not on the raw argument count.
-	args := splitGradientArgs(inner)
+	args := css.SplitTopLevelCommas(inner)
 	if len(args) == 0 {
 		return 0, 0, 0, nil, false, false
 	}

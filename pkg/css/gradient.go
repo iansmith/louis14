@@ -58,7 +58,7 @@ func ParseLinearGradient(value string) (*Gradient, bool) {
 	content := value[len("linear-gradient(") : len(value)-1]
 
 	// Split by commas (being careful about commas inside functions like rgb())
-	parts := splitGradientParts(content)
+	parts := SplitTopLevelCommas(content)
 	if len(parts) < 2 {
 		return nil, false
 	}
@@ -214,34 +214,6 @@ func isColorFunctionHead(head string) bool {
 	return false
 }
 
-// splitGradientParts splits gradient content by commas, respecting parentheses
-func splitGradientParts(content string) []string {
-	var parts []string
-	var current strings.Builder
-	parenDepth := 0
-
-	for _, ch := range content {
-		if ch == '(' {
-			parenDepth++
-			current.WriteRune(ch)
-		} else if ch == ')' {
-			parenDepth--
-			current.WriteRune(ch)
-		} else if ch == ',' && parenDepth == 0 {
-			parts = append(parts, current.String())
-			current.Reset()
-		} else {
-			current.WriteRune(ch)
-		}
-	}
-
-	if current.Len() > 0 {
-		parts = append(parts, current.String())
-	}
-
-	return parts
-}
-
 // ConvertPixelOffsetsToPercentages converts pixel-based offsets to percentages
 // based on the gradient size in the specified direction
 func (g *Gradient) ConvertPixelOffsetsToPercentages(width, height float64) {
@@ -347,7 +319,7 @@ func ParseRadialGradient(value string) (*Gradient, bool) {
 	}
 
 	content := value[len("radial-gradient(") : len(value)-1]
-	parts := splitGradientParts(content)
+	parts := SplitTopLevelCommas(content)
 	if len(parts) < 2 {
 		return nil, false
 	}
@@ -675,7 +647,7 @@ func ParseConicGradient(value string) (*Gradient, bool) {
 		return nil, false
 	}
 	content := value[len("conic-gradient(") : len(value)-1]
-	parts := splitGradientParts(content)
+	parts := SplitTopLevelCommas(content)
 	if len(parts) < 2 {
 		return nil, false
 	}

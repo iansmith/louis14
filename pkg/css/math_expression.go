@@ -225,7 +225,7 @@ func classifyMathArg(s string) argType {
 // percent — the test css-values/max-unitless-zero-invalid asserts this
 // (max(100%) is valid; max(0, 100%) is not).
 func evalMinMaxCtx(argsStr, mode string, ctx calcContext) (float64, bool) {
-	args := splitCSSFunctionArgs(argsStr)
+	args := SplitTopLevelCommas(argsStr)
 	if len(args) < 1 {
 		return 0, false
 	}
@@ -272,7 +272,7 @@ func evalMinMaxCtx(argsStr, mode string, ctx calcContext) (float64, bool) {
 // minimum"). The bare-keyword "none" forms aren't covered by any of the
 // failing tests, so they're not implemented here.
 func evalClampCtx(argsStr string, ctx calcContext) (float64, bool) {
-	args := splitCSSFunctionArgs(argsStr)
+	args := SplitTopLevelCommas(argsStr)
 	if len(args) != 3 {
 		return 0, false
 	}
@@ -352,7 +352,7 @@ func isValidLPMathFunctionAtParseTime(val string) bool {
 	default:
 		return true
 	}
-	args := splitCSSFunctionArgs(inner)
+	args := SplitTopLevelCommas(inner)
 	hasUnitlessZero := false
 	hasLPOrLength := false
 	for _, a := range args {
@@ -390,9 +390,8 @@ func isValidLPMathExprAtParseTime(expr string) bool {
 	if !strings.ContainsAny(expr, "+-") {
 		return true
 	}
-	// Splitting on +/- naively is wrong (- can be a sign of a token);
-	// rely on splitting at top level only. The existing splitCSSFunctionArgs
-	// splits on commas at depth 0 — for additive split we walk manually.
+	// Splitting on +/- naively is wrong (- can be a sign of a token), so
+	// split at top level only.
 	terms := splitAdditiveTerms(expr)
 	hasUnitlessZero := false
 	hasLPOrLength := false

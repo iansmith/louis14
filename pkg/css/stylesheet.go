@@ -2241,7 +2241,11 @@ func parseFeatureNode(s string) ConditionNode {
 }
 
 // parseMediaQueryList parses a comma-separated media-query-list
-// (CSS Media Queries 4 §2.1) into one *MediaQuery per branch. Used by
+// (CSS Media Queries 4 §2.1) into one *MediaQuery per branch, split at
+// top-level commas as Blink's `MediaQueryParser::ParseMediaQuerySet` splits
+// its comma-OR branches
+// (third_party/blink/renderer/core/css/parser/media_query_parser.cc @
+// 4883d11f). Used by
 // the conditional `@import url(...) <media-query-list>` form. Whitespace-only
 // or empty input returns an empty slice. Each branch is parsed with
 // parseMediaQuery so that unknown features/types preserve Kleene 3-valued
@@ -2251,7 +2255,7 @@ func parseMediaQueryList(s string) []*MediaQuery {
 	if s == "" {
 		return nil
 	}
-	branches := splitMediaQueryListBranches(s)
+	branches := SplitTopLevelCommas(s)
 	out := make([]*MediaQuery, 0, len(branches))
 	for _, branch := range branches {
 		branch = strings.TrimSpace(branch)
@@ -2261,34 +2265,6 @@ func parseMediaQueryList(s string) []*MediaQuery {
 		out = append(out, parseMediaQuery(branch))
 	}
 	return out
-}
-
-// splitMediaQueryListBranches splits a media-query-list by top-level commas
-// (CSS Media Queries 4 §2.1). Commas inside parenthesized media features are
-// ignored. Mirrors the comma-OR split in Blink's
-// `MediaQueryParser::ParseMediaQuerySet` at
-// third_party/blink/renderer/core/css/parser/media_query_parser.cc @ 4883d11f.
-func splitMediaQueryListBranches(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			if depth > 0 {
-				depth--
-			}
-		case ',':
-			if depth == 0 {
-				parts = append(parts, s[start:i])
-				start = i + 1
-			}
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
 }
 
 // splitMediaConditions splits a media query condition string by " and " at
