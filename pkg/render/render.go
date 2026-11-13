@@ -3961,7 +3961,7 @@ func clampInt(v, lo, hi int) int {
 // (BoxPainterBase::PaintBorder, box_painter_base.cc:1745-1780 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (r *Renderer) drawBorders(layer *PaintLayer, rect layout.PhysicalRect) {
-	if layer.BorderImageSource != nil || layer.BorderImageGenerated != "" {
+	if layer.hasBorderImage() {
 		if r.paintNinePieceImage(layer, rect) {
 			return
 		}
