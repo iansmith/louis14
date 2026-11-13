@@ -1813,8 +1813,10 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The content
 				// sizes skip the width, which ComputeMinMaxSizes would
 				// return as the cell's contribution. An orthogonal cell
-				// keeps min = max = its width.
-				if isOrthogonal {
+				// keeps min = max = its width. A fixed-layout cell
+				// measures no content, so its max is its width (its min is
+				// zeroed below).
+				if isOrthogonal || isFixedLayout {
 					cellMin, cellMax = explicitBB, explicitBB
 				} else {
 					content := computeContentMinMaxSizes(tla.ctx, cell.node, childSpace)
