@@ -35,3 +35,32 @@ func TestBaseFontAscentFromSubLine_EmHeight(t *testing.T) {
 		}
 	}
 }
+
+// TestBaseFontAscentFromSubLine_CentralEmHeight: on the central baseline
+// ComputeEmHeight works from Height() / 2, which can be a half pixel, with no
+// floor (ruby_utils.cc:90-107 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and
+// :106 moves the em height to the integer text top, so the annotation sits
+// ceil(H / 2) - max(0, H / 2 - ceil(normalized ascent)) above the baseline.
+// Liberation Serif 16px with LOU-920's hhea metrics (mazarin #125): H =
+// 14 + 3 = 17, normalized central ascent 16 - 8 = 8, so 9 - 0.5 = 8.5;
+// Ahem 16px: H = 16, 8 - 0 = 8.
+func TestBaseFontAscentFromSubLine_CentralEmHeight(t *testing.T) {
+	fc := text.DefaultFontConfig()
+	for _, tc := range []struct {
+		family string
+		want   float64
+	}{
+		{"serif", 8.5},
+		{"Ahem", 8},
+	} {
+		s := css.NewStyle()
+		s.Set("font-family", tc.family)
+		s.Set("font-size", "16px")
+		s.Set("writing-mode", "vertical-rl")
+		s.UpdateFont(text.NewCSSFontSelector(fc))
+		line := &LineInfo{Results: []InlineItemResult{{Item: &InlineItem{Type: InlineItemText, Style: s}}}}
+		if got := baseFontAscentFromSubLine(line, NewWritingDirectionMode(s), fc, true); got != tc.want {
+			t.Errorf("%s 16px central: base em-height ascent = %v, want %v", tc.family, got, tc.want)
+		}
+	}
+}
