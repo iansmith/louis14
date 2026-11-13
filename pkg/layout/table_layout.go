@@ -1567,7 +1567,7 @@ func cellHasSpecifiedBlockSize(style *css.Style, wdm WritingDirectionMode) bool 
 	if style == nil {
 		return false
 	}
-	_, ok := style.GetLength(logicalBlockSizeProperty(wdm))
+	_, ok := cellFixedLength(style, logicalBlockSizeProperty(wdm))
 	return ok
 }
 
@@ -1582,7 +1582,7 @@ func cellCSSBlockSize(style *css.Style, wdm WritingDirectionMode, frag *Physical
 	if style == nil || frag == nil {
 		return 0, false
 	}
-	size, ok := style.GetLength(logicalBlockSizeProperty(wdm))
+	size, ok := cellFixedLength(style, logicalBlockSizeProperty(wdm))
 	if !ok {
 		return 0, false
 	}
@@ -1746,10 +1746,26 @@ func cellExplicitInlineSize(cell tableCell, tableWD WritingDirectionMode) (float
 	if cell.style == nil {
 		return 0, false
 	}
-	if w, ok := cell.style.GetLength(logicalInlineSizeProperty(tableWD)); ok && w > 0 {
+	if w, ok := cellFixedLength(cell.style, logicalInlineSizeProperty(tableWD)); ok && w > 0 {
 		return w, true
 	}
 	return 0, false
+}
+
+// cellFixedLength returns a cell's prop when it is a fixed length (Blink's
+// Length::IsFixed), the only sizes the table reads as lengths
+// (InlineSizesFromStyle, table/table_layout_algorithm_types.cc:24-75;
+// ComputeMinimumRowBlockSize, table/table_layout_utils.cc:265-292 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A calculation with a
+// percentage is not one, though GetLength resolves it against 0: the
+// table reads it as a percentage at most (cellPercentageInlineSize), else
+// as auto.
+func cellFixedLength(style *css.Style, prop string) (float64, bool) {
+	v, ok := style.Get(prop)
+	if !ok || css.IsMathFunctionWithPercent(v) {
+		return 0, false
+	}
+	return style.GetLengthForVal(v)
 }
 
 // computeColumnConstraints returns the table's column constraints: each
