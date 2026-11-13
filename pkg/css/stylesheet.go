@@ -1334,58 +1334,39 @@ func isValidSelector(s string) bool {
 	if s[0] == '}' || s[0] == ';' || s[0] == '{' {
 		return false
 	}
-	// Blocks stack as the token stream stacks them (walkTopLevel): a closer
+	// Blocks stack as the token stream stacks them (walkBlocks): a closer
 	// matching no open block is a plain token. At the top level, or in an
 	// unforgiving argument, that token voids the selector; inside an :is()
 	// or :where() argument only that argument, the forgiving list keeping
 	// the selector valid (CSSSelectorParser::ConsumePseudo kPseudoIs /
 	// kPseudoWhere, css_selector_parser.cc:1666-1749 @
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	type frame struct {
-		closer    byte
-		forgiving bool
-	}
-	var frames []frame
-	inForgiving := func() bool {
-		return slices.ContainsFunc(frames, func(f frame) bool { return f.forgiving })
-	}
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; c {
-		case '\\':
-			// An escaped `;`, `{`, ... is ident text.
-			if n := escapeLen(s, i); n > 0 {
-				i += n - 1
-			}
+	valid := true
+	end := walkBlocks(s, func(i int, b blockState) bool {
+		switch s[i] {
 		case '"', '\'':
 			// A bad string makes the selector invalid; a `{` or `}` in a
 			// string is string text.
-			var end stringEnd
-			if i, end = stringTokenEnd(s, i); end != stringClosed {
-				return false
+			if _, end := stringTokenEnd(s, i); end != stringClosed {
+				valid = false
 			}
-		case '(':
-			name := strings.ToLower(functionNameBefore(s, i))
-			frames = append(frames, frame{closer: ')', forgiving: name == "is" || name == "where"})
-		case '[':
-			frames = append(frames, frame{closer: ']'})
 		case ')', ']':
-			if len(frames) > 0 && frames[len(frames)-1].closer == c {
-				frames = frames[:len(frames)-1]
-			} else if !inForgiving() {
-				return false
+			if b.stray && b.forgiving == 0 {
+				valid = false
 			}
 		case ';':
 			// A `;` is no selector token. One in a functional
 			// pseudo-class's argument is left to that argument's parse.
-			if !slices.ContainsFunc(frames, func(f frame) bool { return f.closer == ')' }) {
-				return false
+			if b.parens == 0 {
+				valid = false
 			}
 		case '{', '}':
 			// Braces inside selector text are invalid
-			return false
+			valid = false
 		}
-	}
-	if slices.ContainsFunc(frames, func(f frame) bool { return f.closer == ']' }) {
+		return valid
+	})
+	if !valid || end.brackets > 0 {
 		return false
 	}
 	// :has() disallows pseudo-elements in its unforgiving argument.
@@ -1413,37 +1394,15 @@ func scanPseudoElements(sel string) (unforgiven, inHas bool) {
 	if strings.IndexByte(sel, ':') < 0 {
 		return false, false
 	}
-	type frame struct{ forgiving, has bool }
-	var frames []frame
-	for i := 0; i < len(sel); i++ {
-		switch sel[i] {
-		case '"', '\'':
-			i, _ = stringTokenEnd(sel, i)
-		case '\\':
-			i++
-		case '(':
-			name := strings.ToLower(functionNameBefore(sel, i))
-			frames = append(frames, frame{forgiving: name == "is" || name == "where", has: name == "has"})
-		case ')':
-			if len(frames) > 0 {
-				frames = frames[:len(frames)-1]
-			}
-		case ':':
-			if !namesPseudoElementAt(sel, i) {
-				continue
-			}
-			// An enclosing :is() or :where() at any depth absorbs the
-			// pseudo-element, and the invalid :has() it may void.
-			forgiven := slices.ContainsFunc(frames, func(f frame) bool { return f.forgiving })
-			if !forgiven {
-				unforgiven = true
-				inHas = inHas || slices.ContainsFunc(frames, func(f frame) bool { return f.has })
-			}
-			if i+1 < len(sel) && sel[i+1] == ':' {
-				i++
-			}
+	walkBlocks(sel, func(i int, b blockState) bool {
+		// An enclosing :is() or :where() at any depth absorbs the
+		// pseudo-element, and the invalid :has() it may void.
+		if sel[i] == ':' && namesPseudoElementAt(sel, i) && b.forgiving == 0 {
+			unforgiven = true
+			inHas = inHas || b.has > 0
 		}
-	}
+		return true
+	})
 	return unforgiven, inHas
 }
 
@@ -3071,18 +3030,52 @@ func indexTopLevel(s string, target byte) int {
 // every (), [] and {} block (an opener or a stray closer included), until f
 // returns false. A string or escape at the top level is reported at its
 // first byte (its quote or backslash) only; f sees none of the bytes inside
-// it. Blocks stack as
-// Blink's tokenizer stacks them (CSSTokenizer::BlockStart / BlockEnd,
-// core/css/parser/css_tokenizer.cc:66-87 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a closer that does not match
-// the innermost block is a plain token.
+// it.
 func walkTopLevel(s string, f func(i int) bool) {
-	var buf [16]byte
-	blocks := buf[:0]
+	walkBlocks(s, func(i int, b blockState) bool {
+		return b.depth > 0 || f(i)
+	})
+}
+
+// blockState is what walkBlocks reports at a byte: how many blocks are
+// open, which kinds, and whether the byte is a closer that matches no open
+// block (a plain token).
+type blockState struct {
+	depth      int  // open blocks
+	parens     int  // open `(` blocks
+	brackets   int  // open `[` blocks
+	forgiving  int  // open :is() / :where() arguments
+	has        int  // open :has() arguments
+	stray      bool // a closer matching no open block
+	closesLast bool // a closer that closes the last open block
+}
+
+// walkBlocks calls f with the index of each byte of s outside strings and
+// escapes, and the blocks open at it (an opener reported before its block
+// opens, a closer before it closes), until f returns false; it returns the
+// state after the last byte. A string or escape is reported at its first
+// byte only. Blocks stack as Blink's tokenizer stacks them
+// (CSSTokenizer::BlockStart / BlockEnd, core/css/parser/css_tokenizer.cc:
+// 66-87 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a `(` is a function
+// only after `:name` and outside every `[` (an attribute selector holds no
+// function).
+func walkBlocks(s string, f func(i int, b blockState) bool) blockState {
+	const (
+		plain = iota
+		forgivingArg
+		hasArg
+	)
+	type frame struct{ closer, kind byte }
+	var buf [16]frame
+	open := buf[:0]
+	var b blockState
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if len(blocks) == 0 && !f(i) {
-			return
+		isCloser := c == ')' || c == ']' || c == '}'
+		b.stray = isCloser && (len(open) == 0 || open[len(open)-1].closer != c)
+		b.closesLast = isCloser && !b.stray && len(open) == 1
+		if !f(i, b) {
+			return b
 		}
 		switch c {
 		case '\\':
@@ -3092,13 +3085,48 @@ func walkTopLevel(s string, f func(i int) bool) {
 		case '"', '\'':
 			i, _ = stringTokenEnd(s, i)
 		case '(', '[', '{':
-			blocks = append(blocks, blockCloser(c))
+			fr := frame{closer: blockCloser(c), kind: plain}
+			switch c {
+			case '(':
+				b.parens++
+				if b.brackets == 0 {
+					switch strings.ToLower(functionNameBefore(s, i)) {
+					case "is", "where":
+						fr.kind = forgivingArg
+						b.forgiving++
+					case "has":
+						fr.kind = hasArg
+						b.has++
+					}
+				}
+			case '[':
+				b.brackets++
+			}
+			open = append(open, fr)
+			b.depth++
 		case ')', ']', '}':
-			if len(blocks) > 0 && blocks[len(blocks)-1] == c {
-				blocks = blocks[:len(blocks)-1]
+			if b.stray {
+				continue
+			}
+			fr := open[len(open)-1]
+			open = open[:len(open)-1]
+			b.depth--
+			switch c {
+			case ')':
+				b.parens--
+			case ']':
+				b.brackets--
+			}
+			switch fr.kind {
+			case forgivingArg:
+				b.forgiving--
+			case hasArg:
+				b.has--
 			}
 		}
 	}
+	b.stray, b.closesLast = false, false
+	return b
 }
 
 // consumeSupportsDecl reports whether inner is a valid <declaration> for
@@ -3904,23 +3932,12 @@ func parseSelector(selectorStr string) Selector {
 	if pseudoElement == "" {
 		const hlTok = "::highlight("
 		if idx := findTopLevelPseudoElement(selectorStr, hlTok); idx >= 0 {
-			// Find matching closing paren.
-			depth := 1
-			end := idx + len(hlTok)
-			for end < len(selectorStr) && depth > 0 {
-				switch selectorStr[end] {
-				case '(':
-					depth++
-				case ')':
-					depth--
-				}
-				if depth == 0 {
-					break
-				}
-				end++
-			}
-			if depth == 0 && end < len(selectorStr) {
-				name := trimCSSSpace(selectorStr[idx+len(hlTok) : end])
+			// Its `)` is the first in the argument outside every block,
+			// string and escape.
+			start := idx + len(hlTok)
+			if n := indexTopLevel(selectorStr[start:], ')'); n >= 0 {
+				end := start + n
+				name := trimCSSSpace(selectorStr[start:end])
 				pseudoElement = "highlight(" + name + ")"
 				if idx > 0 && selectorStr[idx-1] == ' ' {
 					pseudoElementForDescendants = true
@@ -4115,12 +4132,20 @@ func isCompoundDelimiter(c byte) bool {
 }
 
 // escapeLen returns the length of the escape at s[i] (the backslash and
-// what it escapes), or 0 when s[i] starts none: a `\` before a newline or
-// at the end is no escape (TwoCharsAreValidEscape,
-// core/css/parser/css_tokenizer.cc:214-215 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// what it escapes), or 0 when s[i] starts none: a `\` before a newline is
+// no escape (TwoCharsAreValidEscape, core/css/parser/css_tokenizer.cc:
+// 214-215 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); one at the end
+// escapes U+FFFD.
 func escapeLen(s string, i int) int {
-	if s[i] != '\\' || i+1 >= len(s) || isCSSNewline(s[i+1]) {
+	if s[i] != '\\' {
+		return 0
+	}
+	if i+1 >= len(s) {
+		// At end of input the escape is U+FFFD (ConsumeEscape,
+		// css_tokenizer.cc:689-691 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		return 1
+	}
+	if isCSSNewline(s[i+1]) {
 		return 0
 	}
 	_, n := consumeEscape(s[i+1:])
@@ -4224,26 +4249,21 @@ func parseSelectorPart(s string) SelectorPart {
 				break
 			}
 			i++ // skip the ':'
-			j := i
-			depth := 0
-			for j < len(s) {
-				if n := escapeLen(s, j); n > 0 {
-					j += n
-					continue
+			// The pseudo-class runs to the next compound delimiter outside
+			// every block, string and escape, or through its function's
+			// own `)`.
+			j := len(s)
+			walkBlocks(s[i:], func(k int, b blockState) bool {
+				switch {
+				case b.depth == 0 && isCompoundDelimiter(s[i+k]):
+					j = i + k
+				case b.closesLast:
+					j = i + k + 1
+				default:
+					return true
 				}
-				if s[j] == '(' {
-					depth++
-				} else if s[j] == ')' {
-					depth--
-					if depth == 0 {
-						j++ // include the closing paren
-						break
-					}
-				} else if depth == 0 && isCompoundDelimiter(s[j]) {
-					break
-				}
-				j++
-			}
+				return false
+			})
 			if j > i {
 				part.PseudoClasses = append(part.PseudoClasses, s[i:j])
 			}

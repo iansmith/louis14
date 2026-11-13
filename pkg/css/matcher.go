@@ -555,7 +555,8 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		if containsHas(arg) {
 			return false
 		}
-		return matchesHas(node, trimCSSSpace(arg), ctx)
+		// matchesHas's SplitTopLevelCommas trims each argument.
+		return matchesHas(node, arg, ctx)
 	case pc == "first-of-type":
 		return nthOfTypeIndex(node) == 1
 	case pc == "last-of-type":
@@ -855,7 +856,7 @@ func splitNthChildArg(arg string) (string, string, bool) {
 	if of < 0 {
 		return arg, "", false
 	}
-	anb := strings.TrimSpace(arg[:of])
+	anb := trimCSSSpace(arg[:of])
 	ofSel := trimCSSSpace(arg[of+2:])
 	if anb == "" || ofSel == "" {
 		return arg, "", false
