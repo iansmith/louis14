@@ -127,13 +127,12 @@ func axisEdgeFromItemPosition(forColumns, isReplaced bool, container *css.Style,
 // inline axis (a grid's columns, a column flex's cross axis) or block axis
 // (a grid's rows, a row flex's cross axis): the item's own start (end)
 // edge, mapped through its writing direction onto the container's. Grid,
-// flex and block layout's out-of-flow static-position edges share it. Mirrors the LogicalToPhysical / PhysicalToLogical
+// flex and out-of-flow static-position edges and inset alignment
+// (GetAlignmentInsetBias) share it. Mirrors the LogicalToPhysical / PhysicalToLogical
 // pair in AxisEdgeFromItemPosition (grid/grid_item.cc:90-111) and the
 // LogicalToLogical in FlexLayoutAlgorithm::ResolvedAlignSelf
 // (flex/flex_layout_algorithm.cc:317-326 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Abspos inset alignment still
-// resolves self-start / self-end its own way (axesOppose in
-// GetAlignmentInsetBias, absolute_utils.go), not yet on this path.
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func selfAxisEdge(inlineAxis, isEnd bool, itemWDM, containerWDM WritingDirectionMode) AxisEdge {
 	// 1 marks the item's start edges.
 	logical := LogicalToLogical(LogicalEdges{InlineStart: 1, BlockStart: 1}, itemWDM, containerWDM)

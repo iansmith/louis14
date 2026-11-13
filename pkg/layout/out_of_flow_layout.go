@@ -27,14 +27,6 @@ type OutOfFlowCandidate struct {
 	// Mirrors Blink's LogicalStaticPosition.
 	StaticPosition LogicalStaticPosition
 
-	// Alignment carries align-self / justify-self for the child, driving
-	// IMCB inset bias when both insets are specified. Zero value
-	// (ItemPositionNormal on both axes) yields BiasStart, matching the
-	// pre-IMCB behavior.
-	//
-	// Mirrors Blink's LogicalAlignment passed to ComputeOofDimensions.
-	Alignment LogicalAlignment
-
 	// IsFixedPosition distinguishes position:fixed from position:absolute.
 	// Fixed elements propagate past positioned ancestors to the viewport (ICB),
 	// unless an ancestor with transform/filter/will-change creates a containing
@@ -497,7 +489,7 @@ func (p *OutOfFlowLayoutPart) CalculateOffset(candidate OutOfFlowCandidate) (Off
 	// align-self binds to the block axis in Blink unless explicitly set.
 	imcb := ComputeUnclampedIMCB(
 		LogicalSize{InlineSize: cbInline, BlockSize: cbBlock},
-		candidate.Alignment,
+		ComputeAlignment(childStyle),
 		oofInsets,
 		staticInlinePad, staticBlockPad,
 		staticInlineBias, staticBlockBias,

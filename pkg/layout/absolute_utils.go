@@ -1,5 +1,7 @@
 package layout
 
+import "louis14/pkg/css"
+
 // absolute_utils.go ports Blink's core/layout/absolute_utils.{h,cc}:
 // the IMCB (Inset-Modified Containing Block) machinery used by the OOF
 // (out-of-flow / position:absolute / position:fixed) layout pass.
@@ -36,13 +38,12 @@ const (
 )
 
 // ItemPosition mirrors Blink's ItemPosition (cssom/style_self_alignment_data.h)
-// values used by align-self and justify-self. We include only the variants
-// that affect OOF inset resolution.
+// values of align-self and justify-self, as an out-of-flow box's
+// ComputeAlignment resolves them (auto resolves to normal there).
 type ItemPosition int
 
 const (
-	ItemPositionNormal ItemPosition = iota // abspos default; behaves like start on block axis
-	ItemPositionAuto                       // falls back to parent's align-items / justify-items
+	ItemPositionNormal ItemPosition = iota // start, and the only one not arming the default-overflow snap
 	ItemPositionStart
 	ItemPositionEnd
 	ItemPositionCenter
@@ -62,7 +63,8 @@ const (
 // Mirrors Blink's StyleSelfAlignmentData (position + overflow-alignment bit).
 type AlignmentData struct {
 	Position ItemPosition
-	IsSafe   bool // overflow-alignment: safe (vs default)
+	IsSafe   bool // overflow-alignment: safe
+	IsUnsafe bool // overflow-alignment: unsafe (neither: default)
 }
 
 // LogicalAlignment carries the two per-axis alignment values that drive the
@@ -165,26 +167,17 @@ type LogicalOofDimensions struct {
 	Margins LogicalEdges
 }
 
-// GetAlignmentInsetBias maps a single-axis AlignmentData to the primary
-// InsetBias plus optional "safe" and "default" biases.
-//
-// Mirrors Blink's GetAlignmentInsetBias() (absolute_utils.cc:51).
-//
-// containerWDM/selfWDM: both writing directions are taken so that the
-// kSelfStart/kSelfEnd positions resolve against the element's own direction
-// while kStart/kEnd resolve against the container's.
-//
-// isJustifyAxis: true for the inline-like axis (justify-*), false for block
-// (align-*). Affects how kLeft/kRight map (Blink handles these per axis).
-//
-// Returns:
-//
-//	bias                           — primary InsetBias for this axis.
-//	hasDefaultAlignmentOverflow    — true if align is non-normal; set on
-//	                                 InsetModifiedContainingBlock for later
-//	                                 use by ComputeInsets.
-//	defaultInsetBias, hasDefault   — fallback bias for non-normal alignment.
-//	safeInsetBias, hasSafe         — fallback bias when align has `safe`.
+// GetAlignmentInsetBias is the inset bias an out-of-flow box's alignment in
+// one axis of its containing block gives (isJustifyAxis: the inline axis),
+// plus whether a non-normal default-overflow alignment snaps an
+// overflowing box back (to defaultInsetBias, the containing block's start)
+// and its safe bias. louis14 resolves insets in the containing block's
+// writing direction, so container-relative positions are its start / end
+// directly, and self-start / self-end are the box's own edges mapped onto
+// it (selfAxisEdge). Mirrors Blink's GetAlignmentInsetBias
+// (absolute_utils.cc:51-104 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// which biases in the box's own writing direction through LogicalToLogical
+// instead.
 func GetAlignmentInsetBias(
 	a AlignmentData,
 	containerWDM WritingDirectionMode,
@@ -196,78 +189,94 @@ func GetAlignmentInsetBias(
 	defaultInsetBias InsetBias, hasDefault bool,
 	safeInsetBias InsetBias, hasSafe bool,
 ) {
-	// For OOF, the "default" inset bias is the start edge of the containing
-	// block. When align is non-normal (specifically center/end), Blink sets
-	// hasDefaultAlignmentOverflow so that ComputeInsets can snap back to
-	// the start edge when the content overflows.
-	switch a.Position {
-	case ItemPositionNormal, ItemPositionAuto, ItemPositionStretch, ItemPositionStart,
-		ItemPositionFlexStart, ItemPositionBaseline:
-		bias = BiasStart
-	case ItemPositionEnd, ItemPositionFlexEnd, ItemPositionLastBaseline:
-		bias = BiasEnd
-		hasDefaultAlignmentOverflow = true
-		defaultInsetBias, hasDefault = BiasStart, true
-	case ItemPositionCenter:
-		bias = BiasEqual
-		hasDefaultAlignmentOverflow = true
-		defaultInsetBias, hasDefault = BiasStart, true
-	case ItemPositionSelfStart:
-		if axesOppose(containerWDM, selfWDM, isJustifyAxis) {
-			bias = BiasEnd
-		} else {
-			bias = BiasStart
-		}
-	case ItemPositionSelfEnd:
-		if axesOppose(containerWDM, selfWDM, isJustifyAxis) {
-			bias = BiasStart
-		} else {
-			bias = BiasEnd
-		}
-		hasDefaultAlignmentOverflow = true
-		defaultInsetBias, hasDefault = BiasStart, true
-	case ItemPositionLeft:
-		if isJustifyAxis && containerWDM.IsRTL() {
-			bias = BiasEnd
-		} else {
-			bias = BiasStart
-		}
-	case ItemPositionRight:
-		if isJustifyAxis && containerWDM.IsRTL() {
-			bias = BiasStart
-		} else {
-			bias = BiasEnd
-		}
-		hasDefaultAlignmentOverflow = true
-		defaultInsetBias, hasDefault = BiasStart, true
-	default:
-		bias = BiasStart
-	}
-
+	defaultInsetBias, hasDefault = BiasStart, true
 	if a.IsSafe {
 		safeInsetBias, hasSafe = BiasStart, true
+	}
+	hasDefaultAlignmentOverflow = !a.IsSafe && !a.IsUnsafe && a.Position != ItemPositionNormal
+
+	switch a.Position {
+	case ItemPositionCenter:
+		bias = BiasEqual
+	case ItemPositionEnd, ItemPositionFlexEnd, ItemPositionLastBaseline:
+		bias = BiasEnd
+	case ItemPositionSelfStart, ItemPositionSelfEnd:
+		bias = BiasStart
+		if selfAxisEdge(isJustifyAxis, a.Position == ItemPositionSelfEnd, selfWDM, containerWDM) == AxisEdgeEnd {
+			bias = BiasEnd
+		}
+	case ItemPositionLeft:
+		bias = BiasStart
+		if !containerWDM.IsLTR() {
+			bias = BiasEnd
+		}
+	case ItemPositionRight:
+		bias = BiasEnd
+		if !containerWDM.IsLTR() {
+			bias = BiasStart
+		}
+	default: // start, flex-start, baseline, stretch, normal
+		bias = BiasStart
 	}
 	return
 }
 
-// axesOppose returns true if the child's inline axis (isJustifyAxis=true) or
-// block axis points in the opposite direction from the container's. Used to
-// flip kSelfStart/kSelfEnd.
-func axesOppose(container, self WritingDirectionMode, isJustifyAxis bool) bool {
-	if isJustifyAxis {
-		// Inline axis comparison: depends on writing mode & direction combination.
-		if container.IsHorizontal() == self.IsHorizontal() {
-			return container.Dir != self.Dir
-		}
-		// Orthogonal: self-start/self-end use the self's axis direction;
-		// the container can't align on an orthogonal axis in a direct sense,
-		// so treat as non-opposing. This matches Blink's fallback.
-		return false
+// ComputeAlignment is an out-of-flow box's justify-self (the containing
+// block's inline axis) and align-self (its block axis), auto and normal
+// both normal (no parent style resolves auto). Mirrors Blink's
+// ComputeAlignment (absolute_utils.cc:495-542 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) in louis14's containing-block
+// frame, where Blink swaps the two for an orthogonal box in its own frame;
+// position-area's normal behaviour is not ported.
+func ComputeAlignment(style *css.Style) LogicalAlignment {
+	return LogicalAlignment{
+		InlineAlignment: alignmentDataFromStyle(style, true),
+		BlockAlignment:  alignmentDataFromStyle(style, false),
 	}
-	// Block axis: VRL/SRL flip block progression relative to VLR/SLR/HTB.
-	containerFlipped := container.IsFlippedBlocks()
-	selfFlipped := self.IsFlippedBlocks()
-	return containerFlipped != selfFlipped
+}
+
+func alignmentDataFromStyle(style *css.Style, justify bool) AlignmentData {
+	prop := "align-self"
+	if justify {
+		prop = "justify-self"
+	}
+	raw, _ := style.Get(prop)
+	position, safe := resolvedSelfAlignment(justify, nil, style)
+	return AlignmentData{
+		Position: itemPositionFromKeyword(position),
+		IsSafe:   safe,
+		IsUnsafe: hasOverflowUnsafe(raw),
+	}
+}
+
+func itemPositionFromKeyword(position string) ItemPosition {
+	switch position {
+	case "start":
+		return ItemPositionStart
+	case "end":
+		return ItemPositionEnd
+	case "center":
+		return ItemPositionCenter
+	case "self-start":
+		return ItemPositionSelfStart
+	case "self-end":
+		return ItemPositionSelfEnd
+	case "flex-start":
+		return ItemPositionFlexStart
+	case "flex-end":
+		return ItemPositionFlexEnd
+	case "stretch":
+		return ItemPositionStretch
+	case "baseline", "first baseline":
+		return ItemPositionBaseline
+	case "last baseline":
+		return ItemPositionLastBaseline
+	case "left":
+		return ItemPositionLeft
+	case "right":
+		return ItemPositionRight
+	}
+	return ItemPositionNormal
 }
 
 // ComputeUnclampedIMCBInOneAxis computes the per-axis IMCB start/end offsets

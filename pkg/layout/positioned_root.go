@@ -206,7 +206,7 @@ func computePositionedRootIMCB(
 	// placement in its CB. CB's padding is zero (viewport has no padding).
 	imcb = ComputeUnclampedIMCB(
 		cbLogical,
-		LogicalAlignment{}, // ItemPositionNormal on both axes → BiasStart
+		ComputeAlignment(rootStyle),
 		oofInsets,
 		0, 0,
 		BiasStart, BiasStart,

@@ -213,6 +213,11 @@ func TestComputeMargins_HasAutoInset_ForcesZero(t *testing.T) {
 	}
 }
 
+// TestGetAlignmentInsetBias_Core: every non-normal position with default
+// overflow alignment arms the default-overflow snap, start-like ones
+// included (absolute_utils.cc:71-74 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); for them it snaps to the start
+// they already have.
 func TestGetAlignmentInsetBias_Core(t *testing.T) {
 	wdm := WritingDirectionMode{WM: WritingModeHorizontalTB, Dir: DirectionLTR}
 	cases := []struct {
@@ -222,11 +227,11 @@ func TestGetAlignmentInsetBias_Core(t *testing.T) {
 		wantOverrfl bool
 	}{
 		{"normal", ItemPositionNormal, BiasStart, false},
-		{"start", ItemPositionStart, BiasStart, false},
-		{"stretch", ItemPositionStretch, BiasStart, false},
+		{"start", ItemPositionStart, BiasStart, true},
+		{"stretch", ItemPositionStretch, BiasStart, true},
 		{"center", ItemPositionCenter, BiasEqual, true},
 		{"end", ItemPositionEnd, BiasEnd, true},
-		{"flex-start", ItemPositionFlexStart, BiasStart, false},
+		{"flex-start", ItemPositionFlexStart, BiasStart, true},
 		{"flex-end", ItemPositionFlexEnd, BiasEnd, true},
 	}
 	for _, c := range cases {
