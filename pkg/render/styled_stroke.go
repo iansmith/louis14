@@ -239,12 +239,15 @@ func (r *Renderer) strokeAxisLine(a, b geometry.PointF, vertical bool, width flo
 				continue
 			}
 			if dash.roundCap {
-				p := start + dir*s
+				cx, cy := start+dir*s, across
 				if vertical {
-					r.dc.DrawCircle(across, p, half)
-				} else {
-					r.dc.DrawCircle(p, across, half)
+					cx, cy = across, cx
 				}
+				// DrawCircle continues from the current point, so start
+				// each dot as its own subpath at the circle's first
+				// point; otherwise a line joins it to the last dot.
+				r.dc.MoveTo(cx+half, cy)
+				r.dc.DrawCircle(cx, cy, half)
 			}
 		}
 	}
