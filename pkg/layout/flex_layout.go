@@ -2582,66 +2582,26 @@ func (fla *FlexLayoutAlgorithm) itemMaxContentMainSize(
 			return max(0, size.BlockSize-childGeom.BlockBorderPadding())
 		}
 
-		// Main=inline: the max-content main size with CROSS-axis min/max
-		// constraints (which affect sizing via aspect ratio) but WITHOUT
-		// main-axis min/max constraints; the flex algorithm applies those
-		// in the hypothetical/resolve steps (§9.2). Hand-written; Blink's
-		// MinMaxSizesFunc → ComputeReplacedSize path is LOU-958.
-		info := GetNaturalSizingInfo(fla.ctx, child)
-
-		// Convert physical intrinsic dimensions to logical.
-		var intrinsicInline, intrinsicBlock float64
-		if childWDM.IsVertical() {
-			intrinsicInline = info.Size.Height
-			intrinsicBlock = info.Size.Width
-		} else {
-			intrinsicInline = info.Size.Width
-			intrinsicBlock = info.Size.Height
+		// Main=inline: the flex basis is the item's max-content inline size,
+		// which for a replaced box is ComputeReplacedSize's inline size with
+		// the inline lengths ignored, in the item's layout space
+		// (MinMaxSizesFunc → BlockNode::ComputeMinMaxSizes with
+		// BuildSpaceForLayout's space, flex/flex_layout_algorithm.cc:
+		// 699-797, :875-880; block_node.cc:1023-1026 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Its available block
+		// size is a definite container cross size, stretched for a
+		// single-line stretched item; an image with only an aspect ratio
+		// and no block size stretches to the available inline size
+		// (StretchFit, length_utils.cc:1173-1196).
+		blockAuto := AutoSizeBehaviorFitContent
+		if hasDefiniteCross && fla.getFlexWrap() == "nowrap" && fla.itemStretchesInCrossAxis(style, childWDM, isRow) {
+			blockAuto = AutoSizeBehaviorStretchExplicit
 		}
-		logicalRatio := info.logicalRatio(childWDM)
-
-		inlineSize := intrinsicInline
-		if inlineSize <= 0 {
-			if logicalRatio > 0 && intrinsicBlock > 0 {
-				inlineSize = intrinsicBlock * logicalRatio
-			} else {
-				inlineSize = 300
-			}
-		}
-		blockSize := intrinsicBlock
-		if blockSize <= 0 {
-			if logicalRatio > 0 && inlineSize > 0 {
-				blockSize = inlineSize / logicalRatio
-			} else {
-				blockSize = 150
-			}
-		}
-
-		// Apply ONLY the block (cross) min/max, re-deriving via the aspect
-		// ratio. A definite container cross-size becomes the
-		// percentage-resolution block base so a percentage cross constraint
-		// (e.g. max-height:100%) resolves to it rather than to 0, per Blink's
-		// ComputeTransferredMinMaxBlockSizes (flex_layout_algorithm.cc @
-		// Chromium main 3da458a33174a6422f35b4e603f4090f028670ae).
-		crossItemSpace := fla.crossConstraintSpace(parentWDM, childWDM,
-			contentInlineSize, containerCrossSize, true, hasDefiniteCross, AutoSizeBehaviorStretchImplicit)
-		minBlock := ResolveMinBlockSize(style, childWDM, crossItemSpace, childGeom).Float64()
-		if blockSize < minBlock {
-			blockSize = minBlock
-			if logicalRatio > 0 {
-				inlineSize = blockSize * logicalRatio
-			}
-		}
-		if maxBlockLU, ok := ResolveMaxBlockSize(style, childWDM, crossItemSpace, childGeom); ok {
-			maxBlock := maxBlockLU.Float64()
-			if blockSize > maxBlock {
-				blockSize = maxBlock
-				if logicalRatio > 0 {
-					inlineSize = blockSize * logicalRatio
-				}
-			}
-		}
-		return inlineSize
+		basisSpace := fla.crossConstraintSpace(parentWDM, childWDM,
+			contentInlineSize, containerCrossSize, true, hasDefiniteCross, AutoSizeBehaviorFitContent)
+		basisSpace.BlockAutoBehavior = blockAuto
+		size := ComputeReplacedSize(fla.ctx, child, basisSpace, ReplacedSizeModeIgnoreInlineLengths)
+		return max(0, size.InlineSize-childGeom.InlineBorderPadding())
 	}
 	// When main = item's block axis, cross-axis margins (inline margins)
 	// reduce available inline space for layout.
