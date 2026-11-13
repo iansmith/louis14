@@ -37,3 +37,19 @@ func TestGradientColorStopAcceptsAnyColor(t *testing.T) {
 		}
 	}
 }
+
+// A comma in a gradient's stop list must be followed by a stop: an empty
+// stop has neither color nor offset, so the gradient is invalid
+// (ConsumeGradientColorStops, core/css/properties/css_parsing_utils.cc:
+// 3046-3074 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestGradientTrailingCommaInvalid(t *testing.T) {
+	for _, grad := range []string{
+		"linear-gradient(red, blue,)",
+		"radial-gradient(red, blue,)",
+		"conic-gradient(red, blue,)",
+	} {
+		if isValidImageValue(grad) {
+			t.Errorf("isValidImageValue(%q) = true, want false", grad)
+		}
+	}
+}
