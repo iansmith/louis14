@@ -819,17 +819,8 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 
 	text := itemsData.TextContent
 
-	nRunes := utf8.RuneCountInString(text)
-	runeAtByte := make([]int, len(text)+1)
-	byteAtRune := make([]int, nRunes+1)
-	ri := 0
-	for bi := range text {
-		runeAtByte[bi] = ri
-		byteAtRune[ri] = bi
-		ri++
-	}
-	runeAtByte[len(text)] = ri
-	byteAtRune[ri] = len(text)
+	runeAtByte := runeIndexByByte(text)
+	byteAtRune := byteOffsetByRune(text)
 
 	var newItems []*InlineItem
 
@@ -966,6 +957,16 @@ func runeIndexByByte(text string) []int {
 	}
 	runeAtByte[len(text)] = ri
 	return runeAtByte
+}
+
+// byteOffsetByRune maps each rune index of text, and its rune count, to the
+// rune's byte offset (len(text) for the count): runeIndexByByte's inverse.
+func byteOffsetByRune(text string) []int {
+	byteAtRune := make([]int, 0, len(text)+1)
+	for bi := range text {
+		byteAtRune = append(byteAtRune, bi)
+	}
+	return append(byteAtRune, len(text))
 }
 
 // isBidiNeutralObject reports whether an item is a float or out-of-flow
