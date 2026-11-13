@@ -14,14 +14,21 @@ import (
 // CalculateLeadingSpace (core/layout/inline/line_utils.cc:36-45 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which
 // InlineBoxState::ComputeTextMetrics adds to the text metrics
-// (inline_box_state.cc:148-155). louis14 measures a line's ascent from its
-// block-start, which is line-over except in the flipped-lines writing mode
-// (WritingDirectionMode.IsFlippedLines); there the floored half goes to the
-// descent (block-end) side.
-func calculateLeadingSpace(lineHeight, fontHeight float64, wdm WritingDirectionMode) (ascentLeading, descentLeading float64) {
+// (inline_box_state.cc:148-155). Like Blink's, it is line-relative and takes
+// no writing mode.
+func calculateLeadingSpace(lineHeight, fontHeight float64) (overLeading, underLeading float64) {
 	leading := layoutunit.FromFloat64Round(lineHeight).Sub(layoutunit.FromFloat64Round(fontHeight))
-	over := math.Floor(leading.DivInt(2).Float64())
-	under := leading.Float64() - over
+	overLeading = math.Floor(leading.DivInt(2).Float64())
+	return overLeading, leading.Float64() - overLeading
+}
+
+// blockLeadingSpace is calculateLeadingSpace mapped onto louis14's line
+// metrics, which measure ascent from the line's block-start. That is
+// line-over except in the flipped-lines writing mode
+// (WritingDirectionMode.IsFlippedLines), where the floored half goes to the
+// descent (block-end) side.
+func blockLeadingSpace(lineHeight, fontHeight float64, wdm WritingDirectionMode) (ascentLeading, descentLeading float64) {
+	over, under := calculateLeadingSpace(lineHeight, fontHeight)
 	if wdm.IsFlippedLines() {
 		return under, over
 	}
