@@ -11,9 +11,8 @@ import "testing"
 // (DoesItemStretch :648-654; StretchFit, length_utils.cc:1173-1196). All @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
 func TestFlexStretchedReplacedItemKeepsItsMainSize(t *testing.T) {
-	const sized = `data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect width="20" height="10"/></svg>`
 	for _, c := range []struct{ name, src string }{
-		{"natural size", sized},
+		{"natural size", naturalSizeSVG},
 		{"ratio only", ratioOnlySVG},
 	} {
 		t.Run(c.name, func(t *testing.T) {
