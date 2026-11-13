@@ -381,7 +381,7 @@ func TestScopeAnchorTakesNoDefaultNamespace(t *testing.T) {
 // disallowed (DisallowPseudoElementsScope, css_selector_parser.cc:190 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the whole rule is dropped.
 func TestScopeBoundaryRejectsPseudoElements(t *testing.T) {
-	for _, prelude := range []string{"(.r::before)", "(.r, .x::before)", "(.r) to (.l::after)", "(.r::placeholder)", "(.r::part(x))"} {
+	for _, prelude := range []string{"(.r::before)", "(.r, .x::before)", "(.r) to (.l::after)", "(.r::placeholder)", "(.r::part(x))", "(.r:not(::before))", "(.r:not(:after))", "(.r:has(::before))"} {
 		t.Run(prelude, func(t *testing.T) {
 			// Applied, the scoped red would beat the unscoped green on
 			// proximity; green means the rule was dropped and the sheet

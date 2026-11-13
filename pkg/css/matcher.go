@@ -1174,9 +1174,9 @@ func checkPseudoNot(node *html.Node, arg string, ctx matchContext) bool {
 // :first-line). The parser's findTopLevelPseudoElement helper does the same
 // paren-aware scan used during selector parsing.
 func containsPseudoElementArg(selectors []string) bool {
-	tokens := []string{
-		"::before", "::after", "::first-letter", "::first-line", "::marker",
-		":before", ":after", ":first-letter", ":first-line",
+	tokens := []string{"::marker"}
+	for _, name := range legacyPseudoElements {
+		tokens = append(tokens, "::"+name, ":"+name)
 	}
 	for _, sel := range selectors {
 		sel = strings.TrimSpace(sel)

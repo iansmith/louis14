@@ -894,6 +894,7 @@ func TestPseudoElementInHasInvalidatesRule(t *testing.T) {
 		{`.t, .t:has(.a, ::before) { color: red }`, "green"},
 		{`.t, .t:has(> ::before) { color: red }`, "green"},
 		{`.t, .t:is(::before) { color: blue }`, "blue"},
+		{`.t, .t:is(:has(::before)) { color: blue }`, "blue"},
 	} {
 		t.Run(tc.rule, func(t *testing.T) {
 			styles := cascadeHTML(t, `<style>.t { color: green } `+tc.rule+`</style>
