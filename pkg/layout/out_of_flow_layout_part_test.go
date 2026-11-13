@@ -385,3 +385,32 @@ func TestOOFGridStaticPositionAlignment(t *testing.T) {
 		})
 	}
 }
+
+// TestOOFBlockLevelStaticPositionVisualOrder pins which line a block-level
+// out-of-flow box in a line takes: the next one only when inline content
+// precedes it in the line's visual order (after bidi reordering), walked
+// from the line's start. In an RTL run inside an LTR line, a box after the
+// run's text is visually before it, so it stays on the line. The box is
+// resolved for bidi as a U+FFFC neutral, taking the run's level, and an
+// inline box's open and close tags are not inline content. Mirrors
+// PlaceOutOfFlowObjects (inline/inline_layout_algorithm.cc:760-855),
+// InlineNode::SegmentBidiRuns (inline/inline_node.cc:1361-1430) and
+// LogicalLineItem::HasInFlowFragment (inline/logical_line_item.h:162-166 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). want is from Chrome headless.
+func TestOOFBlockLevelStaticPositionVisualOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name, span string
+		want       fragRect
+	}{
+		{"rtl embedding", "direction:rtl;unicode-bidi:embed", fragRect{1, 1, 20, 20}},
+		{"rtl isolate", "direction:rtl;unicode-bidi:isolate", fragRect{1, 1, 20, 20}},
+		{"control: ltr", "", fragRect{1, 26, 20, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0;font:10px/25px serif">`+
+				`<div style="position:relative;width:200px;height:100px;border:1px solid">`+
+				`<span style="`+tc.span+`">אבג <div id=a style="position:absolute;width:20px;height:20px"></div></span>X</div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
