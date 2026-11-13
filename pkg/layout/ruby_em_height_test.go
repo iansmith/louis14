@@ -11,9 +11,9 @@ import (
 // annotations sit on: Blink's ComputeEmHeight, the run fonts' normalized
 // typo ascent rounded up and capped at the primary font's ascent
 // (core/layout/inline/ruby_utils.cc:82-107 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). That is the same over edge an
-// emphasis mark sits on (ascent less text.EmHeightOverAdjustment), so
-// emphasis and ruby references agree. Liberation Serif 16px with LOU-920's
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). For an integer ascent that is
+// the over edge an emphasis mark sits on (ascent less
+// text.EmHeightOverAdjustment), so emphasis and ruby references agree. Liberation Serif 16px with LOU-920's
 // hhea metrics (mazarin #125): ascent 14, normalized typo ascent 12.203125
 // -> min(13, 14) = 13. Ahem 16px: min(ceil(12.796875), 13) = 13.
 func TestBaseFontAscentFromSubLine_EmHeight(t *testing.T) {

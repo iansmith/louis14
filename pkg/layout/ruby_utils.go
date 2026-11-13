@@ -61,6 +61,11 @@ func baseFontAscentFromSubLine(
 			// double-count the override delta and push the annotation into the base.
 			asc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
 		}
+		// Annotations sit on the base's em height, ComputeEmHeight's
+		// min(ceil(normalized typo ascent), ascent) (ruby_utils.cc:82-107 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): for an integer ascent,
+		// the ascent less the em-height adjustment emphasis marks also take.
+		asc -= text.EmHeightOverAdjustment(fontSize, resolveFontPath(r.Item.Style, fonts), centralBaseline)
 		if asc > maxAscent {
 			maxAscent = asc
 		}
