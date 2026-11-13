@@ -97,3 +97,26 @@ func TestRewindTrailingOpenTagsKeepsLineWidth(t *testing.T) {
 		}
 	})
 }
+
+// An open tag before a forced break stays on its line, with its start edge
+// (RewindTrailingOpenTags is skipped after a forced break, inline/
+// line_breaker.cc:2563-2568 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b),
+// and the line's width is the line breaker's position, the edge included
+// (css-sizing slice-intrinsic-size / clone-intrinsic-size rows 5 and 8).
+// Line 1 here is 14 + aaa + 22 for the first span plus the second span's
+// 14px start edge: 80, the min- and max-content width.
+func TestOpenTagBeforeForcedBreakCountsInLineWidth(t *testing.T) {
+	for _, w := range []string{"min-content", "max-content"} {
+		t.Run(w, func(t *testing.T) {
+			src := `<!DOCTYPE html><body style="margin:0"><div id="c" style="width:` + w + `;font:10px/1 Ahem">` +
+				`<span style="` + rewindEdges + `">aaa</span><span style="` + rewindEdges + `"><br>aaa</span></div>`
+			b := findBoxByID(layoutRootTestHTML(t, src), "c")
+			if b == nil {
+				t.Fatal("no #c box")
+			}
+			if b.Width != 80 {
+				t.Errorf("%s width = %v, want 80", w, b.Width)
+			}
+		})
+	}
+}
