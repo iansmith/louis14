@@ -154,9 +154,10 @@ func TestDecorationLine_UprightVerticalPlacement(t *testing.T) {
 				`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
 			first, last := -1, -1
 			for x := 0; x < 250; x++ {
-				// Half coverage or more counts as the line, as the probe of
-				// Chrome's screenshot did: the line-through's 115.67-121.67
-				// rect half-covers neither 115 nor more than two thirds of 121.
+				// A pixel at least half covered counts as the line, as in the
+				// probe of Chrome's screenshot: the line-through's
+				// 115.67-121.67 rect covers a third of pixel 115 (left out)
+				// and two thirds of pixel 121 (counted).
 				if r, _, _, _ := img.At(x, 60).RGBA(); r>>8 < 128 {
 					if first < 0 {
 						first = x

@@ -150,7 +150,7 @@ func (t textDecorationInfo) computeThickness(td css.AppliedTextDecoration) float
 // the underline zero-position for the given TextUnderlinePosition.
 // Under → ascent+descent on alphabetic-baseline (horizontal), but 0 on central-baseline (vertical);
 // auto/from-font → ascent (alphabetic baseline) on both axes.
-// Single source of truth consumed by computeUnderlineZeroPosition and computeUnderlinePerpX.
+// Single source of truth consumed by computeUnderlineZeroPosition.
 // Mirrors Blink's ResolveUnderlinePosition (text_decoration_info.cc:13-47 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 func (t textDecorationInfo) baselineRelativeOffset(pos css.TextUnderlinePosition) float64 {
 	if pos == css.TextUnderlinePositionUnder {
@@ -238,37 +238,25 @@ func (t textDecorationInfo) computeLineThroughLineY(thickness float64) float64 {
 }
 
 // computeUnderlinePerpX returns the perpendicular physical X coordinate of the
-// underline stroke for an upright vertical text run (axis=decorationAxisVertical).
+// underline's inner edge (the edge nearest the text) for an upright vertical
+// text run (axis=decorationAxisVertical).
 //
-// In vertical-rl the underline paints on the physical LEFT side (block-end):
-//
-//	perpX = box.X - zeroPerpOffset - td.UnderlineOffset
-//
-// In vertical-lr the underline paints on the physical RIGHT side (block-end):
-//
-//	perpX = box.X + box.Width + zeroPerpOffset + td.UnderlineOffset
-//
-// zeroPos is the perpendicular offset from box.X (or box.X+box.Width) to the
-// underline zero-position, computed by convertUnderlineZeroPerpToPerpX based on
-// TextUnderlinePosition (auto/from-font/under).
-// td.UnderlineOffset is already resolved to pixels at cascade time.
-//
-// CSS Text Decoration 4 §3 + CSS Writing Modes 4 §6: "under" = block-end.
-// Conceptually mirrors Blink's TextDecorationOffset::ComputeUnderlineOffset()
-// (cited in text_decoration_info.cc:259-273 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// Upright text (blockUnderLeft) has the central baseline, so Blink resolves
+// an auto underline to under (ResolveUnderlinePosition,
+// core/paint/text_decoration_info.cc:23-53 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and places it
+// TextDecorationOffset::ComputeUnderlineOffsetForUnder with
+// BottomOfEmHeight in from the line-over edge — the right side in
+// vertical-rl and vertical-lr, under Blink's clockwise writing-mode
+// rotation: floor(central ascent - the em box's bottom +
+// text-underline-offset) + 1 (core/layout/text_decoration_offset.cc:52-89),
+// where the central ascent is half the font's height and the em box's
+// bottom is half the em below the central baseline. Not ported: the
+// Japanese/Korean-script and `right` cases that resolve to over. Every
+// upright path builds its info with blockUnderLeft.
 func (t textDecorationInfo) computeUnderlinePerpX(td css.AppliedTextDecoration) float64 {
-	// baselineRelativeOffset encodes the position switch (auto/from-font → ascent,
-	// under → ascent+descent); see its doc for the single source of truth.
-	zeroPerpOffset := t.baselineRelativeOffset(td.UnderlinePosition)
-
-	switch t.underDir {
-	case blockUnderLeft: // vertical-rl: under = left
-		return t.box.X - zeroPerpOffset - td.UnderlineOffset
-	case blockUnderRight: // vertical-lr: under = right
-		return t.box.X + t.box.Width + zeroPerpOffset + td.UnderlineOffset
-	}
-	// Should not be reached for vertical mode; fall back to horizontal.
-	return t.computeUnderlineLineY(td)
+	offset := math.Floor((t.ascent+t.descent)/2+t.fontSize/2+td.UnderlineOffset) + 1
+	return t.box.X + t.box.Width - offset
 }
 
 // computeOverlinePerpX returns the perpendicular physical X coordinate of the
@@ -286,15 +274,14 @@ func (t textDecorationInfo) computeOverlinePerpX() float64 {
 	return t.computeOverlineLineY()
 }
 
-// computeLineThroughPerpX returns the perpendicular physical X coordinate for
-// a line-through stroke in upright vertical text. Line-through passes through
-// the center of the character column (midpoint of block axis).
-//
-// For vertical-rl and vertical-lr both: perpX = box.X + box.Width/2
-// (center of the glyph column). Mirrors Blink's ComputeLineThroughLineData
-// which places the rect center at 2*ascent/3 horizontally (for horizontal text).
+// computeLineThroughPerpX returns the perpendicular physical X coordinate of
+// a line-through's center in upright vertical text: 2 * ascent / 3 in from
+// the line-over (right) edge, as Blink's ComputeLineThroughLineData centers
+// it (core/paint/text_decoration_info.cc:379-389 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the line-relative offset
+// mapped through the clockwise writing-mode rotation.
 func (t textDecorationInfo) computeLineThroughPerpX() float64 {
-	return t.box.X + t.box.Width/2.0
+	return t.box.X + t.box.Width - 2*t.ascent/3
 }
 
 // doubleOffset returns the gap (in pixels) between the two strokes of a
