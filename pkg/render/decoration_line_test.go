@@ -385,3 +385,23 @@ func TestDecorationLine_MixedDecorationSpansLetterSpacing(t *testing.T) {
 	assertPixel(t, img, 85, 159, black, "the underline reaches y 159")
 	assertPixel(t, img, 85, 160, white, "and stops there")
 }
+
+// A text decoration spans its text fragment's laid-out inline size, not a
+// re-measure of its text (TextDecorationPainter::UpdateDecorationInfo passes
+// decoration_rect.InlineSize(), core/paint/text_decoration_painter.cc:86-96
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a justified space's
+// expansion and a font-size-adjusted run are underlined across their whole
+// width. Chrome 2026-11-13: a 100px justified "X X" is underlined x 0-99,
+// with or without font-size-adjust: 0.25.
+func TestDecorationLine_SpansFragmentInlineSize(t *testing.T) {
+	green := color.RGBA{0, 128, 0, 255}
+	for _, adjust := range []string{"none", "0.25"} {
+		img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0"><div style="position:absolute;top:50px;left:0;line-height:100px">`+
+			`<u style="display:inline-block;font:20px/1 Ahem;width:100px;text-align-last:justify;color:transparent;text-decoration:green underline;text-decoration-skip-ink:none;text-underline-offset:0px;text-decoration-thickness:20px;font-size-adjust:`+adjust+`">X X</u>`+
+			`</div></body></html>`, 200, 200)
+		for _, x := range []int{5, 50, 70, 99} {
+			assertPixel(t, img, x, 115, green, "font-size-adjust: "+adjust+": the underline across the justified box")
+		}
+		assertPixel(t, img, 100, 115, white, "font-size-adjust: "+adjust+": and no further")
+	}
+}
