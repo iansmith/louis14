@@ -224,6 +224,33 @@ type MediaQuery struct {
 type ContainerQuery struct {
 	Name       string               // optional container name (empty = any container)
 	Conditions []ContainerCondition // size conditions
+	// Parent is the query of the @container this one's rule is nested in
+	// (nil at the outermost level): every level of the chain must match
+	// (ContainerQuerySet::parent_, container_query_set.h:37-47;
+	// EvaluateAndAddContainerQueries, element_rule_collector.cc:288-316 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	Parent *ContainerQuery
+}
+
+// CopyWithParent returns a copy of cq whose Parent is parent
+// (ContainerQuerySet::CopyWithParent, container_query_set.cc:12-16 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (cq *ContainerQuery) CopyWithParent(parent *ContainerQuery) *ContainerQuery {
+	c := *cq
+	c.Parent = parent
+	return &c
+}
+
+// nestedIn is cq's chain with outer above its outermost level: the query a
+// rule nested in cq's @container, itself nested in outer's, carries. Each
+// level is a copy, as RuleSet::AddChildRules copies a nested set with the
+// outer one as its parent (rule_set.cc:1036-1045 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (cq *ContainerQuery) nestedIn(outer *ContainerQuery) *ContainerQuery {
+	if cq.Parent == nil {
+		return cq.CopyWithParent(outer)
+	}
+	return cq.CopyWithParent(cq.Parent.nestedIn(outer))
 }
 
 // ContainerCondition represents a single container query condition
@@ -1095,7 +1122,7 @@ func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
 	case strings.HasPrefix(trimmed, "@supports"):
 		return parseSupportsRule(ruleStr, ss)
 	case strings.HasPrefix(trimmed, "@container"):
-		return parseContainerRule(ruleStr)
+		return parseContainerRule(ruleStr, ss)
 	case hasAtKeyword(trimmed, "@scope"):
 		return parseScopeRule(ruleStr, ss)
 	case strings.HasPrefix(trimmed, "@layer"):
@@ -1585,26 +1612,9 @@ func parseMediaRule(ruleStr string, ss *Stylesheet) []Rule {
 		mediaSinkLive = nil
 	}
 
-	// Parse inner rules
-	innerRules := splitRules(innerCSS)
-
-	var inner []Rule
-	for _, innerRuleStr := range innerRules {
-		innerTrimmed := strings.TrimSpace(innerRuleStr)
-		if strings.HasPrefix(innerTrimmed, "@") {
-			// A nested at-rule registers into the live sink, so an outer
-			// false @media disables nested @font-face / @keyframes
-			// registration, and its rules are gated by this @media below.
-			inner = append(inner, dispatchAtRuleIntoStylesheet(innerRuleStr, mediaSinkLive)...)
-			continue
-		}
-		// Use parseRules (plural) to handle comma-separated selector groups
-		parsedRules, err := parseRules(innerRuleStr)
-		if err != nil {
-			continue
-		}
-		inner = append(inner, parsedRules...)
-	}
+	// Nested at-rules register into the live sink, so an outer false @media
+	// disables nested @font-face / @keyframes registration.
+	inner := parseConditionalBody(innerCSS, mediaSinkLive)
 	// Every rule the body yields, a nested @media's included, is gated by
 	// this @media too. For a comma-separated media-query-list, emit one
 	// copy per branch: Kleene OR is realized by per-branch evaluation at
@@ -1696,8 +1706,13 @@ func anyMediaQueryStaticallyTruthy(list []*MediaQuery) bool {
 	return false
 }
 
-// parseContainerRule parses a @container rule and returns its inner rules
-func parseContainerRule(ruleStr string) []Rule {
+// parseContainerRule parses an @container rule and returns the rules in its
+// body. The body is a rule list allowing what @media's does
+// (CSSParserImpl::ConsumeContainerRule, css_parser_impl.cc:2208-2249,
+// :3215-3221 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): nested at-rules
+// dispatch into ss, as parseMediaRule's do, and every rule the body yields
+// is gated by this @container's query, a nested @container's below it.
+func parseContainerRule(ruleStr string, ss *Stylesheet) []Rule {
 	rules := make([]Rule, 0)
 
 	// Find the opening brace, skipping braces inside the prelude's parens.
@@ -1710,21 +1725,13 @@ func parseContainerRule(ruleStr string) []Rule {
 	queryStr := strings.TrimSpace(ruleStr[:bracePos])
 	containerQuery := parseContainerQuery(queryStr)
 
-	// Extract inner CSS (between outermost { and })
-	innerCSS := ruleStr[bracePos+1 : innerEnd]
-
-	// Parse inner rules
-	innerRules := splitRules(innerCSS)
-
-	for _, innerRuleStr := range innerRules {
-		parsedRules, err := parseRules(innerRuleStr)
-		if err != nil {
-			continue
-		}
-		for _, rule := range parsedRules {
+	for _, rule := range parseConditionalBody(ruleStr[bracePos+1:innerEnd], ss) {
+		if rule.ContainerQuery == nil {
 			rule.ContainerQuery = containerQuery
-			rules = append(rules, rule)
+		} else {
+			rule.ContainerQuery = rule.ContainerQuery.nestedIn(containerQuery)
 		}
+		rules = append(rules, rule)
 	}
 
 	return rules
@@ -2333,31 +2340,14 @@ func parseSupportsRule(ruleStr string, ss *Stylesheet) []Rule {
 // top level. Style rules are accumulated and returned for the caller to gate
 // further (e.g. attaching MediaQueries / LayerName).
 //
-// `ss` may be nil. With a nil stylesheet, nested at-rules that register
-// side-state silently drop — the same behaviour as the pre-refactor parser.
+// `ss` may be nil (a statically false condition): nested at-rules that
+// register side-state then drop, as dispatchAtRuleIntoStylesheet does with
+// no sink, while their style rules are still returned.
 func parseConditionalBody(innerCSS string, ss *Stylesheet) []Rule {
 	innerRules := splitRules(innerCSS)
 	var rules []Rule
 	for _, inner := range innerRules {
-		innerTrimmed := strings.TrimSpace(inner)
-		if strings.HasPrefix(innerTrimmed, "@") {
-			if ss == nil {
-				// Nested at-rules require a stylesheet sink to register
-				// side-state on; without one, fall back to the conditional
-				// dispatcher only (so nested @media / @supports /
-				// @container / @scope still produce style rules).
-				switch {
-				case strings.HasPrefix(innerTrimmed, "@media"):
-					rules = append(rules, parseMediaRule(inner, nil)...)
-				case strings.HasPrefix(innerTrimmed, "@supports"):
-					rules = append(rules, parseSupportsRule(inner, nil)...)
-				case strings.HasPrefix(innerTrimmed, "@container"):
-					rules = append(rules, parseContainerRule(inner)...)
-				case hasAtKeyword(innerTrimmed, "@scope"):
-					rules = append(rules, parseScopeRule(inner, nil)...)
-				}
-				continue
-			}
+		if strings.HasPrefix(strings.TrimSpace(inner), "@") {
 			rules = append(rules, dispatchAtRuleIntoStylesheet(inner, ss)...)
 			continue
 		}
