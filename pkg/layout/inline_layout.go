@@ -2768,12 +2768,7 @@ func createLineBoxEx(
 			return 0, 0
 		}
 		fs, _, _, _, _ := fontPropsFromStyle(style)
-		asc, desc = blockAscentDescent(fs, resolveFontPath(style, fonts), fonts.Registry, wdm, centralBaseline)
-		lineHt := style.GetLineHeight()
-		ascLeading, descLeading := blockLeadingSpace(lineHt, asc+desc, wdm)
-		asc += ascLeading
-		desc += descLeading
-		return
+		return leadingAscentDescent(fs, resolveFontPath(style, fonts), style.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
 	}
 	inlinePos := alignOffset
 	for i := range line.Results {
@@ -3232,6 +3227,17 @@ func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistr
 	return wdm.lineToBlock(lineRelativeAscentDescent(fontSize, fontPath, reg, centralBaseline))
 }
 
+// leadingAscentDescent is blockAscentDescent plus the leading lineHeight
+// adds around the font's height (FontHeight::AddLeading with
+// CalculateLeadingSpace, core/layout/inline/inline_box_state.cc:148-150 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the half-leading can be
+// negative.
+func leadingAscentDescent(fontSize float64, fontPath string, lineHeight float64, reg *text.FontRegistry, wdm WritingDirectionMode, centralBaseline bool) (ascent, descent float64) {
+	ascent, descent = blockAscentDescent(fontSize, fontPath, reg, wdm, centralBaseline)
+	ascLeading, descLeading := blockLeadingSpace(lineHeight, ascent+descent, wdm)
+	return ascent + ascLeading, descent + descLeading
+}
+
 // CentralBaselineUnderSide is the part of a font box of the given height on
 // the line-under side of the central baseline: Height() / 2 in integer
 // arithmetic (FontMetrics::Descent / IntAscentInternal,
@@ -3317,18 +3323,12 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 	// and line height properties." This is the "strut".
 	if parentStyle != nil {
 		fontSize, _, _, _, _ := fontPropsFromStyle(parentStyle)
-		strutAscent, strutDescent := blockAscentDescent(fontSize, resolveStrutFontPath(parentStyle, fonts), fonts.Registry, wdm, centralBaseline)
-		lineHt := parentStyle.GetLineHeight()
 		// CSS 2.1 §10.8.1: half-leading is allowed to be negative when
 		// line-height < ascent+descent. Mirror Blink (font_height.cc::AddLeading
 		// has no clamp): let strut ascent/descent go negative so a taller atomic
 		// inline (canvas, replaced) wins cleanly via the per-side max() below
 		// instead of leaking residual sub-pixel descent into the line box.
-		ascLeading, descLeading := blockLeadingSpace(lineHt, strutAscent+strutDescent, wdm)
-		strutAscent += ascLeading
-		strutDescent += descLeading
-		maxAscent = strutAscent
-		maxDescent = strutDescent
+		maxAscent, maxDescent = leadingAscentDescent(fontSize, resolveStrutFontPath(parentStyle, fonts), parentStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
 	}
 	// CSS 2.1 §10.8.1: Elements with vertical-align: top/bottom "do not
 	// affect the calculation of the baseline." Track nesting depth so that
@@ -3364,14 +3364,10 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				topBottomDepth++
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
-			ascent, descent := blockAscentDescent(fontSize, resolveFontPath(rStyle, fonts), fonts.Registry, wdm, centralBaseline)
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
 			// and reduces the inline box's ascent/descent contribution.
-			lineHt := rStyle.GetLineHeight()
-			ascLeading, descLeading := blockLeadingSpace(lineHt, ascent+descent, wdm)
-			ascent += ascLeading
-			descent += descLeading
+			ascent, descent := leadingAscentDescent(fontSize, resolveFontPath(rStyle, fonts), rStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
 			// CSS 2.1 §10.8.1: Inside a vertical-align: top/bottom subtree,
 			// contribute to maxTopBottom instead of baseline calculation.
 			if topBottomDepth > 0 || va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
@@ -3399,19 +3395,26 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				isInTopBottom = va == css.VerticalAlignTop || va == css.VerticalAlignBottom
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
-			// Use coverage-aware resolution: a face whose unicode-range
-			// excludes the run's first character is skipped, mirroring
-			// Blink's per-character font selection.
-			fontPath := resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd)
-			ascent, descent := blockAscentDescent(fontSize, fontPath, fonts.Registry, wdm, centralBaseline)
-			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
-			// Negative half-leading (when line-height < font-size) is valid
-			// and reduces the inline box's ascent/descent contribution.
+			// The box's text metrics are the primary font's, with the
+			// line-height's leading (InlineBoxState::ComputeTextMetrics,
+			// core/layout/inline/inline_box_state.cc:116-160 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). CSS 2.1 §10.8.1:
+			// a negative half-leading (line-height < font height) is valid.
+			primaryPath := resolveStrutFontPath(rStyle, fonts)
+			ascent, descent := blockAscentDescent(fontSize, primaryPath, fonts.Registry, wdm, centralBaseline)
 			if rStyle != nil {
-				lineHt := rStyle.GetLineHeight()
-				ascLeading, descLeading := blockLeadingSpace(lineHt, ascent+descent, wdm)
-				ascent += ascLeading
-				descent += descLeading
+				ascent, descent = leadingAscentDescent(fontSize, primaryPath, rStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
+			}
+			// Under line-height: normal, each font the run is drawn in joins
+			// with its own line-spacing leading (AccumulateUsedFonts,
+			// :248-264, called per text item by LogicalLineBuilder,
+			// logical_line_builder.cc:239-240). louis14 draws a run in one
+			// font, chosen by its first character's coverage.
+			if rStyle == nil || rStyle.IsLineHeightNormal() {
+				if usedPath := resolveFontPathForRun(rStyle, fonts, textContent, r.TextStart, r.TextEnd); usedPath != primaryPath {
+					ua, ud := leadingAscentDescent(fontSize, usedPath, text.FontHeightFromFont(fontSize, usedPath, fonts.Registry), fonts.Registry, wdm, centralBaseline)
+					ascent, descent = max(ascent, ua), max(descent, ud)
+				}
 			}
 			if isInTopBottom {
 				if h := ascent + descent; h > maxTopBottom {
@@ -3437,11 +3440,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				continue
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
-			ascent, descent := blockAscentDescent(fontSize, resolveFontPath(rStyle, fonts), fonts.Registry, wdm, centralBaseline)
-			lineHt := rStyle.GetLineHeight()
-			ascLeading, descLeading := blockLeadingSpace(lineHt, ascent+descent, wdm)
-			ascent += ascLeading
-			descent += descLeading
+			ascent, descent := leadingAscentDescent(fontSize, resolveFontPath(rStyle, fonts), rStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
 			if ascent > maxAscent {
 				maxAscent = ascent
 			}
