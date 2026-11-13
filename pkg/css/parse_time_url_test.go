@@ -33,11 +33,15 @@ func TestParseStylesheet_RewritesURLs(t *testing.T) {
 			declValue: `url("sub/foo.png")`,
 		},
 		{
-			name:      "single-quoted url joined",
-			baseDir:   "sub",
-			css:       `.x { background-image: url('foo.png'); }`,
-			property:  "background-image",
-			declValue: `url('sub/foo.png')`,
+			name:     "single-quoted url joined",
+			baseDir:  "sub",
+			css:      `.x { background-image: url('foo.png'); }`,
+			property: "background-image",
+			// The string is stored as SerializeString writes it, in double
+			// quotes, as Blink serializes a url (SerializeURI,
+			// core/css/css_markup.cc:212-216 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			declValue: `url("sub/foo.png")`,
 		},
 		{
 			name:      "data url passthrough",

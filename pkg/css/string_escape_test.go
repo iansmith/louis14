@@ -54,3 +54,12 @@ func TestStringTokenEscapesFontFamily(t *testing.T) {
 		t.Errorf("stored font-family = %q, want %q", got, want)
 	}
 }
+
+// A custom property's value is kept as authored (Blink stores its tokens'
+// original text), so its strings are not re-serialized.
+func TestCustomPropertyKeepsAuthoredStrings(t *testing.T) {
+	ss := mustParseSheet(t, `p { --x: 'a' }`, nil)
+	if got := ss.Rules[0].Declarations["--x"]; got != `'a'` {
+		t.Errorf("stored --x = %q, want 'a'", got)
+	}
+}

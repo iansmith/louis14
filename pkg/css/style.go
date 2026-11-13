@@ -945,11 +945,7 @@ func ParseURLReference(val string) (string, bool) {
 	inner = strings.TrimSpace(inner)
 	// Strip surrounding quotes (CSS allows both forms).
 	if len(inner) >= 2 {
-		first := inner[0]
-		last := inner[len(inner)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-			inner = inner[1 : len(inner)-1]
-		}
+		inner = unquoteCSSString(inner)
 	}
 	if inner == "" {
 		return "", false
@@ -8591,10 +8587,7 @@ func (s *Style) GetContent() (string, bool) {
 		content = strings.TrimSpace(content)
 		if len(content) >= 2 {
 			// Remove single or double quotes
-			if (content[0] == '"' && content[len(content)-1] == '"') ||
-				(content[0] == '\'' && content[len(content)-1] == '\'') {
-				content = content[1 : len(content)-1]
-			}
+			content = unquoteCSSString(content)
 		}
 
 		return content, true
@@ -8656,27 +8649,10 @@ func ParseContentValues(raw string) []ContentValue {
 
 		// Check for quoted string
 		if raw[0] == '"' || raw[0] == '\'' {
-			quote := raw[0]
-			end := 1
-			for end < len(raw) && raw[end] != quote {
-				if raw[end] == '\\' && end+1 < len(raw) {
-					end += 2 // Skip escaped character
-				} else {
-					end++
-				}
-			}
-			if end < len(raw) {
-				text := raw[1:end]
-				// Unescape common sequences
-				text = strings.ReplaceAll(text, "\\0022", "\"")
-				text = strings.ReplaceAll(text, "\\\"", "\"")
-				values = append(values, ContentValue{Type: "text", Value: text})
-				raw = raw[end+1:]
-			} else {
-				// Unclosed quote - take rest as text
-				values = append(values, ContentValue{Type: "text", Value: raw[1:]})
-				break
-			}
+			// The string token's unescaped value (consumeStringToken).
+			text, n, _ := consumeStringToken(raw[1:], raw[0])
+			values = append(values, ContentValue{Type: "text", Value: text})
+			raw = raw[1+n:]
 			continue
 		}
 
@@ -8710,9 +8686,7 @@ func ParseContentValues(raw string) []ContentValue {
 				arg := strings.TrimSpace(raw[start : end-1])
 				switch funcName {
 				case "url":
-					// Strip quotes if present
-					arg = strings.Trim(arg, "\"'")
-					values = append(values, ContentValue{Type: "url", Value: arg})
+					values = append(values, ContentValue{Type: "url", Value: unquoteCSSString(arg)})
 				case "counter":
 					// counter(name) or counter(name, style)
 					name, _, style := splitCounterArgs(arg)
@@ -8822,9 +8796,8 @@ func parseAttrNameAndFallback(arg string) (name, fallback string) {
 	// Fallback must be a <string> (quoted) for string-type content attr.
 	// An unquoted identifier fallback is invalid for the string type and resolves to empty.
 	if len(rawFallback) >= 2 {
-		if (rawFallback[0] == '"' && rawFallback[len(rawFallback)-1] == '"') ||
-			(rawFallback[0] == '\'' && rawFallback[len(rawFallback)-1] == '\'') {
-			return rawName, rawFallback[1 : len(rawFallback)-1]
+		if isQuotedStringValue(rawFallback) {
+			return rawName, unquoteCSSString(rawFallback)
 		}
 	}
 	// Non-quoted fallback: invalid for string type → treat as no usable fallback.
@@ -8891,21 +8864,9 @@ func splitCountersSepAndStyle(tail string) (sep, style string) {
 		}
 		return tail, ""
 	}
-	quote := tail[0]
-	end := 1
-	for end < len(tail) && tail[end] != quote {
-		if tail[end] == '\\' && end+1 < len(tail) {
-			end += 2
-		} else {
-			end++
-		}
-	}
-	if end >= len(tail) {
-		// Unterminated quote — take the rest as the separator.
-		return tail[1:], ""
-	}
-	sep = tail[1:end]
-	rest := strings.TrimSpace(tail[end+1:])
+	// The separator is the string token's unescaped value.
+	sep, n, _ := consumeStringToken(tail[1:], tail[0])
+	rest := strings.TrimSpace(tail[1+n:])
 	if strings.HasPrefix(rest, ",") {
 		style = strings.TrimSpace(rest[1:])
 	}
@@ -9981,12 +9942,7 @@ func ParseURLValue(val string) (string, bool) {
 	inner := val[4 : len(val)-1]
 	inner = strings.TrimSpace(inner)
 	// Remove quotes if present
-	if len(inner) >= 2 {
-		if (inner[0] == '"' && inner[len(inner)-1] == '"') ||
-			(inner[0] == '\'' && inner[len(inner)-1] == '\'') {
-			inner = inner[1 : len(inner)-1]
-		}
-	}
+	inner = unquoteCSSString(inner)
 	if inner == "" {
 		return "", false
 	}
@@ -10120,10 +10076,7 @@ func extractImageSetFirstURL(val string) (string, bool) {
 	first = strings.TrimSpace(first)
 	// Strip trailing descriptor tokens (anything after the closing quote)
 	if len(first) > 0 && (first[0] == '"' || first[0] == '\'') {
-		q := first[0]
-		closeQ := strings.IndexByte(first[1:], q)
-		if closeQ >= 0 {
-			urlStr := first[1 : closeQ+1] // content between quotes
+		if urlStr, _, closed := consumeStringToken(first[1:], first[0]); closed {
 			return urlStr, true
 		}
 	}
@@ -10933,9 +10886,8 @@ func (s *Style) GetListStyleType() ListStyleType {
 			// strip the quotes and decode CSS escape sequences so e.g.
 			// "2.\A0 \A0 " yields "2." + two NBSPs (css-pseudo
 			// marker-word-spacing-ref.html).
-			if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') ||
-				(val[0] == '\'' && val[len(val)-1] == '\'')) {
-				return ListStyleType(unescapeCSS(val[1 : len(val)-1]))
+			if isQuotedStringValue(val) {
+				return ListStyleType(unquoteCSSString(val))
 			}
 			// Return as-is for other values
 			return ListStyleType(val)
@@ -11104,8 +11056,8 @@ func parseClipPathReference(val string) *ClipPath {
 	}
 	inner := val[4 : len(val)-1]
 	inner = strings.TrimSpace(inner)
-	// Strip surrounding quotes (the CSS grammar allows both forms).
-	inner = strings.Trim(inner, `"'`)
+	// A quoted reference is its string's value.
+	inner = unquoteCSSString(inner)
 	if inner == "" {
 		return nil
 	}
@@ -11723,16 +11675,18 @@ func isQuotedStringValue(val string) bool {
 	return val[len(val)-1] == q
 }
 
-// unquoteCSSString strips matching outer quotes from a CSS <string>
-// token. Per CSS Syntax 3 §4.3.5, hex and backslash escapes inside the
-// quoted body are resolved by the parser before the value reaches the
-// declaration map (see `unescapeCSS` in `stylesheet.go`), so the only
-// remaining work here is the quote-stripping step.
+// unquoteCSSString is the value of a quoted CSS <string> token, its escapes
+// resolved (consumeStringToken): a declaration stores a string as
+// serializeString writes it, escapes and all (unescapeCSSKeepingURLs).
+// Anything else is returned as is.
 func unquoteCSSString(val string) string {
 	if !isQuotedStringValue(val) {
 		return val
 	}
-	return val[1 : len(val)-1]
+	if value, n, ok := consumeStringToken(val[1:], val[0]); ok && 1+n == len(val) {
+		return value
+	}
+	return val
 }
 
 // GetWordBreak returns the word-break value (default: "normal")
@@ -12286,8 +12240,8 @@ func (s *Style) GetTextEmphasisMark(isHorizontal bool) string {
 	}
 
 	// Custom string: "x" or 'x' (quoted string)
-	if len(style) >= 2 && (style[0] == '"' || style[0] == '\'') {
-		return style[1 : len(style)-1]
+	if isQuotedStringValue(style) {
+		return unquoteCSSString(style)
 	}
 
 	// Standard shapes
