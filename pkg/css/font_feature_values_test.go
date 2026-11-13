@@ -1,6 +1,7 @@
 package css
 
 import (
+	"maps"
 	"reflect"
 	"slices"
 	"testing"
@@ -156,6 +157,33 @@ func TestFontFeatureValuesFamilyStrings(t *testing.T) {
 			}
 			if got := ss.FontFeatureValues[0].Families; !slices.Equal(got, tc.want) {
 				t.Errorf("families = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// An @font-feature-values body is a rule list (ConsumeRuleList with
+// kFontFeatureRules, CSSParserImpl::ConsumeFontFeatureValuesRule,
+// css_parser_impl.cc:1783-1792 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// an unknown at-rule without a block ends at its `;` and is dropped alone,
+// so the feature blocks after it still apply.
+func TestFontFeatureValuesBlocklessAtRule(t *testing.T) {
+	for _, tc := range []struct {
+		name, css       string
+		swash, styleset map[string][]int
+	}{
+		{"bare", `@font-feature-values f { @unknown; @swash { a: 1; } }`, map[string][]int{"a": {1}}, map[string][]int{}},
+		{"with prelude", `@font-feature-values f { @unknown x; @styleset { b: 2; } @swash { a: 1; } }`, map[string][]int{"a": {1}}, map[string][]int{"b": {2}}},
+		{"unknown with block", `@font-feature-values f { @unknown { x: 1; } @swash { a: 1; } }`, map[string][]int{"a": {1}}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := mustParseSheet(t, tc.css, nil)
+			if len(ss.FontFeatureValues) != 1 {
+				t.Fatalf("%d @font-feature-values rules, want 1", len(ss.FontFeatureValues))
+			}
+			r := ss.FontFeatureValues[0]
+			if !maps.EqualFunc(r.Swash, tc.swash, slices.Equal) || !maps.EqualFunc(r.Styleset, tc.styleset, slices.Equal) {
+				t.Errorf("swash = %v, styleset = %v, want %v, %v", r.Swash, r.Styleset, tc.swash, tc.styleset)
 			}
 		})
 	}
