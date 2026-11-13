@@ -7007,7 +7007,16 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 	// rectLeft + thickness] running down from lineStart. Upright vertical
 	// text skips no ink: Blink computes no intercepts for upright blobs
 	// (InterceptsFromBlobs, platform/fonts/font.cc:161-162).
-	paintLine := func(rectLeft float64) {
+	//
+	// doubleOffset is where a double decoration's second line sits,
+	// line-relative along y: thickness + 1 away from the text for under and
+	// over, floor(thickness + 1) toward line-under for line-through
+	// (TextDecorationInfo::
+	// ComputeLineData, text_decoration_info.cc:255-282;
+	// DecorationLinePainter::Paint's kDoubleStroke,
+	// decoration_line_painter.cc:464-473). Under the rotation, line-relative
+	// +y is physical -x.
+	paintLine := func(rectLeft, doubleOffset float64) {
 		r.dc.Push()
 		defer r.dc.Pop()
 		r.dc.Translate(rectLeft+thickness, 0)
@@ -7019,7 +7028,8 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 		}
 		switch td.Style {
 		case "double":
-			r.drawDoubleLine(lineStart, thickness/2, lineStart+inlineLen, thickness/2, thickness)
+			r.drawLineAsRect(lineStart, 0, inlineLen, thickness)
+			r.drawLineAsRect(lineStart, doubleOffset, inlineLen, thickness)
 		case "wavy":
 			r.drawWavyLinePhased(lineStart, thickness/2, inlineLen, thickness, 0)
 		default: // "solid"
@@ -7029,7 +7039,7 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 
 	if td.Lines.Has(css.TextDecorationLineUnderline) {
 		perpX := info.computeUnderlinePerpX(td)
-		paintLine(vertDecorationRectLeft(perpX, thickness, info.underDir))
+		paintLine(vertDecorationRectLeft(perpX, thickness, info.underDir), awayFromText(info.underDir)*(thickness+1))
 	}
 	if td.Lines.Has(css.TextDecorationLineOverline) {
 		perpX := info.computeOverlinePerpX()
@@ -7038,11 +7048,22 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 		if info.underDir == blockUnderRight {
 			overDir = blockUnderLeft
 		}
-		paintLine(vertDecorationRectLeft(perpX, thickness, overDir))
+		paintLine(vertDecorationRectLeft(perpX, thickness, overDir), awayFromText(overDir)*(thickness+1))
 	}
 	if td.Lines.Has(css.TextDecorationLineLineThrough) {
-		paintLine(info.computeLineThroughPerpX() - thickness/2)
+		paintLine(info.computeLineThroughPerpX()-thickness/2, awayFromText(info.underDir)*math.Floor(thickness+1))
 	}
+}
+
+// awayFromText is the line-relative y direction (see
+// drawOneAppliedVerticalDecoration's rotation) that leads away from the text
+// for a decoration on the dir side: physical left (blockUnderLeft) is
+// line-relative +y, physical right -y.
+func awayFromText(dir blockUnderDir) float64 {
+	if dir == blockUnderLeft {
+		return 1
+	}
+	return -1
 }
 
 // vertDecorationRectLeft computes the left X edge of a vertical decoration rect.
