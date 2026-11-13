@@ -50,42 +50,23 @@ func parseFontFeatureValuesRule(ruleStr string) *FontFeatureValuesRule {
 
 	rule := &FontFeatureValuesRule{Families: families}
 
-	// Iterate over inner at-rule blocks.
-	pos := 0
-	for pos < len(innerBody) {
-		// Skip whitespace.
-		for pos < len(innerBody) && isCSSWhitespace(innerBody[pos]) {
-			pos++
-		}
-		if pos >= len(innerBody) {
-			break
-		}
-		if innerBody[pos] != '@' {
-			// Unknown content — skip to next semicolon or block boundary.
-			pos++
+	// The body is a rule list (ConsumeRuleList with kFontFeatureRules,
+	// css_parser_impl.cc:1783-1792 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+	// each inner at-rule is one rule (splitRules), so one without a block
+	// ends at its `;` and is dropped alone.
+	for _, inner := range splitRules(innerBody) {
+		inner = strings.TrimSpace(inner)
+		if !strings.HasPrefix(inner, "@") {
 			continue
 		}
-		// Find the at-rule name.
-		nameStart := pos + 1
-		nameEnd := nameStart
-		for nameEnd < len(innerBody) && !isCSSWhitespace(innerBody[nameEnd]) && innerBody[nameEnd] != '{' && innerBody[nameEnd] != ';' {
-			nameEnd++
-		}
-		atName := strings.ToLower(innerBody[nameStart:nameEnd])
-		// Find the block body.
-		blockStart := strings.IndexByte(innerBody[nameEnd:], '{')
-		if blockStart < 0 {
-			break
-		}
-		blockStart += nameEnd
-		block := innerBody[blockStart+1:]
-		blockBody, ok := captureBalancedBlock(block)
+		blockStart, blockEnd, ok := blockBounds(inner)
 		if !ok {
-			break
+			continue
 		}
-		// Advance pos past the closing brace of this block.
-		// blockBody is everything between { and }. Total consumed = blockStart - pos + 1 (the `{`) + len(blockBody) + 1 (the `}`).
-		pos = blockStart + 1 + len(blockBody) + 1
+		// The at-keyword is the name right after `@` (`@ swash` is no
+		// at-keyword); a prelude makes it no feature block.
+		atName := strings.ToLower(strings.TrimRight(inner[1:blockStart], " \t\n\r\f"))
+		blockBody := inner[blockStart+1 : blockEnd]
 
 		// Parse the name → indexes map.
 		entries := parseFeatureValueDeclarations(blockBody)
@@ -117,25 +98,6 @@ func parseFontFeatureValuesRule(ruleStr string) *FontFeatureValuesRule {
 	// A rule with no recognized inner blocks is still legal per spec (just
 	// has no effect). Return it anyway so caller can store it.
 	return rule
-}
-
-// captureBalancedBlock returns the contents of a CSS block starting just
-// inside the `{`. The returned string excludes the closing `}`. ok=false if
-// no matching `}` is found.
-func captureBalancedBlock(s string) (string, bool) {
-	depth := 1
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return s[:i], true
-			}
-		}
-	}
-	return "", false
 }
 
 // splitFamilyList parses the `<family-name>#` prelude of @font-feature-values
