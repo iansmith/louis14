@@ -29,11 +29,14 @@ type sidewaysEmphasisGeometry struct {
 // its baseline markAscent below its top, so its left column is
 // L + B - rel + markAscent - annotH clockwise and L + rel - markAscent
 // counter-clockwise, rel being the mark baseline less the fragment top.
-// The text item's ruby annotation ascent (SetEmphasisMark's
-// AnnotationMetrics) is not ported: louis14 has no emphasis-with-ruby
-// metrics.
+// The over offset also takes the text item's annotation ascent: with
+// TextEmphasisAsRuby stable every emphasized item has one, the negated
+// em-height adjustment overAdjust (SetEmphasisMark, text_painter.cc:529;
+// AdjustTextOverUnderOffsetsForEmHeight, core/layout/inline/ruby_utils.cc:
+// 36-79, same SHA). The base ascent is an integer and overAdjust is whole,
+// so rel = overAdjust + floor(-markDescent).
 func (g sidewaysEmphasisGeometry) screenX(clockwise bool) float64 {
-	rel := math.Floor(-g.markDescent)
+	rel := g.overAdjust + math.Floor(-g.markDescent)
 	if clockwise {
 		return g.boxLeft + g.boxWidth - rel + g.markAscent - float64(g.annotH)
 	}
