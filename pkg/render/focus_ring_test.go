@@ -37,3 +37,28 @@ body { margin: 0; background: black }
 		}
 	}
 }
+
+// TestFocusRing_MultiRect pins Blink's focus ring around an inline split
+// across two lines: the fragment rects are united as a region whose
+// boundary is stroked (PaintSingleFocusRing → ComputeRightAnglePath,
+// core/paint/outline_painter.cc:87-101, :813-859 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), not their bounding box. The
+// span's first fragment is (90,10)-(130,30) and its second (10,30)-(90,50)
+// in Ahem 20px, so the inner ring covers y 29-30 under the first line's
+// "XXX " and nothing runs along the bounding box's top and bottom edges
+// there.
+func TestFocusRing_MultiRect(t *testing.T) {
+	doc := ParsePage(t, `<!doctype html><style>
+body { margin: 0; background: black }
+#d { position: absolute; left: 10px; top: 10px; width: 120px; font: 20px/20px Ahem; color: transparent }
+#s { outline: auto 1px blue }
+</style><div id=d>XXX <span id=s>XX XXXX</span></div>`)
+	img, _ := RenderDocument(t, doc, 160, 80)
+	blue := color.RGBA{0, 0, 255, 255}
+	black := color.RGBA{0, 0, 0, 255}
+	opPixel(t, img, 110, 9, blue, "guard: the first fragment's top edge is ringed")
+	opPixel(t, img, 50, 29, blue, "second fragment's top edge, outer row")
+	opPixel(t, img, 50, 30, blue, "second fragment's top edge, inner row")
+	opPixel(t, img, 50, 9, black, "no ring along the bounding box's top edge over \"XXX \"")
+	opPixel(t, img, 110, 49, black, "no ring along the bounding box's bottom edge under the first fragment")
+}
