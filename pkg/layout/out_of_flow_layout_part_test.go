@@ -270,3 +270,43 @@ func TestOOFStaticPositionAlignment(t *testing.T) {
 		})
 	}
 }
+
+// TestOOFInsetAlignment pins an out-of-flow box whose insets are both set
+// in an axis: it is aligned within its inset-modified containing block by
+// justify-self (the containing block's inline axis, even for an orthogonal
+// box) and align-self. Self-start / self-end take the box's own edges,
+// left / right the containing block's direction, and an overflowing box
+// (end, safe end or center) is shifted back to the containing block's
+// start. Mirrors GetAlignmentInsetBias (absolute_utils.cc:51-104) and
+// ComputeAlignment (:495-542), as ComputeUnclampedIMCB (:196) and
+// ComputeInsets (:326) use them @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+// `a` (20x20, inset:0) is in a 100x100 positioned container with a 1px
+// border.
+func TestOOFInsetAlignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, abs, container string
+		want                 fragRect
+	}{
+		{"start", "justify-self:start", "", fragRect{1, 1, 20, 20}},
+		{"center", "justify-self:center", "", fragRect{41, 1, 20, 20}},
+		{"end", "justify-self:end", "", fragRect{81, 1, 20, 20}},
+		{"align-self:center", "align-self:center", "", fragRect{1, 41, 20, 20}},
+		{"align-self:end", "align-self:end", "", fragRect{1, 81, 20, 20}},
+		{"end, vertical-rl box", "justify-self:end;writing-mode:vertical-rl", "", fragRect{81, 1, 20, 20}},
+		{"align-self:end, vertical-rl box", "align-self:end;writing-mode:vertical-rl", "", fragRect{1, 81, 20, 20}},
+		{"self-end, rtl box", "justify-self:self-end;direction:rtl", "", fragRect{1, 1, 20, 20}},
+		{"self-end, vertical-rl box", "justify-self:self-end;writing-mode:vertical-rl", "", fragRect{1, 1, 20, 20}},
+		{"left", "justify-self:left", "", fragRect{1, 1, 20, 20}},
+		{"right, rtl container", "justify-self:right", "direction:rtl", fragRect{81, 1, 20, 20}},
+		{"end, overflowing", "justify-self:end;width:150px", "", fragRect{1, 1, 150, 20}},
+		{"safe end, overflowing", "justify-self:safe end;width:150px", "", fragRect{1, 1, 150, 20}},
+		{"center, overflowing", "justify-self:center;width:150px", "", fragRect{1, 1, 150, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+				`<div style="position:relative;width:100px;height:100px;border:1px solid;`+tc.container+`">`+
+				`<div id=a style="position:absolute;inset:0;width:20px;height:20px;`+tc.abs+`"></div></div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
