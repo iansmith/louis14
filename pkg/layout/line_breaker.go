@@ -1645,6 +1645,14 @@ func (lb *LineBreaker) handleOpenTag(item *InlineItem, line *LineInfo) {
 	// Add inline-start margin + border + padding.
 	startEdge := margins.InlineStart + geom.Border.InlineStart + geom.Padding.InlineStart
 	lb.position += startEdge
+	// The line's width follows the position, as for a close tag: an open
+	// tag that ends a line (before a forced break, where
+	// RewindTrailingOpenTags is skipped, inline/line_breaker.cc:2563-2568
+	// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) keeps its start edge on
+	// the line.
+	if lb.position > 0 {
+		line.Width = lb.position
+	}
 
 	line.Results = append(line.Results, InlineItemResult{
 		Item:       item,
@@ -1983,8 +1991,7 @@ func (lb *LineBreaker) rewindTrailingOpenTags(line *LineInfo) {
 	if end == 0 || end == len(line.Results) {
 		return
 	}
-	// Trailing open tags only advanced the position, never line.Width.
-	lb.rewind(line, end)
+	line.Width -= lb.rewind(line, end)
 }
 
 // rewind moves the line's results from index end on back to the item
