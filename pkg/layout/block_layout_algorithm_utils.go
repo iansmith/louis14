@@ -128,21 +128,25 @@ func AlignBlockContent(style *css.Style, node *LayoutInputNode, breakToken *Bloc
 // static-position line its justify-self aligns it to: auto takes
 // justifyItemsStyle's justify-items, normal is start, left and right are
 // start and end, and self-start / self-end are the box's own edges mapped
-// onto the parent's writing direction. Mirrors InlineStaticPositionEdge
-// (block_layout_algorithm_utils.cc:236-284 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) without its
-// should_swap_inline_axis, which only its flex and grid callers set.
-func InlineStaticPositionEdge(oofStyle, justifyItemsStyle *css.Style, oofWDM, parentWDM WritingDirectionMode) StaticPositionEdge {
+// onto the parent's writing direction. shouldSwapInlineAxis (an RTL inline
+// container) swaps start and end, but not self-start / self-end. Mirrors
+// InlineStaticPositionEdge (block_layout_algorithm_utils.cc:236-284 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func InlineStaticPositionEdge(oofStyle, justifyItemsStyle *css.Style, oofWDM, parentWDM WritingDirectionMode, shouldSwapInlineAxis bool) StaticPositionEdge {
+	start, end := StaticEdgeStart, StaticEdgeEnd
+	if shouldSwapInlineAxis {
+		start, end = end, start
+	}
 	position, _ := resolvedSelfAlignment(true, justifyItemsStyle, oofStyle)
 	switch position {
 	case "end", "flex-end", "last baseline", "right":
-		return StaticEdgeEnd
+		return end
 	case "center", "anchor-center":
 		return StaticEdgeCenter
 	case "self-start", "self-end":
 		return staticEdgeOfAxisEdge(selfAxisEdge(true, position == "self-end", oofWDM, parentWDM))
 	}
-	return StaticEdgeStart
+	return start
 }
 
 // BlockStaticPositionEdge is InlineStaticPositionEdge's block-axis

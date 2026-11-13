@@ -916,7 +916,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				inlineEdge, blockEdge := StaticEdgeStart, StaticEdgeStart
 				if !childStyle.IsOriginalDisplayInlineType() {
 					childWDM := NewWritingDirectionMode(childStyle)
-					inlineEdge = InlineStaticPositionEdge(childStyle, bla.style, childWDM, wdm)
+					inlineEdge = InlineStaticPositionEdge(childStyle, bla.style, childWDM, wdm, false)
 					blockEdge = BlockStaticPositionEdge(childStyle, nil, childWDM, wdm)
 					switch inlineEdge {
 					case StaticEdgeCenter:

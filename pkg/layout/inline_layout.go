@@ -280,21 +280,51 @@ func hasOnlyInlineChildren(node *LayoutInputNode) bool {
 	return hasContent
 }
 
-// inlineOOFCandidate builds an out-of-flow candidate for an inline-collected
-// OOF item at the given static offset within the containing block's content
-// box. The static edges are always start/start — Blink's InlineLayoutAlgorithm
-// records inline OOF static positions at the line-relative start corner.
+// inlineOOFCandidate builds an out-of-flow candidate for an OOF item in a
+// line at the given static offset within the containing block's content
+// box, its edges from its justify-self / align-self against its parent's
+// writing direction (justify-items and align-items do not apply in inline
+// layout; start and end swap in an RTL parent). A center or end
+// block edge is resolved against the line box by moveToLineBoxBlockEdge
+// once the line's block size is known. Mirrors
+// FragmentBuilder::AddOutOfFlowInlineChildCandidate (fragment_builder.cc:
+// 545-585 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func inlineOOFCandidate(node *LayoutInputNode, inlineOffset, blockOffset float64, isFixed bool, inlineContainer *html.Node) OutOfFlowCandidate {
+	inlineEdge, blockEdge := StaticEdgeStart, StaticEdgeStart
+	if style := node.Style(); style != nil {
+		oofWDM := NewWritingDirectionMode(style)
+		containerWDM := oofWDM
+		if parent := node.Parent(); parent != nil && parent.Style() != nil {
+			containerWDM = NewWritingDirectionMode(parent.Style())
+		}
+		inlineEdge = InlineStaticPositionEdge(style, nil, oofWDM, containerWDM, !containerWDM.IsLTR())
+		blockEdge = BlockStaticPositionEdge(style, nil, oofWDM, containerWDM)
+	}
 	return OutOfFlowCandidate{
 		Node: node,
 		StaticPosition: LogicalStaticPosition{
 			Offset:     LogicalOffset{InlineOffset: inlineOffset, BlockOffset: blockOffset},
-			InlineEdge: StaticEdgeStart,
-			BlockEdge:  StaticEdgeStart,
+			InlineEdge: inlineEdge,
+			BlockEdge:  blockEdge,
 		},
 		IsFixedPosition: isFixed,
 		InlineContainer: inlineContainer,
 	}
+}
+
+// moveToLineBoxBlockEdge moves an in-line candidate's static block offset
+// to the middle or end of its line box (lineBoxBlockSize) for a center or
+// end block edge: its alignment container is a zero-thickness line in the
+// block direction across the line box (fragment_builder.cc:565-578 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func moveToLineBoxBlockEdge(c OutOfFlowCandidate, lineBoxBlockSize float64) OutOfFlowCandidate {
+	switch c.StaticPosition.BlockEdge {
+	case StaticEdgeCenter:
+		c.StaticPosition.Offset.BlockOffset += lineBoxBlockSize / 2
+	case StaticEdgeEnd:
+		c.StaticPosition.Offset.BlockOffset += lineBoxBlockSize
+	}
+	return c
 }
 
 // computeLineBoundsBFC returns the line box's start/end BFC inline coordinates
@@ -882,20 +912,22 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// floatsAfterLine are the floats pushed after this line, positioned
 		// at its block-end once its height is known.
 		var floatsAfterLine []*pendingFloat
-		// Block-level abspos children that appear AFTER in-flow content on this
-		// line capture static position at the block-end of the line box (as if
-		// they started a new block-flow line below this one). Their emission is
-		// deferred until the final line height is known via createLineBoxEx.
-		// Block-level abspos children that appear BEFORE any in-flow content
-		// emit immediately at (0, blockOffset) — their block-flow line would
-		// begin at the current cursor since no preceding content needs to be
-		// terminated. Mirrors Blink's InlineLayoutAlgorithm::HandleOutOfFlowPositioned
-		// reading line_box_.LineBoxBlockEnd() at the time of encounter.
-		var blockLevelOOFOnLine []struct {
-			node            *LayoutInputNode
-			isFixed         bool
-			inlineContainer *html.Node
+		// The line's OOF candidates are added once the line box is built:
+		// they wait for its block offset (an outside list marker can push
+		// the line down) and block size (moveToLineBoxBlockEdge), so their
+		// block offsets are queued relative to the line. Block-level abspos
+		// children that appear AFTER in-flow content on this line sit on
+		// the next line, at the line box's block-end; those BEFORE any
+		// in-flow content at its block-start. Mirrors Blink's
+		// InlineLayoutAlgorithm::PlaceOutOfFlowObjects
+		// (inline_layout_algorithm.cc:760-855 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		var queuedLineOOF, blockLevelOOFOnLine []OutOfFlowCandidate
+		lineRelative := func(c OutOfFlowCandidate) OutOfFlowCandidate {
+			c.StaticPosition.Offset.BlockOffset -= blockOffset
+			return c
 		}
+		addLineOOF := func(c OutOfFlowCandidate) { queuedLineOOF = append(queuedLineOOF, lineRelative(c)) }
 		hasInflowOnLine := false
 		for _, r := range line.Results {
 			// CSS Ruby: an OOF descendant of a ruby element is collected into the
@@ -903,30 +935,28 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			// surface it here (with its inline CB from positionedInlineMap) before
 			// the column advances the inline cursor below — otherwise it is dropped.
 			if r.RubyColumn != nil {
-				surfaceRubyColumnOOFCandidates(r.RubyColumn, inlinePos, blockOffset, positionedInlineMap, bla.containerBuilder)
+				surfaceRubyColumnOOFCandidates(r.RubyColumn, inlinePos, blockOffset, positionedInlineMap, addLineOOF)
 			}
 			if r.Item.Type == InlineItemOutOfFlow && r.Item.LayoutNode != nil {
 				oofStyle := r.Item.Style
 				inlineLevel := oofStyle != nil && oofStyle.IsOriginalDisplayInlineType()
 				isFixed := oofStyle != nil && oofStyle.GetPosition() == css.PositionFixed
 				if inlineLevel {
-					bla.containerBuilder.AddOutOfFlowCandidate(inlineOOFCandidate(
+					addLineOOF(inlineOOFCandidate(
 						r.Item.LayoutNode, inlinePos, blockOffset, isFixed,
 						positionedInlineMap[r.Item],
 					))
 				} else if !hasInflowOnLine {
 					// No in-flow content precedes this block-level OOF on the line:
 					// its block-flow position starts at the current block cursor.
-					bla.containerBuilder.AddOutOfFlowCandidate(inlineOOFCandidate(
+					addLineOOF(inlineOOFCandidate(
 						r.Item.LayoutNode, 0, blockOffset, isFixed,
 						positionedInlineMap[r.Item],
 					))
 				} else {
-					blockLevelOOFOnLine = append(blockLevelOOFOnLine, struct {
-						node            *LayoutInputNode
-						isFixed         bool
-						inlineContainer *html.Node
-					}{node: r.Item.LayoutNode, isFixed: isFixed, inlineContainer: positionedInlineMap[r.Item]})
+					blockLevelOOFOnLine = append(blockLevelOOFOnLine, lineRelative(inlineOOFCandidate(
+						r.Item.LayoutNode, 0, blockOffset, isFixed, positionedInlineMap[r.Item],
+					)))
 				}
 			} else if r.Item.Type == InlineItemFloat {
 				// The line breaker positioned the floats that fit
@@ -1252,6 +1282,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			hasBreakOpportunityBeforeNextChild = HasBreakOpportunityBeforeNextChild(wdm, lineFragment, nil)
 		}
 
+		for _, c := range queuedLineOOF {
+			c.StaticPosition.Offset.BlockOffset += blockOffset
+			bla.containerBuilder.AddOutOfFlowCandidate(moveToLineBoxBlockEdge(c, lineHeight))
+		}
+
 		// Propagate OOF candidates collected from atomic inline children
 		// (e.g. abs-pos descendants of inline-blocks) to the parent block.
 		// Adjust static positions by the line's offset within the block.
@@ -1262,16 +1297,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			bla.containerBuilder.AddOutOfFlowCandidate(adj)
 		}
 
-		// Emit deferred block-level OOF candidates at the block-end of the
-		// line box. Per Blink's InlineLayoutAlgorithm::HandleOutOfFlowPositioned,
-		// a block-level abspos encountered AFTER in-flow content on the line
-		// receives static position (inline-start, line_block_end) — if it had
-		// been in flow it would have started a new block-flow line below the
-		// current line box.
-		for _, d := range blockLevelOOFOnLine {
-			bla.containerBuilder.AddOutOfFlowCandidate(inlineOOFCandidate(
-				d.node, 0, blockOffset+lineHeight, d.isFixed, d.inlineContainer,
-			))
+		// Block-level OOF candidates after in-flow content: at the line
+		// box's block-end, as if they had started a block-flow line below.
+		for _, c := range blockLevelOOFOnLine {
+			c.StaticPosition.Offset.BlockOffset += blockOffset + lineHeight
+			bla.containerBuilder.AddOutOfFlowCandidate(moveToLineBoxBlockEdge(c, lineHeight))
 		}
 
 		// During the initial column-balancing pass, a line box is an
