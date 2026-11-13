@@ -1072,7 +1072,7 @@ func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string)
 // (core/paint/text_painter.cc:529) and ComputeAnnotationOverflow
 // (ruby_utils.cc:775-776) both apply, with TextEmphasisAsRuby stable. On the
 // central baseline the ascent is Height() / 2 (font_metrics.cc:157-158) and
-// the normalized ascent em - em / 2 (simple_font_data.cc:345-347), both @ the
+// the normalized ascent em - em / 2 (simple_font_data.cc:346-348), both @ the
 // same SHA.
 func EmHeightOverAdjustment(fontSize float64, fontPath string, centralBaseline bool) float64 {
 	ascent := FontAscentFromFont(fontSize, fontPath, nil)

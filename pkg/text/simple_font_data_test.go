@@ -212,7 +212,7 @@ func TestNormalizedTypoAscentAndDescent(t *testing.T) {
 // (:898-941) and TextPainter::SetEmphasisMark adds back (core/paint/
 // text_painter.cc:529, same SHA; TextEmphasisAsRuby is stable). On the
 // central baseline the ascent is Height() / 2 (font_metrics.cc:157-158) and
-// the normalized ascent em - em / 2 (simple_font_data.cc:345-347). Expected
+// the normalized ascent em - em / 2 (simple_font_data.cc:346-348). Expected
 // values come from the font tables with LOU-920's hhea metrics (mazarin
 // #125); Liberation Serif: hhea 1825/-443, sTypo 1420/-442, upem 2048.
 //
