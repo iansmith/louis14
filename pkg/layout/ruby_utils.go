@@ -67,35 +67,25 @@ func baseFontAscentFromSubLine(
 	return maxAscent
 }
 
-// annotationEmHeightFromSubLine returns the maximum font typo ascent and
-// descent across all text items in a ruby annotation sub-line, EXCLUDING
-// CSS line-height half-leading and EXCLUDING the integer rounding that
-// `computeLineMetricsEx` applies via `blockAscentDescent`.
+// annotationEmHeightFromSubLine returns the largest em height of the text
+// items in a ruby annotation sub-line, measured from the baseline toward
+// line-over (ascent) and line-under (descent), without line-height leading.
+// It sizes the annotation's contribution to the line and places its
+// baseline.
 //
-// Mirrors Blink's `ComputeEmHeight(line_item)` at
-// `core/layout/inline/ruby_utils.cc:78-126 @
-// 574216cbb0c2b86a39c1d41ad85b2891a050b44c` — the em-height-only
-// metric Blink uses to size annotation sub-line contributions and to
-// position the annotation baseline relative to the line's block origin.
-//
-// Why this is distinct from `computeLineMetricsEx`:
-//  1. No leading. computeLineMetricsEx adds calculateLeadingSpace(lineHt,
-//     asc+desc) to the ascent and descent for `line-height: normal`. Blink's
-//     annotation positioning uses font em-height only; the leading is
-//     a property of the OUTER line's block metrics.
-//  2. No integer rounding. computeLineMetricsEx → blockAscentDescent
-//     → FontAscentFromFont applies `math.Round`. Blink's annotation
-//     positioning uses sub-pixel `FixedAscent`/`FixedDescent`; the
-//     rounding to integer ascent (`int_ascent_` via `lroundf`) happens
-//     once at PAINT time. Layout uses the sub-pixel value.
-//
-// Both differences contribute to the LOU-161 emphasis/annotation
-// alignment gap; see findings.md "Subpixel rounding investigation".
+// Each item's em height is Blink's ComputeEmHeight (core/layout/inline/
+// ruby_utils.cc:82-107 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the
+// normalized typo ascent and descent of the fonts the run is drawn in,
+// each rounded up and capped at the primary font's height
+// (GetFloatFontHeight, platform/fonts/font_metrics.h:131-158). louis14
+// draws a run in one font (resolveFontPathForRun), so that font is the
+// run's used font.
 func annotationEmHeightFromSubLine(
 	line *LineInfo,
 	wdm WritingDirectionMode,
 	fonts text.FontConfig,
 	centralBaseline bool,
+	textContent string,
 ) (ascent, descent float64) {
 	if line == nil {
 		return 0, 0
@@ -116,25 +106,33 @@ func annotationEmHeightFromSubLine(
 			continue
 		}
 		fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-		var a, d float64
-		if centralBaseline {
-			a = fontSize / 2
-			d = fontSize / 2
-		} else {
-			fontPath := resolveFontPath(r.Item.Style, fonts)
-			a, d = text.NormalizedTypoAscentAndDescent(fontSize, fontPath)
-			if sidewaysVLR {
-				a, d = d, a
-			}
+		var runPath string // unused on the central baseline
+		if !centralBaseline {
+			runPath = resolveFontPathForRun(r.Item.Style, fonts, textContent, r.TextStart, r.TextEnd)
 		}
-		if a > ascent {
-			ascent = a
+		a, d := computeEmHeight(fontSize, runPath, resolvePrimaryFontPath(r.Item.Style, fonts), fonts.Registry, centralBaseline)
+		if sidewaysVLR {
+			a, d = d, a
 		}
-		if d > descent {
-			descent = d
-		}
+		ascent, descent = max(ascent, a), max(descent, d)
 	}
 	return ascent, descent
+}
+
+// computeEmHeight is ComputeEmHeight's height for one text item drawn in
+// runPath with primary font primaryPath: the run font's normalized typo
+// ascent and descent (SimpleFontData::NormalizedTypoAscentAndDescent,
+// platform/fonts/simple_font_data.cc:339-349 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), each rounded up and capped at
+// the primary font's line-relative ascent and descent.
+func computeEmHeight(fontSize float64, runPath, primaryPath string, reg *text.FontRegistry, centralBaseline bool) (ascent, descent float64) {
+	if centralBaseline {
+		ascent, descent = text.CentralNormalizedTypoAscentAndDescent(fontSize)
+	} else {
+		ascent, descent = text.NormalizedTypoAscentAndDescent(fontSize, runPath)
+	}
+	primaryAscent, primaryDescent := lineRelativeAscentDescent(fontSize, primaryPath, reg, centralBaseline)
+	return min(math.Ceil(ascent), primaryAscent), min(math.Ceil(descent), primaryDescent)
 }
 
 // EmphasisMarkFontSize returns the font size for a text-emphasis mark glyph:
@@ -258,11 +256,12 @@ func (rbpc *RubyBlockPositionCalculator) PlaceLines(
 	wdm WritingDirectionMode,
 	fonts text.FontConfig,
 	centralBaseline bool,
+	textContent string,
 ) {
 	var maxAnno float64
 	for _, col := range columns {
 		for _, anno := range col.AnnotationLines {
-			a, d := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline)
+			a, d := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline, textContent)
 			if h := a + d; h > maxAnno {
 				maxAnno = h
 			}

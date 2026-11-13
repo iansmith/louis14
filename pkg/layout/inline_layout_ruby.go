@@ -157,17 +157,16 @@ func emitRubyColumnFragments(
 		} else {
 			annoInlineOffset = columnInlineOffset
 		}
-		// Mirror Blink's annotation positioning: layout works in sub-pixel
-		// font typo metrics, paint snaps to integer ascent (`int_ascent_`
-		// via `lroundf` at `text_fragment_painter.cc:517-522 @
-		// 574216cbb0c2b86a39c1d41ad85b2891a050b44c`). emitSubLineTextFragments
-		// subtracts the per-item rounded ascent from blockBaseline to get
-		// blockPos; pre-correcting annoBaseline with `math.Round(annoEmAscent)`
-		// makes that subtraction cancel cleanly so the painted baseline
-		// lands at `lineBoxTop + annotationBlockTop + ascent_unrounded` —
-		// the same place the renderer paints any other text fragment, and
-		// the place emphasis-mark Y is computed relative to.
-		annoEmAscent, _ := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline)
+		// The annotation's baseline sits its em height (ComputeEmHeight:
+		// whole pixels on the alphabetic baseline, possibly a half pixel on
+		// the central one) below the annotation's block top. Rounding it
+		// matches the integer ascent paint snaps to (`int_ascent_` via
+		// `lroundf`, text_fragment_painter.cc:517-522 @
+		// 574216cbb0c2b86a39c1d41ad85b2891a050b44c), which
+		// emitSubLineTextFragments subtracts from blockBaseline to get
+		// blockPos, so the painted baseline lands where the renderer paints
+		// any other text fragment and where emphasis-mark Y is measured from.
+		annoEmAscent, _ := annotationEmHeightFromSubLine(anno, wdm, fonts, centralBaseline, textContent)
 		annoBaseline := annotationBlockTop + math.Round(annoEmAscent)
 		// Annotation inline boxes keep the font-box (baseline-anchored) model:
 		// pass a zero band so emitSubLineTextFragments takes the font-box branch.
