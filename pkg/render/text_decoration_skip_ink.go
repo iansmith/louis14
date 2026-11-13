@@ -22,24 +22,28 @@ type inkSegment struct {
 	End   float64
 }
 
+// kDecorationClipMaxDilation caps skip-ink's dilation of a glyph intercept
+// (core/paint/text_painter.cc:46 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+const kDecorationClipMaxDilation = 13
+
 // skipInkSegments returns the sub-segments of the decoration line that
 // REMAIN after skip-ink removes the glyph extents.
 //
 // Inputs:
 //   - start, end:  the decoration line's inline-axis range (start < end).
-//   - thickness:   the decoration line's stroke thickness; used as the
-//     safety inflation on each side of each glyph extent so
-//     the gap matches the spec's "ink intersection" intent.
-//     Pass 0 for no inflation.
+//   - thickness:   the decoration line's stroke thickness; each glyph extent
+//     is dilated by it, at most kDecorationClipMaxDilation, on
+//     both sides. Pass 0 for no dilation.
 //   - glyphs:      glyph extents on the same inline axis. May be empty or
 //     in any order.
 //
 // Returns the list of [start, end) sub-segments in increasing order.
 //
-// Mirrors the algorithm in Blink's `decoration_line_painter.cc` at
-// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: each glyph extent is
-// inflated by half-thickness on both sides, the inflated intervals are
-// merged, and the decoration line is partitioned into the complement.
+// Mirrors TextPainter::ClipDecorationLine (core/paint/text_painter.cc:
+// 574-622 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each glyph intercept
+// is dilated by min(thickness, kDecorationClipMaxDilation) on both sides
+// and clipped out, so the line keeps the complement of the merged
+// intervals.
 func skipInkSegments(start, end, thickness float64, glyphs []glyphExtent) []inkSegment {
 	if end <= start {
 		return nil
@@ -48,9 +52,9 @@ func skipInkSegments(start, end, thickness float64, glyphs []glyphExtent) []inkS
 		return []inkSegment{{Start: start, End: end}}
 	}
 
-	// Inflate each glyph extent by thickness/2 on both sides, clamp to
-	// the decoration line's range, drop empty or out-of-range intervals.
-	inflate := thickness / 2
+	// Dilate each glyph extent on both sides, clamp to the decoration
+	// line's range, drop empty or out-of-range intervals.
+	inflate := min(thickness, kDecorationClipMaxDilation)
 	intervals := make([]inkSegment, 0, len(glyphs))
 	for _, g := range glyphs {
 		s := g.Start - inflate

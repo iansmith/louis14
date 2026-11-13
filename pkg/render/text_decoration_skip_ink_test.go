@@ -50,12 +50,12 @@ func TestSkipInkSegments(t *testing.T) {
 			want:   []inkSegment{{Start: 0, End: 70}},
 		},
 		{
-			name:      "adjacent glyphs collapse under thickness inflation",
+			name:      "adjacent glyphs collapse under thickness dilation",
 			start:     0,
 			end:       100,
-			thickness: 4, // inflate = 2; glyphs at [40,50] and [52,60] expand to [38,52] and [50,62], merging to [38,62]
+			thickness: 4, // dilation = min(4, 13) (TextPainter::ClipDecorationLine); glyphs at [40,50] and [52,60] expand to [36,54] and [48,64], merging to [36,64]
 			glyphs:    []glyphExtent{{Start: 40, End: 50}, {Start: 52, End: 60}},
-			want:      []inkSegment{{Start: 0, End: 38}, {Start: 62, End: 100}},
+			want:      []inkSegment{{Start: 0, End: 36}, {Start: 64, End: 100}},
 		},
 		{
 			name:   "out-of-range glyph ignored",
