@@ -1625,6 +1625,16 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			return item.mainOffset
 		}
 
+		// itemBlockSize is the item's border-box block size in the
+		// container's writing mode — the LogicalBoxFragment::BlockSize that
+		// FirstBaselineOrSynthesize / LastBaselineOrSynthesize synthesize at
+		// (logical_box_fragment.h:33-40, :53-77 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). In a column flex that
+		// is the item's main size, not its cross size.
+		itemBlockSize := func(item *flexItem) float64 {
+			return NewLogicalFragment(wdm, item.fragment).BlockSize()
+		}
+
 		// fallbackFirstBaseline mirrors LogicalBoxFragment::FirstBaselineOrSynthesize
 		// combined with Blink's baseline-axis gate. Returns the distance from
 		// the item's border-box block-start to its first baseline.
@@ -1633,7 +1643,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				return item.baseline, true
 			}
 			if canSynthesize {
-				return item.crossSize, true
+				return itemBlockSize(item), true
 			}
 			return 0, false
 		}
@@ -1650,7 +1660,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 			if canSynthesize {
-				return item.crossSize, true
+				return itemBlockSize(item), true
 			}
 			return 0, false
 		}
