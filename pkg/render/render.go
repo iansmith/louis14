@@ -2464,7 +2464,7 @@ func (r *Renderer) paintSelfOutline(layer *PaintLayer) {
 	if layer.inlinePaintGroup != nil {
 		return // its fragments paint it (see paintSelfDecorations)
 	}
-	if layer.OutlineStyle != "none" && layer.OutlineWidth > 0 {
+	if layer.hasOutline() {
 		r.drawOutline(layer)
 	}
 }
@@ -4139,6 +4139,18 @@ func focusRingOffset(layer *PaintLayer) float64 {
 		offset--
 	}
 	return offset
+}
+
+// outlineOutsetExtent is Blink's OutlinePainter::OutlineOutsetExtent
+// (outline_painter.cc:1050-1061 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// how far an outline reaches outside its outline rects. A focus ring draws
+// only part of its width outside its offset; another outline its whole
+// width.
+func outlineOutsetExtent(layer *PaintLayer) int {
+	if layer.OutlineStyle == "auto" {
+		return int(focusRingOffset(layer)) + int(math.Ceil(focusRingStrokeWidth/3))*2
+	}
+	return max(int(layer.OutlineWidth)+int(layer.OutlineOffset), 0)
 }
 
 // focusRingCornerRadii is Blink's GetFocusRingCornerRadii for an element
