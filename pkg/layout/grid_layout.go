@@ -1,6 +1,7 @@
 package layout
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"strings"
@@ -451,6 +452,14 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 			columns:  newGridItemAxisData(true, gla.style, wdm, childStyle, childWDM, gla.replacedHasNaturalSize(child, wdm, true)),
 			rows:     newGridItemAxisData(false, gla.style, wdm, childStyle, childWDM, gla.replacedHasNaturalSize(child, wdm, false)),
 		})
+	}
+	// Placement, and every pass after it, take the items in order-modified
+	// document order: a stable sort by `order` when any item has a
+	// non-initial one (GridNode::ConstructGridItems,
+	// GridItems::SortByOrderProperty; grid/grid_node.cc:95-112,
+	// grid/grid_item.cc:470-478 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	if slices.ContainsFunc(items, func(item *gridItem) bool { return item.style.GetOrder() != 0 }) {
+		slices.SortStableFunc(items, func(a, b *gridItem) int { return cmp.Compare(a.style.GetOrder(), b.style.GetOrder()) })
 	}
 
 	// Handle auto-fill/auto-fit BEFORE placement: repeat(auto-fill, …) /

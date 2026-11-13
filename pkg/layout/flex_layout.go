@@ -1966,7 +1966,7 @@ func (fla *FlexLayoutAlgorithm) collectItems(
 		if flexShrink < 0 {
 			flexShrink = 1
 		}
-		order := fla.parseInt(childStyle, "order", 0)
+		order := childStyle.GetOrder()
 
 		// Constraint space for computing intrinsic sizes (§4.5, min/max).
 		// Its percentage size is childPercentageSize, as Blink's flex-basis
