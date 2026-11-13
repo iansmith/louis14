@@ -25,6 +25,10 @@ func TestUABidiRendering(t *testing.T) {
 		{`<textarea id="t" dir="auto"></textarea>`, "plaintext"},
 		{`<input id="t" type="search" dir="auto">`, "plaintext"},
 		{`<input id="t" type="text" dir="auto">`, "isolate"},
+		{`<input id="t" type="SEARCH" dir="auto">`, "plaintext"},
+		// The type keyword matches ASCII case-insensitively only: U+0130
+		// is no `i`.
+		{`<input id="t" type="EMAİL" dir="auto">`, "isolate"},
 		{`<span id="t"></span>`, "normal"},
 		{`<span id="t" dir="bogus"></span>`, "normal"},
 	} {
