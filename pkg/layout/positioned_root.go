@@ -214,8 +214,11 @@ func computePositionedRootIMCB(
 		wdm, wdm,
 	)
 
-	availInline = cbLogical.InlineSize
-	availBlock = cbLogical.BlockSize
+	// An auto size fits within the IMCB (ComputeOofInlineDimensions /
+	// ComputeOofBlockDimensions, absolute_utils.cc:619-705, :755-874 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	availInline = max(0, imcb.InlineSize())
+	availBlock = max(0, imcb.BlockSize())
 
 	stretchable := !isNonStretchableDisplay(rootStyle)
 

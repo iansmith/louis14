@@ -498,14 +498,20 @@ func (p *OutOfFlowLayoutPart) CalculateOffset(candidate OutOfFlowCandidate) (Off
 	)
 
 	// --- Pre-layout: constraint-space sizing ---
-	// Fix the child's size on an axis only when both insets are specified
-	// AND the size is auto. The fixed size equals IMCB.size minus non-auto
-	// margins minus child border+padding (auto margins are zero for this
-	// step, per CSS 2.1 §10.3.7). Other axis configurations (one inset
-	// specified, or both auto) let the child size itself and fall through
-	// to the post-layout IMCB resolution.
-	availInline := cbInline
+	// The available size is the IMCB, not the whole containing block: an
+	// auto size fits its content within it (ComputeOofInlineDimensions /
+	// ComputeOofBlockDimensions resolve against imcb.InlineSize() /
+	// imcb.BlockSize(), absolute_utils.cc:619-705, :755-874 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a box at a centered
+	// static position gets twice the distance to the nearer edge. When both
+	// insets in an axis are specified and the size is auto, the size is
+	// instead fixed to the IMCB minus non-auto margins minus border+padding
+	// (auto margins are zero for this step, per CSS 2.1 §10.3.7).
+	availInline := max(0, imcb.InlineSize())
 	availBlock := cbBlock
+	if cbBlock != Indefinite {
+		availBlock = max(0, imcb.BlockSize())
+	}
 	useFixedInline := false
 	useFixedBlock := false
 
