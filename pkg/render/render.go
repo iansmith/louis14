@@ -6938,13 +6938,12 @@ func (r *Renderer) drawVerticalTextDecoration(layer *PaintLayer, text string, ad
 	// vertical text column.
 	inlineLen := uprightAdvanceExtent(advances, layer, true)
 
-	// Determine which physical X direction is "under" (block-end) based on
-	// the writing mode. For vertical-rl, under = left; for vertical-lr, under = right.
-	// Since louis14 represents vertical-lr with IsSidewaysRL=true for mixed text
-	// orientation (engine.go:362-368), pure upright vertical (IsVerticalText &&
-	// !IsSidewaysRL && !IsSidewaysLR) does not distinguish rl vs lr at paint time.
-	// Default: blockUnderLeft (vertical-rl convention). This is the conventional
-	// "under" for upright CJK text which is the primary use case for IsVerticalText.
+	// Upright text's line-under side is physical left in vertical-rl and
+	// vertical-lr alike: Blink rotates both clockwise (TextFragmentPainter::
+	// Paint, core/paint/text_fragment_painter.cc:369-379 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as Chrome draws them. The
+	// cases that put the underline on the over side are not ported
+	// (LOU-1032).
 	dir := blockUnderLeft
 
 	info := newVerticalTextDecorationInfo(box, inlineLen, layer.FontSize, ascent, descent, 0, dir)

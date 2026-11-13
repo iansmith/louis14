@@ -129,3 +129,45 @@ func TestDecorationLine_UprightVerticalDouble(t *testing.T) {
 		t.Errorf("x %d: past the second line, want clear", left-8)
 	}
 }
+
+// Upright vertical text measures its decorations from the line-over edge
+// (the right side, in vertical-rl and vertical-lr alike) with its central
+// baseline: an auto underline resolves to under (ResolveUnderlinePosition,
+// core/paint/text_decoration_info.cc:23-53 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and sits
+// floor(central ascent + em/2 + text-underline-offset) + 1 in
+// (TextDecorationOffset::ComputeUnderlineOffsetForUnder with
+// BottomOfEmHeight, core/layout/text_decoration_offset.cc:52-89); a
+// line-through sits 2 * ascent / 3 - thickness / 2 in
+// (ComputeLineThroughLineData, text_decoration_info.cc:379-389). Measured
+// in Chrome 2026-11-13: a 40px Ahem column at x 100-140 with 6px lines and
+// a 10px offset has its underline at x 83-88 and its line-through at x
+// 116-121.
+func TestDecorationLine_UprightVerticalPlacement(t *testing.T) {
+	for _, wm := range []string{"vertical-rl", "vertical-lr"} {
+		for _, c := range []struct {
+			line   string
+			x0, x1 int
+		}{{"underline", 83, 88}, {"line-through", 116, 121}} {
+			img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+				`<div style="position:absolute;left:100px;top:10px;writing-mode:`+wm+`;text-orientation:upright;font:40px/40px Ahem;color:white;`+
+				`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
+			first, last := -1, -1
+			for x := 0; x < 250; x++ {
+				// A pixel at least half covered counts as the line, as in the
+				// probe of Chrome's screenshot: the line-through's
+				// 115.67-121.67 rect covers a third of pixel 115 (left out)
+				// and two thirds of pixel 121 (counted).
+				if r, _, _, _ := img.At(x, 60).RGBA(); r>>8 < 128 {
+					if first < 0 {
+						first = x
+					}
+					last = x
+				}
+			}
+			if first != c.x0 || last != c.x1 {
+				t.Errorf("%s %s: dark x %d-%d, want Chrome's %d-%d", wm, c.line, first, last, c.x0, c.x1)
+			}
+		}
+	}
+}
