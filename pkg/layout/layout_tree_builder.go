@@ -1305,6 +1305,10 @@ func (b *LayoutTreeBuilder) createSyntheticElement(tag string, attrs map[string]
 	style.ViewportHeight = b.viewportHeight
 	if parentStyle := b.styles[parent]; parentStyle != nil {
 		css.ApplyInheritedFrom(style, parentStyle)
+		// No caller changes a font property, so the synthetic element's
+		// font is its parent's and so is the line spacing line-height:
+		// normal computes to (Style.GetLineHeight).
+		style.LineSpacing = parentStyle.LineSpacing
 	}
 	b.styles[node] = style
 	return node, style

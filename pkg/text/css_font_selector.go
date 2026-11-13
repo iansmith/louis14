@@ -94,6 +94,7 @@ func (fs *CSSFontSelector) CreateFont(s *css.Style) css.Font {
 		ZeroWidth:                fs.simpleFontData(zeroPath, usedSize, orientation).ZeroInlineSize(),
 		XHeight:                  usedData.xHeight,
 		CapHeight:                usedData.capHeight,
+		LineSpacing:              FontHeightFromFont(usedSize, spacePath, fc.Registry),
 		IdeographicInlineSize:    icWidth,
 		HasIdeographicInlineSize: hasIC,
 	}

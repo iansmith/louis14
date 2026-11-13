@@ -3,9 +3,7 @@ package layout
 import (
 	"math"
 
-	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
-	"louis14/pkg/text"
 )
 
 // calculateLeadingSpace splits the leading between a line-height and a font
@@ -27,17 +25,4 @@ func calculateLeadingSpace(lineHeight, fontHeight float64) (overLeading, underLe
 // (WritingDirectionMode.lineToBlock).
 func blockLeadingSpace(lineHeight, fontHeight float64, wdm WritingDirectionMode) (ascentLeading, descentLeading float64) {
 	return wdm.lineToBlock(calculateLeadingSpace(lineHeight, fontHeight))
-}
-
-// usedLineHeight is style's line height for a run at fontSize: the
-// computed line-height, or, for line-height: normal, the line spacing
-// (text.FontHeightFromFont) of the font at fontPath, whatever the
-// baseline (ComputedStyle::ComputedLineHeightAsFixed →
-// FontMetrics::FixedLineSpacing, core/style/computed_style.cc:2440-2449 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func usedLineHeight(style *css.Style, fontSize float64, fontPath string, reg *text.FontRegistry) float64 {
-	if style.IsLineHeightNormal() {
-		return text.FontHeightFromFont(fontSize, fontPath, reg)
-	}
-	return style.GetLineHeight()
 }
