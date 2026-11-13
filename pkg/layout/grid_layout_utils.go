@@ -161,13 +161,7 @@ func (f gridBaselineFragment) baselineOrSynthesize(centralBaseline, isLast bool)
 // SynthesizedBaseline (logical_box_fragment.h:33-40 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (f gridBaselineFragment) synthesizedLogicalBaseline(blockSize float64, centralBaseline, isLast bool) float64 {
-	b := blockSize
-	switch {
-	case centralBaseline:
-		b = blockSize / 2
-	case f.wd.IsFlippedLines():
-		b = 0
-	}
+	b := SynthesizedBaseline(centralBaseline, f.wd.IsFlippedLines(), blockSize)
 	if isLast {
 		return blockSize - b
 	}

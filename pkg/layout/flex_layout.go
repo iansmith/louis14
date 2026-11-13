@@ -1603,8 +1603,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			line.crossAxisOffset = crossBPStart + lineOffsets[i]
 		}
 
-		canSynthesize := !wdm.IsVertical()
-
 		// baselineAxisParallel gates the fallback path to items whose
 		// baseline axis is parallel to the container's (same writing-mode
 		// verticality). Differs from per-line baseline ALIGNMENT (which is
@@ -1625,44 +1623,41 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			return item.mainOffset
 		}
 
-		// itemBlockSize is the item's border-box block size in the
-		// container's writing mode — the LogicalBoxFragment::BlockSize that
-		// FirstBaselineOrSynthesize / LastBaselineOrSynthesize synthesize at
-		// (logical_box_fragment.h:33-40, :53-77 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). In a column flex that
-		// is the item's main size, not its cross size.
-		itemBlockSize := func(item *flexItem) float64 {
-			return NewLogicalFragment(wdm, item.fragment).BlockSize()
+		// synthesizedBaseline is the baseline FirstBaselineOrSynthesize /
+		// LastBaselineOrSynthesize synthesize for an item with none, in the
+		// container's font baseline (the BaselineAccumulator is constructed
+		// with Style().GetFontBaseline()) over the item's border-box block
+		// size in the container's writing mode — in a column flex its main
+		// size, not its cross size (logical_box_fragment.h:33-40, :53-77,
+		// flex/flex_layout_algorithm.cc:80-153 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		centralBaseline := wdm.UsesCentralBaselineWithStyle(fla.style)
+		synthesizedBaseline := func(item *flexItem) float64 {
+			return SynthesizedBaseline(centralBaseline, wdm.IsFlippedLines(), NewLogicalFragment(wdm, item.fragment).BlockSize())
 		}
 
 		// fallbackFirstBaseline mirrors LogicalBoxFragment::FirstBaselineOrSynthesize
 		// combined with Blink's baseline-axis gate. Returns the distance from
 		// the item's border-box block-start to its first baseline.
-		fallbackFirstBaseline := func(item *flexItem) (float64, bool) {
+		fallbackFirstBaseline := func(item *flexItem) float64 {
 			if baselineAxisParallel(item) && (item.hasBaseline || item.baseline > 0) {
-				return item.baseline, true
+				return item.baseline
 			}
-			if canSynthesize {
-				return itemBlockSize(item), true
-			}
-			return 0, false
+			return synthesizedBaseline(item)
 		}
 
 		// fallbackLastBaseline mirrors LastBaselineOrSynthesize, falling back
 		// to first baseline when no last-baseline is present.
-		fallbackLastBaseline := func(item *flexItem) (float64, bool) {
+		fallbackLastBaseline := func(item *flexItem) float64 {
 			if baselineAxisParallel(item) {
 				if item.lastBaseline > 0 {
-					return item.lastBaseline, true
+					return item.lastBaseline
 				}
 				if item.hasBaseline || item.baseline > 0 {
-					return item.baseline, true
+					return item.baseline
 				}
 			}
-			if canSynthesize {
-				return itemBlockSize(item), true
-			}
-			return 0, false
+			return synthesizedBaseline(item)
 		}
 
 		// Under row-reverse / column-reverse, Blink's ApplyReversals
@@ -1734,16 +1729,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// is_first_line / is_last_line guards at :91-101).
 			if isFirst {
 				if it := firstNonCollapsed(line.items); it != nil {
-					if bl, ok := fallbackFirstBaseline(it); ok {
-						accum.accumulateFirstFallback(crossBPStart + itemBlockOffset(it) + bl)
-					}
+					accum.accumulateFirstFallback(crossBPStart + itemBlockOffset(it) + fallbackFirstBaseline(it))
 				}
 			}
 			if isLast {
 				if it := lastNonCollapsed(line.items); it != nil {
-					if bl, ok := fallbackLastBaseline(it); ok {
-						accum.accumulateLastFallback(crossBPStart + itemBlockOffset(it) + bl)
-					}
+					accum.accumulateLastFallback(crossBPStart + itemBlockOffset(it) + fallbackLastBaseline(it))
 				}
 			}
 		}
