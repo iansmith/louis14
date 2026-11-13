@@ -342,3 +342,35 @@ func TestOOFInlineStaticPositionAlignment(t *testing.T) {
 		})
 	}
 }
+
+// TestOOFGridStaticPositionAlignment pins an out-of-flow child of a grid
+// that is its containing block at its static position aligned within its
+// grid area (the padding box when not placed) by justify-self / align-self,
+// auto taking the grid's justify-items / align-items, auto margins not
+// applying, in each axis with auto insets. Blink moves the static position
+// to the area's middle or end (AlignmentOffsetForOutOfFlow,
+// grid/grid_layout_utils.cc:466-503, in GridLayoutAlgorithm::
+// PlaceOutOfFlowItems, grid/grid_layout_algorithm.cc:2602-2681 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `a` (20x20) is in a
+// 100x100 positioned grid with a 1px border.
+func TestOOFGridStaticPositionAlignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, grid, abs string
+		want            fragRect
+	}{
+		{"items center", "justify-items:center;align-items:center", "", fragRect{41, 41, 20, 20}},
+		{"self end", "", "justify-self:end;align-self:end", fragRect{81, 81, 20, 20}},
+		{"inline insets set", "justify-items:center;align-items:center", "left:0;right:0", fragRect{1, 41, 20, 20}},
+		{"block insets set", "justify-items:center;align-items:center", "top:0;bottom:0", fragRect{41, 1, 20, 20}},
+		{"in an area", "grid-template-columns:40px 60px;grid-template-rows:30px 70px", "grid-column:2;grid-row:2;justify-self:center;align-self:end", fragRect{61, 81, 20, 20}},
+		{"auto margins ignored", "justify-items:center", "margin-left:auto", fragRect{41, 1, 20, 20}},
+		{"self-end, rtl box", "", "justify-self:self-end;direction:rtl", fragRect{1, 1, 20, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+				`<div style="display:grid;position:relative;width:100px;height:100px;border:1px solid;`+tc.grid+`">`+
+				`<div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div></div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
