@@ -82,89 +82,6 @@ func computeMainIsItemInline(containerWDM WritingDirectionMode, itemWDM WritingD
 	return mainIsHorizontal == itemInlineIsHorizontal
 }
 
-// selfStartIsCrossStart returns true when align-self: self-start should
-// resolve to the same side as flex-start (cross-start). Per CSS Alignment §4.1,
-// self-start/self-end use the *item's own* writing direction rather than the
-// container's.
-//
-// The algorithm compares two physical sides:
-//  1. The container's cross-start (block-start for row, inline-start for column)
-//  2. The item's "start" on the same physical axis. If the cross axis is
-//     the item's block axis, this is the item's block-start; if it is the
-//     item's inline axis, this is the item's inline-start.
-//
-// When these physical sides match, self-start ≡ cross-start → return true.
-func selfStartIsCrossStart(containerWDM, itemWDM WritingDirectionMode, isRow bool) bool {
-	// Determine the container's physical cross-start side.
-	var containerCrossStart physicalSide
-	if isRow {
-		// Row flex: cross = block axis.
-		containerCrossStart = physicalBlockStart(containerWDM)
-	} else {
-		// Column flex: cross = inline axis.
-		containerCrossStart = physicalInlineStart(containerWDM)
-	}
-
-	// Determine whether the cross axis (physical) aligns with the item's
-	// block axis or inline axis.
-	crossIsVertical := containerCrossStart == sideTop || containerCrossStart == sideBottom
-	itemBlockIsVertical := itemWDM.IsHorizontal() // HTB: block is vertical
-
-	var itemSelfStart physicalSide
-	if crossIsVertical == itemBlockIsVertical {
-		// Cross axis corresponds to item's block axis.
-		itemSelfStart = physicalBlockStart(itemWDM)
-	} else {
-		// Cross axis corresponds to item's inline axis.
-		itemSelfStart = physicalInlineStart(itemWDM)
-	}
-
-	return containerCrossStart == itemSelfStart
-}
-
-// physicalSide is a simple enum for the four physical sides.
-type physicalSide int
-
-const (
-	sideTop physicalSide = iota
-	sideRight
-	sideBottom
-	sideLeft
-)
-
-func physicalBlockStart(wdm WritingDirectionMode) physicalSide {
-	switch wdm.WM {
-	case WritingModeVerticalRL, WritingModeSidewaysRL:
-		return sideRight
-	case WritingModeVerticalLR, WritingModeSidewaysLR:
-		return sideLeft
-	default: // horizontal-tb
-		return sideTop
-	}
-}
-
-func physicalInlineStart(wdm WritingDirectionMode) physicalSide {
-	if wdm.IsHorizontal() {
-		if wdm.Dir == DirectionRTL {
-			return sideRight
-		}
-		return sideLeft
-	}
-	// Vertical/sideways: inline axis is vertical.
-	// sideways-lr has inline direction bottom-to-top, so inline-start = bottom.
-	if wdm.WM == WritingModeSidewaysLR {
-		if wdm.Dir == DirectionRTL {
-			return sideTop
-		}
-		return sideBottom
-	}
-	// vertical-rl, vertical-lr, sideways-rl: inline direction top-to-bottom.
-	if wdm.Dir == DirectionRTL {
-		return sideBottom
-	}
-	return sideTop
-}
-
 // flexItem holds layout information for a single flex item.
 type flexItem struct {
 	node             *LayoutInputNode
@@ -1205,20 +1122,10 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 				// `start` resolves to FlexStart with an EARLY RETURN — wrap-reverse
 				// does not flip `start`. Always aligns to cross-start.
 				itemCrossOffset = crossStart
-			case "self-end":
-				if selfStartIsCrossStart(wdm, item.wdm, isRow) {
-					// Item's end maps to container's cross-end.
-					itemCrossOffset = crossStart + crossFreeForAlign
-				} else {
-					// Item's end maps to container's cross-start.
-					itemCrossOffset = crossStart
-				}
-			case "self-start":
-				if selfStartIsCrossStart(wdm, item.wdm, isRow) {
-					// Item's start maps to container's cross-start.
+			case "self-start", "self-end":
+				if selfAxisEdge(!isRow, selfAlign == "self-end", item.wdm, wdm) == AxisEdgeStart {
 					itemCrossOffset = crossStart
 				} else {
-					// Item's start maps to container's cross-end.
 					itemCrossOffset = crossStart + crossFreeForAlign
 				}
 			case "center":

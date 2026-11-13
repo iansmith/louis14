@@ -354,3 +354,13 @@ func ToPhysicalEdges(edges LogicalEdges, wdm WritingDirectionMode) PhysicalEdges
 	}
 	return PhysicalEdges{}
 }
+
+// LogicalToLogical maps logical edges in writing direction from onto
+// writing direction to: each of to's logical edges takes the value of
+// from's edge on the same physical side. Mirrors Blink's LogicalToLogical
+// (platform/text/writing_mode_utils.h:168-200 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), a LogicalToPhysical then a
+// PhysicalToLogical.
+func LogicalToLogical(edges LogicalEdges, from, to WritingDirectionMode) LogicalEdges {
+	return ToLogicalEdges(ToPhysicalEdges(edges, from), to)
+}
