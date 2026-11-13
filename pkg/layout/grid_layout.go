@@ -48,6 +48,8 @@ type gridItem struct {
 	// columns and rows are the item's alignment in each axis
 	// (gridItemAxisData), resolved when the item is collected.
 	columns, rows gridItemAxisData
+	// itemWDM is the item's own writing direction (wdm is the grid's).
+	itemWDM WritingDirectionMode
 }
 
 // Layout performs CSS Grid layout.
@@ -276,17 +278,29 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 	// alignment by default).
 	rowOffsets := gla.computeTrackOffsets(rowSizes, rowGap, resolvedBlockSize, alignContent, numRows)
 
+	// The shared baselines from the items' final layout
+	// (CompleteFinalBaselineAlignment, grid_layout_algorithm.cc:1334-1340 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	colBaselines := gla.computeGridItemBaselines(items, true, numCols)
+	rowBaselines := gla.computeGridItemBaselines(items, false, numRows)
+	baselines := newGridBaselineAccumulator(wdm.UsesCentralBaselineWithStyle(gla.style))
+	contentStart := geom.Border.BlockStart + geom.Padding.BlockStart
+
 	for _, item := range items {
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)
 		itemBlock := gla.spannedSize(rowSizes, item.rowStart, item.rowEnd, rowGap)
 
 		// Item position = track offset + its alignment offset in the grid
-		// area, margins included (grid_layout_algorithm.cc:1866-1877 @
+		// area, margins included (grid_layout_algorithm.cc:1851-1877 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		margins := item.margins
 		fragSize := ToLogicalSize(geomSizeToOld(item.result.Fragment.Size), wdm.WM)
-		inlineOffset := colOffsets[item.colStart] + item.columns.alignmentOffset(itemInline, fragSize.InlineSize, margins.InlineStart, margins.InlineEnd)
-		blockOffset := rowOffsets[item.rowStart] + item.rows.alignmentOffset(itemBlock, fragSize.BlockSize, margins.BlockStart, margins.BlockEnd)
+		inlineBaselineOffset := colBaselines.baselineOffset(item, true, itemInline, fragSize.InlineSize)
+		blockBaselineOffset := rowBaselines.baselineOffset(item, false, itemBlock, fragSize.BlockSize)
+		inlineOffset := colOffsets[item.colStart] + AlignmentOffset(itemInline, fragSize.InlineSize,
+			margins.InlineStart, margins.InlineEnd, inlineBaselineOffset, item.columns.alignmentEdge(), item.columns.overflowSafe())
+		blockOffset := rowOffsets[item.rowStart] + AlignmentOffset(itemBlock, fragSize.BlockSize,
+			margins.BlockStart, margins.BlockEnd, blockBaselineOffset, item.rows.alignmentEdge(), item.rows.overflowSafe())
 
 		offset := LogicalOffset{InlineOffset: inlineOffset, BlockOffset: blockOffset}
 		// Grid is special in that %-based offsets resolve against the grid
@@ -296,37 +310,19 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		relativeOffset := ComputeRelativeOffsetForBoxFragment(item.result.Fragment, wdm,
 			LogicalSize{InlineSize: itemInline, BlockSize: itemBlock})
 		builder.AddChildWithRelativeOffset(item.result.Fragment, offset, relativeOffset)
+		baselines.accumulate(item, contentStart+blockOffset)
 		builder.PropagateOOFPositionedInfo(item.result, item.style, offset, relativeOffset)
 	}
 
-	// Set first/last baseline from baseline-participating items in first/last rows.
-	// Mirrors Blink GridLayoutAlgorithm::SetBaselineFromItems @ 4883d11f.
-	// CSS Grid §7.1: first baseline = first row; last baseline = last row.
-	lastRow := numRows - 1
-	var gridFirstBL, gridLastBL float64
-	for _, item := range items {
-		if item.result.Baseline > 0 && item.rowStart == 0 {
-			bl := geom.Border.BlockStart + geom.Padding.BlockStart +
-				rowOffsets[0] + item.margins.BlockStart + item.result.Baseline
-			if gridFirstBL == 0 || bl < gridFirstBL {
-				gridFirstBL = bl
-			}
-		}
-		if item.result.Baseline > 0 && item.rowStart == lastRow {
-			bl := geom.Border.BlockStart + geom.Padding.BlockStart +
-				rowOffsets[lastRow] + item.margins.BlockStart + item.result.Baseline
-			if gridLastBL == 0 || bl < gridLastBL {
-				gridLastBL = bl
-			}
-		}
+	// Propagate the baselines (grid_layout_algorithm.cc:1938-1946 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), offsets from the grid's
+	// border-box block-start edge.
+	baselines.accumulateRows(contentStart, rowOffsets, rowSizes, rowBaselines)
+	if b, ok := baselines.firstBaseline(); ok {
+		builder.SetBaseline(b)
 	}
-	if gridFirstBL > 0 {
-		builder.SetBaseline(gridFirstBL)
-	}
-	if gridLastBL > 0 {
-		builder.SetLastBaseline(gridLastBL)
-	} else if gridFirstBL > 0 {
-		builder.SetLastBaseline(gridFirstBL)
+	if b, ok := baselines.lastBaseline(); ok {
+		builder.SetLastBaseline(b)
 	}
 
 	// Compute final block-size: the explicit one, else the intrinsic one,
@@ -477,6 +473,7 @@ func (gla *GridLayoutAlgorithm) buildGridSizingTree(contentInlineSize, explicitB
 			rowEnd:   -1,
 			colSpan:  1,
 			rowSpan:  1,
+			itemWDM:  childWDM,
 			columns:  newGridItemAxisData(true, gla.style, wdm, childStyle, childWDM, gla.replacedHasNaturalSize(child, wdm, true)),
 			rows:     newGridItemAxisData(false, gla.style, wdm, childStyle, childWDM, gla.replacedHasNaturalSize(child, wdm, false)),
 		})
@@ -839,13 +836,7 @@ func collapseAutoFitEmptyTracks(tracks []css.GridTrack, items []*gridItem, isCol
 		}
 		occupied := false
 		for _, item := range items {
-			var start, end int
-			if isColumn {
-				start, end = item.colStart, item.colEnd
-			} else {
-				start, end = item.rowStart, item.rowEnd
-			}
-			if start <= i && i < end {
+			if start, end := item.span(isColumn); start <= i && i < end {
 				occupied = true
 				break
 			}
