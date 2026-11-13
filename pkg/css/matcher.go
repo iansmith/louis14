@@ -167,7 +167,7 @@ const maxNestedSelectorCacheSize = 1 << 14
 func parseNestedSelectorList(selectors []string, ctx matchContext) []Selector {
 	parsed := make([]Selector, 0, len(selectors))
 	for i, sel := range selectors {
-		sel = strings.TrimSpace(sel)
+		sel = trimCSSSpace(sel)
 		if sel == "" {
 			continue
 		}
@@ -555,7 +555,8 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		if containsHas(arg) {
 			return false
 		}
-		return matchesHas(node, strings.TrimSpace(arg), ctx)
+		// matchesHas's SplitTopLevelCommas trims each argument.
+		return matchesHas(node, arg, ctx)
 	case pc == "first-of-type":
 		return nthOfTypeIndex(node) == 1
 	case pc == "last-of-type":
@@ -836,60 +837,31 @@ func matchesNthChild(node *html.Node, arg string) bool {
 // Returns (anPlusB, ofSelectorList, hasOf). When hasOf is false, ofSelectorList
 // is empty and the caller should run the existing An+B-only path.
 func splitNthChildArg(arg string) (string, string, bool) {
-	depth := 0
-	for i := 0; i < len(arg); i++ {
-		ch := arg[i]
-		if ch == '"' || ch == '\'' {
-			i, _ = stringTokenEnd(arg, i)
-			continue
-		}
-		if ch == '(' || ch == '[' {
-			depth++
-			continue
-		}
-		if ch == ')' || ch == ']' {
-			depth--
-			continue
-		}
-		if depth != 0 {
-			continue
-		}
+	of := -1
+	walkTopLevel(arg, func(i int) bool {
 		// Match the keyword `of` at this position. The character before must
-		// be a non-identifier (whitespace OK; digit/`n`/`+`/`-` from An+B OK
-		// only if separated by whitespace per the grammar — but in practice
-		// StripComments emits a space and authors write `2n+1 of`, so we
-		// require whitespace on the left). The character after must end the
-		// identifier (whitespace or selector-start char or end).
-		if i+1 >= len(arg) || (arg[i] != 'o' && arg[i] != 'O') {
-			continue
+		// be whitespace (StripComments emits a space and authors write
+		// `2n+1 of`); the character after must end the identifier
+		// (whitespace or a selector-start char; a bare trailing `of` is
+		// malformed).
+		if i == 0 || i+2 >= len(arg) || !strings.EqualFold(arg[i:i+2], "of") {
+			return true
 		}
-		if arg[i+1] != 'f' && arg[i+1] != 'F' {
-			continue
+		if !isCSSWhitespace(arg[i-1]) || !isNthOfRightBoundary(arg[i+2]) {
+			return true
 		}
-		// Left boundary: must be whitespace.
-		if i == 0 {
-			continue
-		}
-		left := arg[i-1]
-		if left != ' ' && left != '\t' && left != '\n' && left != '\f' && left != '\r' {
-			continue
-		}
-		// Right boundary: end-of-string, whitespace, or selector-start char.
-		if i+2 >= len(arg) {
-			continue // bare `of` with nothing after — malformed, skip.
-		}
-		right := arg[i+2]
-		if !isNthOfRightBoundary(right) {
-			continue
-		}
-		anb := strings.TrimSpace(arg[:i])
-		ofSel := strings.TrimSpace(arg[i+2:])
-		if anb == "" || ofSel == "" {
-			return arg, "", false
-		}
-		return anb, ofSel, true
+		of = i
+		return false
+	})
+	if of < 0 {
+		return arg, "", false
 	}
-	return arg, "", false
+	anb := trimCSSSpace(arg[:of])
+	ofSel := trimCSSSpace(arg[of+2:])
+	if anb == "" || ofSel == "" {
+		return arg, "", false
+	}
+	return anb, ofSel, true
 }
 
 // isNthOfRightBoundary reports whether ch can legally follow the `of`
@@ -1198,7 +1170,7 @@ func containsPseudoElementArg(selectors []string) bool {
 		tokens = append(tokens, "::"+name, ":"+name)
 	}
 	for _, sel := range selectors {
-		sel = strings.TrimSpace(sel)
+		sel = trimCSSSpace(sel)
 		if sel == "" {
 			continue
 		}
@@ -1248,7 +1220,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 		atEnd := i == len(selectors)-1
 		if strings.HasPrefix(sel, ">") {
 			// Direct child combinator
-			innerSel := strings.TrimSpace(sel[1:])
+			innerSel := trimCSSSpace(sel[1:])
 			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				for _, child := range node.Children {
@@ -1261,7 +1233,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 			}
 		} else if strings.HasPrefix(sel, "+") {
 			// Adjacent sibling combinator
-			innerSel := strings.TrimSpace(sel[1:])
+			innerSel := trimCSSSpace(sel[1:])
 			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				next := getNextElementSibling(node)
@@ -1271,7 +1243,7 @@ func matchesHas(node *html.Node, selectorStr string, ctx matchContext) bool {
 			}
 		} else if strings.HasPrefix(sel, "~") {
 			// General sibling combinator
-			innerSel := strings.TrimSpace(sel[1:])
+			innerSel := trimCSSSpace(sel[1:])
 			parsed := parseNestedSelector(innerSel, ctx, atEnd)
 			if len(parsed.Parts) > 0 {
 				for _, sib := range getSubsequentSiblings(node) {

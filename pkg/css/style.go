@@ -12705,7 +12705,8 @@ func (s *Style) WillChangeEstablishesInlineContainingBlock() bool {
 }
 
 // SplitTopLevelCommas splits s at its top-level commas (indexTopLevel:
-// outside every block, string and escape), each part trimmed: a
+// outside every block, string and escape), each part trimmed of CSS
+// whitespace, an escaped trailing space kept (trimCSSSpace): a
 // comma-separated CSS list value (background layers, shadows, transitions,
 // font-family, @font-face src, function arguments) and the selector-list
 // splitter (e.g. rules, :is()/:where()/:not()/:has() arguments, @scope
@@ -12719,9 +12720,9 @@ func SplitTopLevelCommas(s string) []string {
 	for {
 		i := indexTopLevel(s, ',')
 		if i < 0 {
-			return append(parts, strings.TrimSpace(s))
+			return append(parts, trimCSSSpace(s))
 		}
-		parts = append(parts, strings.TrimSpace(s[:i]))
+		parts = append(parts, trimCSSSpace(s[:i]))
 		s = s[i+1:]
 	}
 }
