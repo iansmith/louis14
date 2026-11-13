@@ -761,7 +761,7 @@ func (s *Style) Set(property, value string) {
 	// shadows, but not both. Reject invalid declarations so they don't overwrite
 	// a previous valid value in the cascade.
 	if property == "box-shadow" && value != "none" {
-		parts := splitCommaSeparated(value)
+		parts := SplitTopLevelCommas(value)
 		for _, part := range parts {
 			if strings.TrimSpace(part) == "none" {
 				return // Invalid: "none" mixed with other values
@@ -6924,7 +6924,7 @@ func (s *Style) GetBoxShadow() []BoxShadow {
 	}
 
 	// Split by comma for multiple shadows, respecting parentheses in rgba() etc.
-	parts := splitCommaSeparated(shadowStr)
+	parts := SplitTopLevelCommas(shadowStr)
 
 	// CSS spec: box-shadow accepts either "none" OR a comma-separated list of shadows.
 	// Mixing "none" with other values is invalid — reject the entire declaration.
@@ -10529,7 +10529,7 @@ func (s *Style) GetBackgroundColorClip() BackgroundClipType {
 		return BackgroundClipBorderBox
 	}
 
-	clipParts := splitCommaSeparated(clipVal)
+	clipParts := SplitTopLevelCommas(clipVal)
 	if len(clipParts) == 0 {
 		return BackgroundClipBorderBox
 	}
@@ -10537,7 +10537,7 @@ func (s *Style) GetBackgroundColorClip() BackgroundClipType {
 	// Determine layer count from background-image (or 1 if absent).
 	layerCount := 1
 	if imgVal != "" && imgVal != "none" {
-		layerCount = len(splitCommaSeparated(imgVal))
+		layerCount = len(SplitTopLevelCommas(imgVal))
 	}
 
 	// The bottom layer's clip is at index (layerCount-1) % len(clipParts).
@@ -10546,28 +10546,6 @@ func (s *Style) GetBackgroundColorClip() BackgroundClipType {
 		return c
 	}
 	return BackgroundClipBorderBox
-}
-
-// splitCommaSeparated splits a CSS value by commas, respecting parentheses depth.
-func splitCommaSeparated(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				parts = append(parts, strings.TrimSpace(s[start:i]))
-				start = i + 1
-			}
-		}
-	}
-	parts = append(parts, strings.TrimSpace(s[start:]))
-	return parts
 }
 
 // parseRepeatValue parses a single per-layer background-repeat value.
@@ -10679,7 +10657,7 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 	}
 
 	// Split background-image by commas (depth-aware) to get layer count.
-	imgParts := splitCommaSeparated(imgVal)
+	imgParts := SplitTopLevelCommas(imgVal)
 	if len(imgParts) == 0 {
 		return nil
 	}
@@ -10687,22 +10665,22 @@ func (s *Style) GetBackgroundLayers() *FillLayer {
 	// Split other longhands.
 	var repeatParts, posParts, sizeParts, clipParts, originParts, attachParts []string
 	if v, ok := s.Get("background-repeat"); ok {
-		repeatParts = splitCommaSeparated(v)
+		repeatParts = SplitTopLevelCommas(v)
 	}
 	if v, ok := s.Get("background-position"); ok {
-		posParts = splitCommaSeparated(v)
+		posParts = SplitTopLevelCommas(v)
 	}
 	if v, ok := s.Get("background-size"); ok {
-		sizeParts = splitCommaSeparated(v)
+		sizeParts = SplitTopLevelCommas(v)
 	}
 	if v, ok := s.Get("background-clip"); ok {
-		clipParts = splitCommaSeparated(v)
+		clipParts = SplitTopLevelCommas(v)
 	}
 	if v, ok := s.Get("background-origin"); ok {
-		originParts = splitCommaSeparated(v)
+		originParts = SplitTopLevelCommas(v)
 	}
 	if v, ok := s.Get("background-attachment"); ok {
-		attachParts = splitCommaSeparated(v)
+		attachParts = SplitTopLevelCommas(v)
 	}
 
 	ctx := s.cssToLengthConversionData()
@@ -12773,7 +12751,8 @@ func (s *Style) WillChangeEstablishesInlineContainingBlock() bool {
 
 // SplitTopLevelCommas splits s on commas outside parentheses and string
 // tokens (stringTokenEnd), each part trimmed: a comma-separated CSS list
-// value (animation, transition, font-family, @font-face src).
+// value (background layers, shadows, transitions, font-family, @font-face
+// src, function arguments).
 func SplitTopLevelCommas(s string) []string {
 	var parts []string
 	depth := 0

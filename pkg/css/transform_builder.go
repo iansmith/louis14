@@ -72,7 +72,7 @@ func transformNumber(tok string) (float64, bool) {
 // (transform_builder.cc:96-350). It returns nil for an unknown function or
 // unparseable arguments.
 func createTransformOperation(name, rawArgs string, ctx calcContext) TransformOperation {
-	args := splitCommaSeparated(rawArgs)
+	args := SplitTopLevelCommas(rawArgs)
 	switch name {
 	case "scale", "scalex", "scaley":
 		if len(args) > 2 || (name != "scale" && len(args) != 1) {
