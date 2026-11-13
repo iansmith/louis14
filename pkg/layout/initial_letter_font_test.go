@@ -18,15 +18,7 @@ import (
 // initial-letter-drop-initial.html.
 func TestApplyInitialLetter_RebuildsFont(t *testing.T) {
 	fc := text.DefaultFontConfig()
-	newStyle := func(decls map[string]string) *css.Style {
-		s := css.NewStyle()
-		for k, v := range decls {
-			s.Set(k, v)
-		}
-		s.UpdateFont(text.NewCSSFontSelector(fc))
-		s.UpdateLineHeight()
-		return s
-	}
+	newStyle := func(decls map[string]string) *css.Style { return newFontTestStyle(fc, decls) }
 	para := newStyle(map[string]string{"font-family": "Ahem", "font-size": "20px", "line-height": "24px"})
 	fl := newStyle(map[string]string{"font-family": "Ahem", "font-size": "100px", "line-height": "50px", "initial-letter": "3 drop"})
 
@@ -45,4 +37,16 @@ func TestApplyInitialLetter_RebuildsFont(t *testing.T) {
 	if fl.LhSize != size {
 		t.Errorf("lh size = %v, want %v (line-height 1em of the letter font)", fl.LhSize, size)
 	}
+}
+
+// newFontTestStyle builds a style from decls with its font and line height
+// resolved, as the cascade would.
+func newFontTestStyle(fc text.FontConfig, decls map[string]string) *css.Style {
+	s := css.NewStyle()
+	for k, v := range decls {
+		s.Set(k, v)
+	}
+	s.UpdateFont(text.NewCSSFontSelector(fc))
+	s.UpdateLineHeight()
+	return s
 }
