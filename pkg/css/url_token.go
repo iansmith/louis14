@@ -1,6 +1,7 @@
 package css
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -150,8 +151,31 @@ func stringTokenEnd(s string, i int) (int, stringEnd) {
 	return len(s) - 1, stringEOF
 }
 
+// serializeString is SerializeString (core/css/css_markup.cc:186-204 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): value in double quotes, `"`
+// and `\` escaped, and a control character as its code point
+// (SerializeCharacterAsCodePoint, :140-142).
+func serializeString(value string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range value {
+		switch {
+		case r <= 0x1f || r == 0x7f:
+			fmt.Fprintf(&b, "\\%x ", r)
+		case r == '"' || r == '\\':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
 // consumeStringToken mirrors CSSTokenizer::ConsumeStringTokenUntil
-// (:393-434): s is after the opening quote. A newline makes a bad string
+// (css_tokenizer.cc:393-435 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// s is after the opening quote. A newline makes a bad string
 // (ok false); an escaped newline, or a backslash at the end of input, is
 // dropped; end of input closes it. n is the bytes consumed, the closing
 // quote included.

@@ -257,9 +257,10 @@ func isCSSWhitespace(c byte) bool {
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
 //
 // The `family` argument is the resolved first family from the element's
-// computed font-family list, unquoted.
+// computed font-family list, quoted or not (a quoted family is unquoted
+// here, its escapes resolved).
 func LookupFontFeatureValues(rules []FontFeatureValuesRule, family string) FontFeatureValuesRule {
-	target := strings.ToLower(strings.Trim(strings.TrimSpace(family), `"'`))
+	target := strings.ToLower(unquoteCSSString(strings.TrimSpace(family)))
 	merged := FontFeatureValuesRule{}
 	for i := range rules {
 		match := false

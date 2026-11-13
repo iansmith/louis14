@@ -5004,20 +5004,40 @@ func splitDeclarationParts(declStr string) []string {
 	return parts
 }
 
-// unescapeCSS decodes CSS escape sequences per CSS 2.1 §4.1.3
+// unescapeCSS decodes CSS escape sequences outside string tokens per CSS 2.1
+// §4.1.3; a string token is stored as serializeString writes it, its escapes
+// resolved inside it (see unescapeCSSKeepingURLs)
 // - \X where X is not a hex digit → literal character X (e.g., \r → r)
 // - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
 // - Trailing whitespace after hex escape is consumed
-func unescapeCSS(s string) string { return unescapeCSSKeepingURLs(s, false) }
+func unescapeCSS(s string) string { return unescapeCSSKeepingURLs(s, false, false) }
 
 // unescapeCSSKeepingURLs is unescapeCSS that, when keepURLs is set, copies
 // each url() through raw, as Blink tokenizes the raw text once: a consumer
 // that tokenizes url() itself (ConsumeURL) then decodes its escapes once.
 // Only the filter property's consumer does so far; the other url()
-// consumers read the unescaped text.
-func unescapeCSSKeepingURLs(s string, keepURLs bool) string {
+// consumers read the url with its string serialized. With keepStrings set
+// (a custom property, whose value Blink keeps as authored), string tokens
+// are copied through as written.
+func unescapeCSSKeepingURLs(s string, keepURLs, keepStrings bool) string {
 	var result strings.Builder
 	for i := 0; i < len(s); {
+		// A string token's escapes resolve inside it (ConsumeStringTokenUntil,
+		// css_tokenizer.cc:393-435 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+		// it is stored as SerializeString writes it, so its quotes and
+		// backslashes stay inside it. A bad string is copied through, for the
+		// validators to reject.
+		if s[i] == '"' || s[i] == '\'' {
+			if value, n, ok := consumeStringToken(s[i+1:], s[i]); ok && !keepStrings {
+				result.WriteString(serializeString(value))
+				i += 1 + n
+				continue
+			}
+			end, _ := stringTokenEnd(s, i)
+			result.WriteString(s[i : end+1])
+			i = end + 1
+			continue
+		}
 		if keepURLs && (s[i] == 'u' || s[i] == 'U') && (i == 0 || !isIdentContinue(s[i-1])) {
 			if _, n, ok := consumeURLSpan(s[i:]); ok {
 				result.WriteString(s[i : i+n])
@@ -5239,7 +5259,7 @@ func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult
 		// in parseQuotes (layout.go) to preserve the quote string structure
 		var value string
 		if property != "quotes" {
-			value = unescapeCSSKeepingURLs(rawValue, property == "filter")
+			value = unescapeCSSKeepingURLs(rawValue, property == "filter", strings.HasPrefix(property, "--"))
 		} else {
 			value = rawValue
 		}
@@ -6874,9 +6894,9 @@ func parseCounterStyleRule(ruleStr string) CounterStyleRule {
 		case "additive-symbols":
 			rule.AdditiveSymbols = parseAdditiveSymbols(val)
 		case "suffix":
-			rule.Suffix = unquoteCounterString(val)
+			rule.Suffix = unquoteCSSString(strings.TrimSpace(val))
 		case "prefix":
-			rule.Prefix = unquoteCounterString(val)
+			rule.Prefix = unquoteCSSString(strings.TrimSpace(val))
 		case "fallback":
 			rule.Fallback = strings.TrimSpace(val)
 		}
@@ -6895,43 +6915,9 @@ func parseCounterSymbolList(val string) []string {
 			break
 		}
 		if val[0] == '"' || val[0] == '\'' {
-			// Quoted string
-			q := val[0]
-			i := 1
-			var sb strings.Builder
-			for i < len(val) {
-				if val[i] == '\\' && i+1 < len(val) {
-					i++
-					// Could be a hex escape like \1F44D
-					hexStart := i
-					for i < len(val) && i-hexStart < 6 && isHexDigit(val[i]) {
-						i++
-					}
-					if i > hexStart {
-						hexStr := val[hexStart:i]
-						if codePoint, err := strconv.ParseInt(hexStr, 16, 32); err == nil && codePoint > 0 {
-							sb.WriteRune(rune(codePoint))
-						}
-						// Consume optional trailing whitespace after hex escape
-						if i < len(val) && (val[i] == ' ' || val[i] == '\t') {
-							i++
-						}
-					} else {
-						// Single char escape
-						sb.WriteByte(val[i])
-						i++
-					}
-					continue
-				}
-				if val[i] == byte(q) {
-					i++ // skip closing quote
-					break
-				}
-				sb.WriteByte(val[i])
-				i++
-			}
-			symbols = append(symbols, sb.String())
-			val = val[i:]
+			sym, n, _ := consumeStringToken(val[1:], val[0])
+			symbols = append(symbols, sym)
+			val = val[1+n:]
 		} else {
 			// Identifier (e.g., "a", "b", or "A", "B")
 			end := strings.IndexAny(val, " \t\n\r")
@@ -7001,49 +6987,12 @@ func consumeCounterStyleSymbol(s *componentStream) (string, bool) {
 	switch {
 	case isQuotedStringValue(tok):
 		s.consume()
-		return unquoteCounterString(tok), true
+		return unquoteCSSString(strings.TrimSpace(tok)), true
 	case isIdentToken(tok):
 		s.consume()
 		return tok, true
 	}
 	return "", false
-}
-
-// unquoteCounterString strips surrounding quotes from a CSS string value.
-func unquoteCounterString(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) >= 2 && ((s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')) {
-		inner := s[1 : len(s)-1]
-		// Process escape sequences
-		var sb strings.Builder
-		i := 0
-		for i < len(inner) {
-			if inner[i] == '\\' && i+1 < len(inner) {
-				i++
-				hexStart := i
-				for i < len(inner) && i-hexStart < 6 && isHexDigit(inner[i]) {
-					i++
-				}
-				if i > hexStart {
-					hexStr := inner[hexStart:i]
-					if codePoint, err := strconv.ParseInt(hexStr, 16, 32); err == nil && codePoint > 0 {
-						sb.WriteRune(rune(codePoint))
-					}
-					if i < len(inner) && (inner[i] == ' ' || inner[i] == '\t') {
-						i++
-					}
-				} else {
-					sb.WriteByte(inner[i])
-					i++
-				}
-				continue
-			}
-			sb.WriteByte(inner[i])
-			i++
-		}
-		return sb.String()
-	}
-	return s
 }
 
 // parseFontFaceSrc returns every usable url() source, in order, from a src
