@@ -44,18 +44,11 @@ func applyUABidiRendering(node *html.Node, style *Style) {
 	switch {
 	case node.TagName == "bdo":
 		style.Set("unicode-bidi", "isolate-override")
-	case hasDir && strings.EqualFold(dir, "auto") && (node.TagName == "textarea" || node.TagName == "pre"):
+	case hasDir && toValidDirValue(dir) == "auto" && (node.TagName == "textarea" || node.TagName == "pre"):
 		style.Set("unicode-bidi", "plaintext")
-	case uaBidiIsolateTags[node.TagName] || hasDir && isValidDirValue(dir):
+	case uaBidiIsolateTags[node.TagName] || hasDir && toValidDirValue(dir) != "":
 		style.Set("unicode-bidi", "isolate")
 	}
-}
-
-// isValidDirValue reports whether dir is a valid dir attribute value,
-// ASCII case-insensitively (HTMLElement IsValidDirAttribute,
-// core/html/html_element.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func isValidDirValue(dir string) bool {
-	return strings.EqualFold(dir, "ltr") || strings.EqualFold(dir, "rtl") || strings.EqualFold(dir, "auto")
 }
 
 // Phase 17: applyUserAgentStyles applies default browser styles based on element type.
@@ -3974,12 +3967,16 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// Unicode bidi class (L → ltr; R or AL → rtl). The shared
 	// elementDirectionality helper (matcher.go) implements that walk and
 	// also handles ancestor fallback when no strong character is found,
-	// matching Blink's HTMLElement::ResolveAutoDirectionality
-	// (third_party/blink/renderer/core/html/html_element.cc @
-	// 4883d11fef4a).
+	// matching Blink's Element::ResolveAutoDirectionality
+	// (core/dom/element.cc:6416-6507 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	if dirAttr, ok := node.GetAttribute("dir"); ok {
-		dirAttr = strings.ToLower(dirAttr)
-		switch dirAttr {
+		// Only a valid value counts, matched as :dir() matches it
+		// (toValidDirValue; CollectStyleForPresentationAttribute checks
+		// IsValidDirAttribute, core/html/html_element.cc:424-445 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		dir := toValidDirValue(dirAttr)
+		switch dir {
 		case "rtl":
 			style.Set("direction", "rtl")
 		case "ltr":
@@ -3996,7 +3993,7 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		// from the UA sheet alone (CollectStyleForPresentationAttribute /
 		// UnicodeBidiAttributeForDirAuto, core/html/html_element.cc:
 		// 295-315, 424-445 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		if dirAttr == "auto" && node.TagName != "bdo" && node.TagName != "textarea" && node.TagName != "pre" {
+		if dir == "auto" && node.TagName != "bdo" && node.TagName != "textarea" && node.TagName != "pre" {
 			style.Set("unicode-bidi", unicodeBidiForDirAuto(node))
 		}
 	}

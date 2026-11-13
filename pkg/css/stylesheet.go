@@ -1471,8 +1471,8 @@ func parseRules(ruleStr string) ([]Rule, error) {
 
 	selectorStr := strings.TrimSpace(ruleStr[:bracePos])
 
-	// Split selector by commas (but not commas inside brackets or parens)
-	selectors := splitSelectorGroup(selectorStr)
+	// Split the selector list at its top-level commas
+	selectors := SplitTopLevelCommas(selectorStr)
 	if len(selectors) <= 1 {
 		// No commas or only one selector — use the original parseRule
 		rule, err := parseRule(ruleStr)
@@ -1491,7 +1491,6 @@ func parseRules(ruleStr string) ([]Rule, error) {
 	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	rules := make([]Rule, 0, len(selectors))
 	for _, sel := range selectors {
-		sel = strings.TrimSpace(sel)
 		if sel == "" || !isValidSelector(sel) {
 			return nil, fmt.Errorf("invalid selector in group: %q", sel)
 		}
@@ -1506,32 +1505,6 @@ func parseRules(ruleStr string) ([]Rule, error) {
 		return nil, fmt.Errorf("no valid selectors in group")
 	}
 	return rules, nil
-}
-
-// splitSelectorGroup splits a selector group by commas, respecting brackets
-// and parentheses (e.g., attribute selectors like [attr~="a,b"]).
-func splitSelectorGroup(s string) []string {
-	var parts []string
-	depth := 0
-	start := 0
-
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		if ch == '"' || ch == '\'' {
-			i, _ = stringTokenEnd(s, i)
-			continue
-		}
-		if ch == '(' || ch == '[' {
-			depth++
-		} else if ch == ')' || ch == ']' {
-			depth--
-		} else if ch == ',' && depth == 0 {
-			parts = append(parts, s[start:i])
-			start = i + 1
-		}
-	}
-	parts = append(parts, s[start:])
-	return parts
 }
 
 // parseRule parses a single CSS rule
@@ -2594,7 +2567,7 @@ func evaluateSupportsSelector(sel string) bool {
 	// Per CSS Conditional 5 §2.5 the argument is a single <complex-selector>,
 	// NOT a <complex-selector-list>. A comma at the top level invalidates the
 	// supports condition. Required by at-supports-selector-004.
-	parts := splitSelectorGroup(sel)
+	parts := SplitTopLevelCommas(sel)
 	if len(parts) != 1 {
 		return false
 	}
@@ -2841,8 +2814,7 @@ func validateLogicalPseudoArg(name, body string) bool {
 		// but in @supports we treat them as invalid (Chrome behaviour).
 		return false
 	}
-	for _, item := range splitSelectorGroup(body) {
-		item = strings.TrimSpace(item)
+	for _, item := range SplitTopLevelCommas(body) {
 		if item == "" {
 			return false
 		}
@@ -4024,10 +3996,10 @@ func parseSelector(selectorStr string) Selector {
 			if strings.HasPrefix(pc, "is(") {
 				// :is() takes specificity of its most specific argument
 				arg := functionalPseudoArg(pc, "is(")
-				sels := splitSelectorGroup(strings.TrimSpace(arg))
+				sels := SplitTopLevelCommas(arg)
 				maxSpec := 0
 				for _, sel := range sels {
-					innerSel := parseSelector(strings.TrimSpace(sel))
+					innerSel := parseSelector(sel)
 					if innerSel.Specificity > maxSpec {
 						maxSpec = innerSel.Specificity
 					}
@@ -4049,8 +4021,8 @@ func parseSelector(selectorStr string) Selector {
 				}
 				if _, ofSel, hasOf := splitNthChildArg(arg); hasOf {
 					maxSpec := 0
-					for _, sel := range splitSelectorGroup(ofSel) {
-						innerSel := parseSelector(strings.TrimSpace(sel))
+					for _, sel := range SplitTopLevelCommas(ofSel) {
+						innerSel := parseSelector(sel)
 						if innerSel.Specificity > maxSpec {
 							maxSpec = innerSel.Specificity
 						}
@@ -4985,9 +4957,11 @@ func splitDeclarationParts(declStr string) []string {
 // unescapeCSS decodes CSS escape sequences outside string tokens per CSS 2.1
 // §4.1.3; a string token is stored as serializeString writes it, its escapes
 // resolved inside it (see unescapeCSSKeepingURLs)
-// - \X where X is not a hex digit → literal character X (e.g., \r → r)
-// - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
-// - Trailing whitespace after hex escape is consumed
+//   - \X where X is not a hex digit → literal character X (e.g., \r → r);
+//     an escaped code point that is no name code point stays escaped
+//     (writeIdentCodePoint), so it remains part of its ident
+//   - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
+//   - Trailing whitespace after hex escape is consumed
 func unescapeCSS(s string) string { return unescapeCSSKeepingURLs(s, false, false) }
 
 // unescapeCSSKeepingURLs is unescapeCSS that, when keepURLs is set, copies
@@ -5029,10 +5003,51 @@ func unescapeCSSKeepingURLs(s string, keepURLs, keepStrings bool) string {
 			continue
 		}
 		r, n := consumeEscape(s[i+1:])
-		result.WriteRune(r)
+		writeIdentCodePoint(&result, r)
 		i += 1 + n
 	}
 	return result.String()
+}
+
+// writeIdentCodePoint writes r, an escaped code point of an ident, so the
+// text still tokenizes as that one ident: a name code point as itself,
+// anything else escaped again, as SerializeIdentifier writes it
+// (core/css/css_markup.cc:160-174 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An escaped `,` or `)` stays
+// part of the ident instead of becoming syntax.
+func writeIdentCodePoint(b *strings.Builder, r rune) {
+	switch {
+	case r >= 0x80 || isIdentContinue(byte(r)):
+		b.WriteRune(r)
+	case r <= 0x1f || r == 0x7f:
+		fmt.Fprintf(b, "\\%x ", r)
+	default:
+		b.WriteByte('\\')
+		b.WriteRune(r)
+	}
+}
+
+// unescapeName returns the name s spells, every escape resolved to its code
+// point (blink::ConsumeName via CSSTokenizer::ConsumeName,
+// core/css/parser/css_tokenizer.cc:594-691 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a property or custom
+// property name, as declared or inside var().
+func unescapeName(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		r, n := consumeEscape(s[i+1:])
+		b.WriteRune(r)
+		i += 1 + n
+	}
+	return b.String()
 }
 
 // isHexDigit returns true if c is a hexadecimal digit
@@ -5232,7 +5247,7 @@ func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult
 		// An alias is the property it is an alias for, resolved before the
 		// value is unescaped, so `-webkit-filter` keeps url() escapes as
 		// `filter` does.
-		property := ResolveCSSPropertyID(unescapeCSS(rawProperty))
+		property := ResolveCSSPropertyID(unescapeName(rawProperty))
 		// IMPORTANT: Don't unescape the quotes property value here, as it needs special handling
 		// in parseQuotes (layout.go) to preserve the quote string structure
 		var value string
@@ -6242,11 +6257,12 @@ func hasInvalidVarReference(value string) bool {
 			continue
 		}
 		if ch == '(' && isVarFunctionAt(value, i) {
-			end := matchClosingParen(value, i)
-			if end < 0 {
+			n := indexTopLevel(value[i+1:], ')')
+			if n < 0 {
 				// Unmatched var() paren — value is invalid regardless.
 				return true
 			}
+			end := i + 1 + n
 			inner := value[i+1 : end]
 			name := inner
 			if commaIdx := indexTopLevel(inner, ','); commaIdx >= 0 {
@@ -6586,9 +6602,13 @@ func ParseSelector(selectorStr string) Selector {
 	return parseSelector(selectorStr)
 }
 
-// SplitSelectorGroup splits a comma-separated selector group into individual selectors.
+// SplitSelectorGroup splits a selector list into its complex selectors, at
+// the commas left at the top level of the token stream
+// (CSSSelectorParser::ConsumeComplexSelectorList,
+// core/css/parser/css_selector_parser.cc:311-359 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; SplitTopLevelCommas).
 func SplitSelectorGroup(s string) []string {
-	return splitSelectorGroup(s)
+	return SplitTopLevelCommas(s)
 }
 
 // parseFontFaceRule parses a @font-face { ... } rule string.

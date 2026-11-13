@@ -327,10 +327,10 @@ func TestComputeInsetModifiedContainingBlock(t *testing.T) {
 			0, 0, BiasStart, BiasStart, false, wdm, wdm)
 	}
 	for _, tc := range []struct {
-		name                 string
-		isTable              bool
-		avail                LogicalSize
-		insets               LogicalOofInsets
+		name                  string
+		isTable               bool
+		avail                 LogicalSize
+		insets                LogicalOofInsets
 		wantInline, wantBlock float64
 	}{
 		{"crossed insets clamp to 0", false, LogicalSize{InlineSize: 100, BlockSize: 100}, both(80, 80), 0, 0},
