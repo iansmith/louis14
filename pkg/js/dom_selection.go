@@ -263,7 +263,7 @@ func (sa *selectionAccessor) Get(key string) goja.Value {
 				panic(vm.NewTypeError("Failed to execute 'addRange' on 'Selection': 1 argument required"))
 			}
 			if r := sa.ctx.resolveRange(call.Arguments[0]); r != nil {
-				sa.ctx.doc.Selection = r
+				sa.setSelection(r)
 			}
 			return goja.Undefined()
 		})
@@ -315,10 +315,10 @@ func (sa *selectionAccessor) Get(key string) goja.Value {
 			if offset < 0 || offset > length {
 				return goja.Undefined()
 			}
-			sa.ctx.doc.Selection = &html.Range{
+			sa.setSelection(&html.Range{
 				StartContainer: node, StartOffset: offset,
 				EndContainer: node, EndOffset: offset,
-			}
+			})
 			return goja.Undefined()
 		})
 	case "selectAllChildren":
@@ -336,16 +336,26 @@ func (sa *selectionAccessor) Get(key string) goja.Value {
 			if node == nil {
 				panic(vm.NewTypeError("Failed to execute 'selectAllChildren' on 'Selection': parameter 1 is not a Node"))
 			}
-			sa.ctx.doc.Selection = &html.Range{
+			sa.setSelection(&html.Range{
 				StartContainer: node,
 				StartOffset:    0,
 				EndContainer:   node,
 				EndOffset:      len(node.Children),
-			}
+			})
 			return goja.Undefined()
 		})
 	}
 	return goja.Undefined()
+}
+
+// setSelection makes r the document's selection and then focuses its root
+// editable element, as DomSelection::UpdateFrameSelection does through
+// FrameSelection::DidSetSelectionDeprecated, passing no DoNotSetFocus
+// (core/editing/dom_selection.cc:76-95 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (sa *selectionAccessor) setSelection(r *html.Range) {
+	sa.ctx.doc.Selection = r
+	sa.ctx.doc.SetFocusedNodeIfNeeded()
 }
 
 func (sa *selectionAccessor) Set(key string, val goja.Value) bool { return false }
