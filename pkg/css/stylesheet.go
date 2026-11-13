@@ -4985,9 +4985,11 @@ func splitDeclarationParts(declStr string) []string {
 // unescapeCSS decodes CSS escape sequences outside string tokens per CSS 2.1
 // §4.1.3; a string token is stored as serializeString writes it, its escapes
 // resolved inside it (see unescapeCSSKeepingURLs)
-// - \X where X is not a hex digit → literal character X (e.g., \r → r)
-// - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
-// - Trailing whitespace after hex escape is consumed
+//   - \X where X is not a hex digit → literal character X (e.g., \r → r);
+//     an escaped code point that is no name code point stays escaped
+//     (writeIdentCodePoint), so it remains part of its ident
+//   - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
+//   - Trailing whitespace after hex escape is consumed
 func unescapeCSS(s string) string { return unescapeCSSKeepingURLs(s, false, false) }
 
 // unescapeCSSKeepingURLs is unescapeCSS that, when keepURLs is set, copies
@@ -5029,10 +5031,51 @@ func unescapeCSSKeepingURLs(s string, keepURLs, keepStrings bool) string {
 			continue
 		}
 		r, n := consumeEscape(s[i+1:])
-		result.WriteRune(r)
+		writeIdentCodePoint(&result, r)
 		i += 1 + n
 	}
 	return result.String()
+}
+
+// writeIdentCodePoint writes r, an escaped code point of an ident, so the
+// text still tokenizes as that one ident: a name code point as itself,
+// anything else escaped again, as SerializeIdentifier writes it
+// (core/css/css_markup.cc:160-174 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An escaped `,` or `)` stays
+// part of the ident instead of becoming syntax.
+func writeIdentCodePoint(b *strings.Builder, r rune) {
+	switch {
+	case r >= 0x80 || isIdentContinue(byte(r)):
+		b.WriteRune(r)
+	case r <= 0x1f || r == 0x7f:
+		fmt.Fprintf(b, "\\%x ", r)
+	default:
+		b.WriteByte('\\')
+		b.WriteRune(r)
+	}
+}
+
+// unescapeName returns the name s spells, every escape resolved to its code
+// point (blink::ConsumeName via CSSTokenizer::ConsumeName,
+// core/css/parser/css_tokenizer.cc:594-691 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a property or custom
+// property name, as declared or inside var().
+func unescapeName(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		r, n := consumeEscape(s[i+1:])
+		b.WriteRune(r)
+		i += 1 + n
+	}
+	return b.String()
 }
 
 // isHexDigit returns true if c is a hexadecimal digit
@@ -5232,7 +5275,7 @@ func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult
 		// An alias is the property it is an alias for, resolved before the
 		// value is unescaped, so `-webkit-filter` keeps url() escapes as
 		// `filter` does.
-		property := ResolveCSSPropertyID(unescapeCSS(rawProperty))
+		property := ResolveCSSPropertyID(unescapeName(rawProperty))
 		// IMPORTANT: Don't unescape the quotes property value here, as it needs special handling
 		// in parseQuotes (layout.go) to preserve the quote string structure
 		var value string
@@ -6242,11 +6285,12 @@ func hasInvalidVarReference(value string) bool {
 			continue
 		}
 		if ch == '(' && isVarFunctionAt(value, i) {
-			end := matchClosingParen(value, i)
-			if end < 0 {
+			n := indexTopLevel(value[i+1:], ')')
+			if n < 0 {
 				// Unmatched var() paren — value is invalid regardless.
 				return true
 			}
+			end := i + 1 + n
 			inner := value[i+1 : end]
 			name := inner
 			if commaIdx := indexTopLevel(inner, ','); commaIdx >= 0 {

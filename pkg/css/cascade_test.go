@@ -1165,8 +1165,9 @@ func TestCustomPropertyReferencesSeeAppliedValue(t *testing.T) {
 // inside var() (CSSTokenizer::ConsumeName / ConsumeEscape,
 // core/css/parser/css_tokenizer.cc:594-691 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An escaped `,`, `)` or
-// trailing space stays inside the ident; it never splits var()'s name from its fallback, and a
-// self-reference through another spelling is still a cycle.
+// trailing space stays inside the ident; it never splits var()'s name from
+// its fallback, and a self-reference through another spelling is still a
+// cycle.
 func TestCustomPropertyEscapedNames(t *testing.T) {
 	for _, decls := range []string{
 		`--a\,b: green; color: var(--a\2c b);`,
