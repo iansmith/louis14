@@ -5779,7 +5779,7 @@ func normalizeAndValidateFontFamily(value string) (string, bool) {
 	if containsVarFunction(trimmed) {
 		return trimmed, true
 	}
-	entries := splitTopLevelCommas(trimmed)
+	entries := SplitTopLevelCommas(trimmed)
 	out := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		canon, ok := normalizeFontFamilyEntry(entry)
@@ -6989,7 +6989,7 @@ func parseFontFaceSrc(src string) []FontFaceSrcValue {
 	var values []FontFaceSrcValue
 	// Split by top-level comma for multiple sources (a data: URL's payload
 	// comma is inside url(...)).
-	sources := splitTopLevelCommas(src)
+	sources := SplitTopLevelCommas(src)
 	for _, source := range sources {
 		source = strings.TrimSpace(source)
 		// Extract url(...)

@@ -424,12 +424,13 @@ func (fc FontConfig) determinePrimarySimpleFontData(family string, bold, italic,
 }
 
 // ParseFontFamilyList splits a CSS `font-family` value into individual
-// family names, a quoted family as its string's unescaped value
-// (css.CSSStringValue). Empty entries are dropped.
+// family names at commas outside string tokens (css.SplitTopLevelCommas), a
+// quoted family as its string's unescaped value (css.CSSStringValue). Empty
+// entries are dropped.
 func ParseFontFamilyList(raw string) []string {
 	var families []string
-	for _, part := range strings.Split(raw, ",") {
-		fam := css.CSSStringValue(strings.TrimSpace(part))
+	for _, part := range css.SplitTopLevelCommas(raw) {
+		fam := css.CSSStringValue(part)
 		if fam != "" {
 			families = append(families, fam)
 		}
