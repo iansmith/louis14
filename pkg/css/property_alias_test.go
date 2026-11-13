@@ -32,3 +32,28 @@ func TestLegacyGapAliasesSetTheirTarget(t *testing.T) {
 		})
 	}
 }
+
+// The CSSOM and @supports name an alias's target too: setting or removing
+// grid-column-gap is setting or removing column-gap, and an alias is as
+// supported as its target (alias_for, as above).
+func TestAliasIsItsTargetInCSSOMAndSupports(t *testing.T) {
+	d := parseDeclarations(`column-gap: 1px`)
+	if !d.SetDeclaration("grid-column-gap", "20px") {
+		t.Fatal("SetDeclaration(grid-column-gap) = false, want set")
+	}
+	if got, _ := d.Value("column-gap"); got != "20px" {
+		t.Errorf("column-gap = %q after setting grid-column-gap, want 20px", got)
+	}
+	if got, _ := d.Value("grid-column-gap"); got != "20px" {
+		t.Errorf("grid-column-gap = %q, want 20px", got)
+	}
+	d.RemoveDeclaration("grid-column-gap")
+	if got, ok := d.Value("column-gap"); ok {
+		t.Errorf("column-gap = %q after removing grid-column-gap, want none", got)
+	}
+	for _, name := range []string{"grid-column-gap", "grid-row-gap", "grid-gap", "-webkit-transform"} {
+		if !isSupportedCSSProperty(name) {
+			t.Errorf("isSupportedCSSProperty(%q) = false, want true", name)
+		}
+	}
+}
