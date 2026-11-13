@@ -88,3 +88,20 @@ func (n *Node) ElementByID(id string) *Node {
 	}
 	return nil
 }
+
+// SetFocusedNodeIfNeeded focuses the root editable element of a non-empty
+// selection, as FrameSelection::SetFocusedNodeIfNeeded does after a selection
+// is set (core/editing/frame_selection.cc:360-361 and :1221-1246 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): it walks up from the
+// selection's RootEditableElement to the first focusable element. An
+// editable element is focusable (it has editable style), so that is the root
+// itself. A selection outside any editable element leaves focus alone. The
+// FrameIsFocused gate always passes in louis14, which renders a focused frame.
+func (d *Document) SetFocusedNodeIfNeeded() {
+	if d.Selection == nil {
+		return
+	}
+	if root := RootEditableElementOf(d.Selection.StartContainer); root != nil {
+		d.SetFocusedElement(root)
+	}
+}
