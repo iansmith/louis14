@@ -67,6 +67,26 @@ type ringProbe struct {
 	why  string
 }
 
+// ringCase is a page body on black and the pixels its rendering must have.
+type ringCase struct {
+	name, body string
+	probes     []ringProbe
+}
+
+// runRingCases renders each case at w×h and checks its probes.
+func runRingCases(t *testing.T, cases []ringCase, w, h int) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := ParsePage(t, `<!doctype html><style>body { margin: 0; background: black }</style>`+tc.body)
+			img, _ := RenderDocument(t, doc, w, h)
+			for _, p := range tc.probes {
+				opPixel(t, img, p.x, p.y, p.want, p.why)
+			}
+		})
+	}
+}
+
 // TestFocusRing_OutlineRects pins which boxes a focus ring's outline rects
 // come from (PhysicalBoxFragment::AddOutlineRects and its helpers,
 // core/layout/physical_box_fragment.cc:1249-1532 @
@@ -90,10 +110,7 @@ type ringProbe struct {
 func TestFocusRing_OutlineRects(t *testing.T) {
 	blue := color.RGBA{0, 0, 255, 255}
 	black := color.RGBA{0, 0, 0, 255}
-	for _, tc := range []struct {
-		name, body string
-		probes     []ringProbe
-	}{
+	runRingCases(t, []ringCase{
 		{"clipped descendant", `<div style="position:absolute;left:20px;top:20px;width:100px;height:50px;outline:auto 1px blue"><div style="height:50px;overflow:hidden"><div style="width:200px;height:20px;margin-top:10px"></div></div></div>`,
 			[]ringProbe{
 				{170, 29, black, "no ring along the clipped grandchild's top edge"},
@@ -117,15 +134,7 @@ func TestFocusRing_OutlineRects(t *testing.T) {
 			[]ringProbe{
 				{40, 89, blue, "the ring runs along the second fragment's inline-block bottom edge"},
 			}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			doc := ParsePage(t, `<!doctype html><style>body { margin: 0; background: black }</style>`+tc.body)
-			img, _ := RenderDocument(t, doc, 260, 120)
-			for _, p := range tc.probes {
-				opPixel(t, img, p.x, p.y, p.want, p.why)
-			}
-		})
-	}
+	}, 260, 120)
 }
 
 // splitInlineOutlinePage is a page whose span #s, outlined with outline,
@@ -137,4 +146,36 @@ body { margin: 0; background: black }
 #d { position: absolute; left: 10px; top: 10px; width: 120px; font: 20px/20px Ahem; color: transparent }
 #s { outline: ` + outline + ` }
 </style><div id=d>XXX <span id=s>XX XXXX</span></div>`
+}
+
+// TestFocusRing_AnchorOutOfFlowChildren: a focused <a> also adds its
+// out-of-flow positioned descendants' rects
+// (OutlineType::kIncludeBlockInkOverflowForAnchor, set for an
+// HTMLAnchorElement in PhysicalBoxFragment::AddSelfOutlineRects,
+// core/layout/physical_box_fragment.cc:1232-1235 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a block anchor its own OOF
+// children (:1290-1300), an inline anchor the OOF children of its
+// container whose containing block it is (:1372-1386). Any other element
+// leaves them out.
+func TestFocusRing_AnchorOutOfFlowChildren(t *testing.T) {
+	blue := color.RGBA{0, 0, 255, 255}
+	black := color.RGBA{0, 0, 0, 255}
+	child := `<span style="position:absolute;left:80px;top:0;width:20px;height:20px"></span>`
+	runRingCases(t, []ringCase{
+		{"block anchor", `<a href="#" style="position:absolute;left:20px;top:20px;display:block;width:50px;height:20px;outline:auto 1px blue">` + child + `</a>`,
+			[]ringProbe{
+				{45, 19, blue, "guard: the anchor's own top edge"},
+				{110, 19, blue, "the absolute child's top edge"},
+			}},
+		{"inline anchor", `<div style="position:absolute;left:20px;top:20px;font:20px/20px Ahem;color:transparent">X<a href="#" style="position:relative;outline:auto 1px blue">XX` + child + `</a></div>`,
+			[]ringProbe{
+				{60, 19, blue, "guard: the anchor's own top edge"},
+				{130, 19, blue, "the absolute child, whose containing block the anchor is"},
+			}},
+		{"block div", `<div style="position:absolute;left:20px;top:20px;width:50px;height:20px;outline:auto 1px blue">` + child + `</div>`,
+			[]ringProbe{
+				{45, 19, blue, "guard: the div's own top edge"},
+				{110, 19, black, "a non-anchor leaves its absolute child out"},
+			}},
+	}, 200, 80)
 }
