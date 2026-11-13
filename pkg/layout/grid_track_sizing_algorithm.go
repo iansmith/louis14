@@ -235,6 +235,11 @@ type gridSizingItem struct {
 	// (gridItemMinimum).
 	mainIsAuto, minIsAuto bool
 	minimumSize           float64
+	// minShim / maxShim are the baseline shims in minContent / maxContent
+	// (CalculateBaselineShim); minShim also raises the automatic minimum's
+	// clamp floor (min_clamp_size, grid_layout_algorithm.cc:776-799 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	minShim, maxShim float64
 }
 
 func (it *gridSizingItem) span() int { return it.end - it.start }
@@ -296,7 +301,7 @@ func (a *gridTrackSizingAlgorithm) contribution(t gridContributionType, it *grid
 			return it.minimumSize
 		}
 		if spanned, ok := a.spannedDefiniteMaxSize(it); ok {
-			return clampIntrinsicMinSize(it.minContent, it.minimumSize, spanned)
+			return clampIntrinsicMinSize(it.minContent, it.minimumSize+it.minShim, spanned)
 		}
 		return it.minContent
 	}
@@ -790,6 +795,11 @@ func (a *gridTrackSizingAlgorithm) computeUsedTrackSizes(items []*gridSizingItem
 func (gla *GridLayoutAlgorithm) columnSizingItems(sets []gridSet, items []*gridItem) []*gridSizingItem {
 	wdm := gla.space.WritingDirection
 	setTrackSpanProperties(items, sets, true)
+	// The columns' shared baselines from the items' measure layout, before
+	// the columns are sized (ComputeBaselineAlignment(kForColumns),
+	// grid_layout_algorithm.cc:1263-1281 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), for the baseline shims.
+	baselines, measured := gla.columnBaselines(items, len(sets), func(*gridItem) float64 { return Indefinite })
 	var sizing []*gridSizingItem
 	for _, item := range items {
 		it := &gridSizingItem{item: item, start: item.colStart, end: min(item.colEnd, len(sets))}
@@ -798,6 +808,9 @@ func (gla *GridLayoutAlgorithm) columnSizingItems(sets []gridSet, items []*gridI
 		}
 		var edges float64
 		it.minContent, it.maxContent, edges = gridItemInlineContribution(item.node, item.style, wdm, gla.ctx, gla.space)
+		it.minShim, it.maxShim = gla.columnBaselineShims(item, baselines, measured, it.minContent, it.maxContent)
+		it.minContent += it.minShim
+		it.maxContent += it.maxShim
 		it.isTrackScrollContainer = isOverflowValueScrollableAlong(item.style, wdm.IsHorizontal())
 		inlineProp := logicalInlineSizeProperty(wdm)
 		if it.mainIsAuto = gridItemIsAutoLike(item.style, inlineProp); it.mainIsAuto {
@@ -932,9 +945,10 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 		if !item.rows.spansIntrinsicTrack && !item.rows.spansFlexibleTrack {
 			continue
 		}
-		// edges, the auto minimum's floor, counts no scrollbar; the
-		// contributions do (see gridItemInlineContribution). Both count a
-		// baseline-aligned item's shim (min_clamp_size includes it).
+		// edges (border, padding and margins, the automatic minimum) count no
+		// scrollbar; the contributions do (see gridItemInlineContribution).
+		// The contributions count a baseline-aligned item's shim; the
+		// clamp floor is minimumSize + minShim.
 		var edges float64
 		aligned, isLast := item.rows.isBaselineAligned(), item.rows.alignment == AxisEdgeLastBaseline
 		childWDM := NewWritingDirectionMode(item.style)
@@ -954,11 +968,11 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 			var minShim, maxShim float64
 			if aligned {
 				f, bp := item.baselineFragment(false), geom.InlineBorderPadding()
-				minShim = baselines.baselineShim(item, false, f.synthesizedLogicalBaseline(mm.MinContent+bp, baselines.central(), isLast))
-				maxShim = baselines.baselineShim(item, false, f.synthesizedLogicalBaseline(mm.MaxContent+bp, baselines.central(), isLast))
+				minShim = baselines.baselineShim(f, false, f.synthesizedLogicalBaseline(mm.MinContent+bp, baselines.central(), isLast))
+				maxShim = baselines.baselineShim(f, false, f.synthesizedLogicalBaseline(mm.MaxContent+bp, baselines.central(), isLast))
 			}
 			it.minContent, it.maxContent = mm.MinContent+contribEdges+minShim, mm.MaxContent+contribEdges+maxShim
-			edges += minShim
+			it.minShim, it.maxShim = minShim, maxShim
 		} else {
 			blockSize, margins := parallelBlock(item)
 			edges = ComputeBorders(item.node, item.style, wdm).BlockSum() + ComputePadding(item.node, item.style, wdm).BlockSum() +
@@ -967,11 +981,12 @@ func (gla *GridLayoutAlgorithm) rowSizingItems(sets []gridSet, items []*gridItem
 			// baseline (:705-714).
 			var shim float64
 			if aligned && item.result != nil {
-				shim = baselines.baselineShim(item, false, item.baselineFragment(false).logicalBaseline(baselines.central(), isLast))
+				f := item.baselineFragment(false)
+				shim = baselines.baselineShim(f, false, f.logicalBaseline(baselines.central(), isLast))
 			}
 			block := blockSize + margins.BlockStart + margins.BlockEnd + shim
-			edges += shim
 			it.minContent, it.maxContent = block, block
+			it.minShim, it.maxShim = shim, shim
 		}
 		it.isTrackScrollContainer = isOverflowValueScrollableAlong(item.style, !wdm.IsHorizontal())
 		if it.mainIsAuto = gridItemIsAutoLike(item.style, blockProp); it.mainIsAuto {
@@ -1112,20 +1127,112 @@ func (gla *GridLayoutAlgorithm) remeasureBlockSizeDependentItems(colSizing []*gr
 		return nil
 	}
 	wdm := gla.space.WritingDirection
+	rowsOf := func(item *gridItem) float64 {
+		return gla.spannedSize(rowSizes, item.rowStart, min(item.rowEnd, len(rowSizes)), rowGap)
+	}
+	// The columns' baselines again, from measures against the rows
+	// (InitializeTrackSizes and ComputeBaselineAlignment(kForColumns) in
+	// the additional pass, grid_layout_algorithm.cc:478-485, :1263-1281 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	var items []*gridItem
+	trackCount := 0
+	for _, it := range colSizing {
+		items = append(items, it.item)
+		trackCount = max(trackCount, it.end)
+	}
+	baselines, measured := gla.columnBaselines(items, trackCount, rowsOf)
 	sizing := make([]*gridSizingItem, 0, len(colSizing))
 	for _, it := range colSizing {
-		if childWDM := NewWritingDirectionMode(it.item.style); wdm.IsOrthogonalTo(childWDM) {
-			rows := gla.spannedSize(rowSizes, it.item.rowStart, min(it.item.rowEnd, len(rowSizes)), rowGap)
+		item := it.item
+		cp := *it
+		cp.minContent, cp.maxContent = it.minContent-it.minShim, it.maxContent-it.maxShim
+		if wdm.IsOrthogonalTo(item.itemWDM) {
 			// Against its grid area: its rows' span is its available and
 			// percentage block size (CreateConstraintSpaceForMeasure,
 			// grid_layout_algorithm.cc:1460-1500).
-			c := orthogonalFlowRootContribution(gla.ctx, it.item.node, childWDM, gla.space, rows, rows, gla.space.OrthogonalFallbackBlockSize) +
-				ResolveMargins(it.item.style, wdm, 0).InlineSum()
-			cp := *it
+			rows := rowsOf(item)
+			c, _ := orthogonalFlowRootMeasure(gla.ctx, item.node, item.itemWDM, gla.space, rows, rows, gla.space.OrthogonalFallbackBlockSize)
+			c += ResolveMargins(item.style, wdm, 0).InlineSum()
 			cp.minContent, cp.maxContent = c, c
-			it = &cp
 		}
-		sizing = append(sizing, it)
+		cp.minShim, cp.maxShim = gla.columnBaselineShims(item, baselines, measured, cp.minContent, cp.maxContent)
+		cp.minContent += cp.minShim
+		cp.maxContent += cp.maxShim
+		sizing = append(sizing, &cp)
 	}
 	return sizing
+}
+
+// columnBaselines are the columns' shared baselines over trackCount
+// columns, from the items' measure fragments against rowsOf(item)
+// (columnMeasureFragment), and those fragments.
+func (gla *GridLayoutAlgorithm) columnBaselines(items []*gridItem, trackCount int, rowsOf func(*gridItem) float64) (*gridTrackBaselines, map[*gridItem]gridBaselineFragment) {
+	measured := map[*gridItem]gridBaselineFragment{}
+	for _, item := range items {
+		if item.columns.isBaselineSpecified() {
+			if f, ok := gla.columnMeasureFragment(item, rowsOf(item)); ok {
+				measured[item] = f
+			}
+		}
+	}
+	return computeGridItemBaselines(items, true, trackCount, gla.centralBaseline(), func(item *gridItem) (gridBaselineFragment, bool) {
+		f, ok := measured[item]
+		return f, ok
+	}), measured
+}
+
+// columnMeasureFragment is the item's layout for the columns' baselines in
+// its column baseline writing direction: an orthogonal item's measure layout
+// against rows (its grid area's block size, or Indefinite before the rows
+// are sized; its block size is its column contribution), or for a parallel item with a
+// definite inline size a border box of that size, its baselines
+// synthesized; not ok for a parallel item with an indefinite inline size,
+// which Blink skips. Stands in for the measure layout ComputeGridItemBaselines
+// runs per item (LayoutGridItemForMeasure with CreateConstraintSpaceForMeasure;
+// grid_layout_algorithm.cc:994-1008 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (gla *GridLayoutAlgorithm) columnMeasureFragment(item *gridItem, rows float64) (gridBaselineFragment, bool) {
+	wdm := gla.space.WritingDirection
+	margins := ResolveMargins(item.style, wdm, 0)
+	if wdm.IsOrthogonalTo(item.itemWDM) {
+		_, result := orthogonalFlowRootMeasure(gla.ctx, item.node, item.itemWDM, gla.space, rows, rows, gla.space.OrthogonalFallbackBlockSize)
+		if result == nil {
+			return gridBaselineFragment{}, false
+		}
+		return item.baselineFragmentOf(true, result, margins), true
+	}
+	space := NewConstraintSpaceBuilder(wdm, item.itemWDM, true).
+		SetAvailableSize(LogicalSize{InlineSize: Indefinite, BlockSize: Indefinite}).
+		SetPercentageResolutionSize(LogicalSize{InlineSize: Indefinite, BlockSize: Indefinite}).
+		Build()
+	inline := CalculateInitialFragmentGeometry(gla.ctx, item.node, item.style, item.itemWDM, space).BorderBoxSize.InlineSize
+	if inline == Indefinite || inline < 0 {
+		return gridBaselineFragment{}, false
+	}
+	return item.synthesizedBaselineFragment(true, inline, margins), true
+}
+
+// columnBaselineShims are a baseline-aligned item's shims in its min/max
+// column contributions (minContent / maxContent, margins included): the
+// shim of its measured baseline for an orthogonal item
+// (BlockContributionSize), of the synthesized baseline of each border-box
+// contribution for a parallel one (MinOrMaxContentSize;
+// grid_layout_algorithm.cc:651-661, :705-714 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (gla *GridLayoutAlgorithm) columnBaselineShims(item *gridItem, baselines *gridTrackBaselines, measured map[*gridItem]gridBaselineFragment, minContent, maxContent float64) (minShim, maxShim float64) {
+	if !item.columns.isBaselineAligned() {
+		return 0, 0
+	}
+	isLast := item.columns.alignment == AxisEdgeLastBaseline
+	central := baselines.central()
+	if f, ok := measured[item]; ok && f.result != nil {
+		shim := baselines.baselineShim(f, true, f.logicalBaseline(central, isLast))
+		return shim, shim
+	}
+	if gla.space.WritingDirection.IsOrthogonalTo(item.itemWDM) {
+		return 0, 0
+	}
+	margins := ResolveMargins(item.style, gla.space.WritingDirection, 0)
+	f, m := item.baselineFragmentOf(true, nil, margins), margins.InlineSum()
+	return baselines.baselineShim(f, true, f.synthesizedLogicalBaseline(minContent-m, central, isLast)),
+		baselines.baselineShim(f, true, f.synthesizedLogicalBaseline(maxContent-m, central, isLast))
 }

@@ -1461,14 +1461,24 @@ func measureOrthogonalChild(
 // cached per space, which also detects cycles: on one, the orthogonal
 // fallback size stands in.
 func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, childWDM WritingDirectionMode, parentSpace ConstraintSpace, availBlock, pctBlock, fallbackBlock float64) float64 {
+	contribution, _ := orthogonalFlowRootMeasure(ctx, node, childWDM, parentSpace, availBlock, pctBlock, fallbackBlock)
+	return contribution
+}
+
+// orthogonalFlowRootMeasure is orthogonalFlowRootContribution with the
+// layout it was measured from (nil on a cycle, when the orthogonal fallback
+// size stands in), so a grid can read the item's baselines from it as
+// BlockContributionSize does (grid_layout_algorithm.cc:705-714 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func orthogonalFlowRootMeasure(ctx *LayoutContext, node *LayoutInputNode, childWDM WritingDirectionMode, parentSpace ConstraintSpace, availBlock, pctBlock, fallbackBlock float64) (float64, *LayoutResult) {
 	fallback := orthogonalFallbackSize(childWDM, ctx)
 	if ctx.IsOrthogonalComputing(node) {
-		return fallback
+		return fallback, nil
 	}
 	key := orthogonalContributionSpace{availBlock, fallback, fallbackBlock,
 		pctBlock, parentSpace.PercentageResolutionInlineSize}
 	if c, ok := ctx.orthogonalContributions[node]; ok && c.space == key {
-		return c.contribution
+		return c.contribution, c.result
 	}
 	space := NewConstraintSpaceBuilder(parentSpace.WritingDirection, childWDM, true).
 		SetOrthogonalFallbackInlineSize(fallback).
@@ -1488,8 +1498,8 @@ func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, c
 	if ctx.orthogonalContributions == nil {
 		ctx.orthogonalContributions = map[*LayoutInputNode]orthogonalContribution{}
 	}
-	ctx.orthogonalContributions[node] = orthogonalContribution{key, contribution}
-	return contribution
+	ctx.orthogonalContributions[node] = orthogonalContribution{key, contribution, result}
+	return contribution, result
 }
 
 // intrinsicContainerBlockGeometry is a container's geometry while it is
