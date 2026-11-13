@@ -48,7 +48,7 @@ func ruleKindOf(text string) ruleKind {
 		return ruleKindImport
 	case hasAtKeyword(text, "@namespace"):
 		return ruleKindNamespace
-	case hasAtKeyword(text, "@layer") && indexTopLevelBrace(text) < 0:
+	case hasAtKeyword(text, "@layer") && indexTopLevel(text, '{') < 0:
 		return ruleKindLayerStatement
 	}
 	return ruleKindOther
@@ -294,7 +294,7 @@ func (s *StyleSheetContents) currentRuleTexts() []string {
 		}
 		// A rule with no nested block serializes from its declarations.
 		openPos, closePos, ok := blockBounds(texts[i])
-		if d := r.decls; d != nil && ok && indexTopLevelBrace(texts[i][openPos+1:closePos]) < 0 {
+		if d := r.decls; d != nil && ok && indexTopLevel(texts[i][openPos+1:closePos], '{') < 0 {
 			texts[i] = strings.TrimSpace(texts[i][:openPos]) + " { " + d.cssText() + " }"
 		}
 	}

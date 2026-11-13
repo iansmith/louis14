@@ -1150,7 +1150,7 @@ func indexAttrFunction(s string) int {
 //	"data-foo type(<color>), green"     → name="data-foo", type="<color>", fallback="green"
 func parseAttrArgs(inner string) (name, attrType, fallback string) {
 	// Split at the first top-level comma.
-	commaIdx := findTopLevelComma(inner)
+	commaIdx := indexTopLevel(inner, ',')
 	namePart := inner
 	if commaIdx >= 0 {
 		namePart = strings.TrimSpace(inner[:commaIdx])

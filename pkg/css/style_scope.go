@@ -351,7 +351,7 @@ func parseScopeRule(ruleStr string, ss *Stylesheet) []Rule {
 // the rule, so `&` in its nested rules carries the anchor (Blink adds it
 // when the outer rule is parsed).
 func scopedRuleText(rule string) string {
-	brace := indexTopLevelBrace(rule)
+	brace := indexTopLevel(rule, '{')
 	if brace < 0 {
 		return rule
 	}
