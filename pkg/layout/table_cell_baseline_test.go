@@ -58,3 +58,27 @@ func TestTableCellBaselineAlignment(t *testing.T) {
 		}
 	})
 }
+
+// A table gives no baseline to an enclosing inline-block: when computing
+// an inline-block's baseline, PropagateBaselineFromBlockChild skips table
+// children (block_layout_algorithm.cc:3740-3745 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the inline-block's
+// baseline is its bottom margin edge, as with no table at all
+// (css-position/position-relative-table-tbody-top). The row's own
+// baseline (its content end, RowBaselineTabulator) stays inside the table.
+func TestTableGivesNoInlineBlockBaseline(t *testing.T) {
+	line := func(content string) float64 {
+		root := layoutRootTestHTML(t, `<!DOCTYPE html><body style="margin:0"><div id="o">`+
+			`<div style="display:inline-block;width:150px;height:200px"><div>`+content+`</div></div></div>`)
+		o := findBoxByID(root, "o")
+		if o == nil {
+			t.Fatal("missing #o")
+		}
+		return o.Height
+	}
+	withTable := line(`<table style="border-collapse:collapse"><tbody><tr><td style="padding:0"><div style="width:50px;height:50px"></div></td></tr></tbody></table>`)
+	without := line(``)
+	if withTable != without {
+		t.Errorf("line height with a table = %v, want %v (as without one)", withTable, without)
+	}
+}
