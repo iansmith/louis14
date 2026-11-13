@@ -1603,13 +1603,15 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			line.crossAxisOffset = crossBPStart + lineOffsets[i]
 		}
 
-		// baselineAxisParallel gates the fallback path to items whose
-		// baseline axis is parallel to the container's (same writing-mode
-		// verticality). Differs from per-line baseline ALIGNMENT (which is
-		// main-axis parallel) — the container baseline export cares about
-		// the item's block-axis orientation per CSS Flexbox §8.5.
-		baselineAxisParallel := func(item *flexItem) bool {
-			return item.wdm.IsVertical() == wdm.IsVertical()
+		// isWritingModeEqual gates the fallback path to items whose own
+		// baselines are readable in the container's writing mode: only
+		// items in exactly that writing mode have one, so a vertical-lr
+		// item in a vertical-rl container synthesizes. Mirrors
+		// LogicalBoxFragment::IsWritingModeEqual as FirstBaseline /
+		// LastBaseline use it (logical_box_fragment.h:28-31, :42-70 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		isWritingModeEqual := func(item *flexItem) bool {
+			return item.wdm.WM == wdm.WM
 		}
 
 		// itemBlockOffset returns the block-axis offset of the item's
@@ -1636,20 +1638,22 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			return SynthesizedBaseline(centralBaseline, wdm.IsFlippedLines(), NewLogicalFragment(wdm, item.fragment).BlockSize())
 		}
 
-		// fallbackFirstBaseline mirrors LogicalBoxFragment::FirstBaselineOrSynthesize
-		// combined with Blink's baseline-axis gate. Returns the distance from
-		// the item's border-box block-start to its first baseline.
+		// fallbackFirstBaseline mirrors LogicalBoxFragment::
+		// FirstBaselineOrSynthesize: the item's own first baseline when its
+		// writing mode equals the container's, else a synthesized one.
+		// Returns the distance from the item's border-box block-start.
 		fallbackFirstBaseline := func(item *flexItem) float64 {
-			if baselineAxisParallel(item) && (item.hasBaseline || item.baseline > 0) {
+			if isWritingModeEqual(item) && (item.hasBaseline || item.baseline > 0) {
 				return item.baseline
 			}
 			return synthesizedBaseline(item)
 		}
 
-		// fallbackLastBaseline mirrors LastBaselineOrSynthesize, falling back
-		// to first baseline when no last-baseline is present.
+		// fallbackLastBaseline mirrors LastBaselineOrSynthesize under the
+		// same writing-mode gate, falling back to the first baseline when no
+		// last baseline is present.
 		fallbackLastBaseline := func(item *flexItem) float64 {
-			if baselineAxisParallel(item) {
+			if isWritingModeEqual(item) {
 				if item.lastBaseline > 0 {
 					return item.lastBaseline
 				}
