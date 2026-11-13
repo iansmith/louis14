@@ -1887,7 +1887,7 @@ func (lb *LineBreaker) handleOpenTag(item *InlineItem, line *LineInfo) {
 	wdm := lb.space.WritingDirection
 	base := lb.percentageMarginBase()
 	margins := ResolveMargins(item.Style, wdm, base)
-	geom := ComputeFragmentGeometry(item.Style, wdm, base)
+	geom := withCollapsedTableBorder(ComputeFragmentGeometry(item.Style, wdm, base), item.LayoutNode, item.Style, wdm)
 
 	// Add inline-start margin + border + padding.
 	startEdge := margins.InlineStart + geom.Border.InlineStart + geom.Padding.InlineStart
@@ -1918,7 +1918,7 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 	wdm := lb.space.WritingDirection
 	base := lb.percentageMarginBase()
 	margins := ResolveMargins(item.Style, wdm, base)
-	geom := ComputeFragmentGeometry(item.Style, wdm, base)
+	geom := withCollapsedTableBorder(ComputeFragmentGeometry(item.Style, wdm, base), item.LayoutNode, item.Style, wdm)
 
 	// Add inline-end border + padding + margin.
 	endEdge := geom.Border.InlineEnd + geom.Padding.InlineEnd + margins.InlineEnd

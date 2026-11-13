@@ -1060,7 +1060,7 @@ func (p *fragmentationContextOOFPart) GetContainingBlockInfo(d LogicalOofNodeFor
 	totalBlockSize := BoxTotalBlockSize(cbFragment.LayoutNode)
 	// The padding box: borders and scrollbars contracted
 	// (out_of_flow_layout_part.cc:870-878).
-	cbGeom := ComputeFragmentGeometry(cbFragment.Style, p.containingBlockWDM)
+	cbGeom := withCollapsedTableBorder(ComputeFragmentGeometry(cbFragment.Style, p.containingBlockWDM), cbFragment.LayoutNode, cbFragment.Style, p.containingBlockWDM)
 	return containingBlockInfo{
 		size: LogicalSize{
 			InlineSize: max(0, inlineSize-cbGeom.Border.InlineStart-cbGeom.Border.InlineEnd-cbGeom.Scrollbar.InlineStart-cbGeom.Scrollbar.InlineEnd),

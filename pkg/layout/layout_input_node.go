@@ -50,6 +50,10 @@ type LayoutInputNode struct {
 	// so a later layout of the table resolves borders from the source again.
 	collapsedBorderSourceStyle *css.Style
 
+	// collapsedTableBorder caches a border-collapse:collapse table's own
+	// border, TableBorder() (collapsedTableBorder).
+	collapsedTableBorder *PhysicalEdges
+
 	// children are the layout children (pre-filtered, may include anonymous wrappers).
 	children []*LayoutInputNode
 

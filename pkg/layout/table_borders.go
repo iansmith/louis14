@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"louis14/pkg/css"
+	"louis14/pkg/geometry/layoutunit"
 )
 
 // TableBorders precomputes the collapsed borders of a border-collapse:collapse
@@ -397,9 +398,10 @@ func (tb *TableBorders) getCellBorders(row, column, rowspan, colspan int) Logica
 	if column*2 >= tb.edgesPerRow || row >= len(tb.edges)/tb.edgesPerRow {
 		return s
 	}
+	// Each width is a LayoutUnit (BorderWidth, table_borders.h:97-104).
 	width := func(i int) float64 {
 		if tb.canPaint(i) {
-			return tb.BorderWidth(i)
+			return layoutunit.FromFloat64Trunc(tb.BorderWidth(i)).Float64()
 		}
 		return 0
 	}
@@ -423,10 +425,14 @@ func (tb *TableBorders) getCellBorders(row, column, rowspan, colspan int) Logica
 		s.BlockStart = max(s.BlockStart, width(startEdge))
 		s.BlockEnd = max(s.BlockEnd, width(startEdge+rowspan*tb.edgesPerRow))
 	}
-	s.BlockStart /= 2
-	s.BlockEnd /= 2
-	s.InlineStart /= 2
-	s.InlineEnd /= 2
+	// Halved as LayoutUnit /= 2 does, through its float constructor,
+	// which truncates (layout_unit.h:125-128, :795-798): a whole-pixel
+	// edge splits exactly.
+	half := func(w float64) float64 { return layoutunit.FromFloat64Trunc(w / 2).Float64() }
+	s.BlockStart = half(s.BlockStart)
+	s.BlockEnd = half(s.BlockEnd)
+	s.InlineStart = half(s.InlineStart)
+	s.InlineEnd = half(s.InlineEnd)
 	return s
 }
 
@@ -641,14 +647,9 @@ func restoreCollapsedCellSourceStyles(rows []tableRow) {
 // ComputeBorders, length_utils.cc:1491-1493 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). louis14 carries it by swapping
 // in a cell style clone whose border widths are the share.
-//
-// Divergence: Blink gives the table its own border, TableBorder(), half of
-// each outer edge (ComputeBorders' table branch, length_utils.cc:1495-1497);
-// louis14 lays a collapsed table out with no border, so the table's half of
-// each outer edge folds into the outer cells' share. Cell content lands where
-// Blink puts it; only the outer cells' border boxes extend to the table edge.
-func applyCollapsedCellBorders(rows []tableRow, tb *TableBorders, numCols int, wdm WritingDirectionMode) {
-	tableBorder := tb.TableBorder()
+// The table has the other half of each outer edge as its own border
+// (collapsedTableBorder).
+func applyCollapsedCellBorders(rows []tableRow, tb *TableBorders, wdm WritingDirectionMode) {
 	for rowIdx := range rows {
 		section := tb.SectionIndexForRow(rowIdx)
 		for cellIdx := range rows[rowIdx].cells {
@@ -658,18 +659,6 @@ func applyCollapsedCellBorders(rows []tableRow, tb *TableBorders, numCols int, w
 			}
 			rowspan, colspan := max(cell.rowSpan, 1), max(cell.colSpan, 1)
 			b := tb.CellBorder(rowIdx, cell.colIndex, section, rowspan, colspan)
-			if cell.colIndex == 0 {
-				b.InlineStart += tableBorder.InlineStart
-			}
-			if cell.colIndex+colspan >= numCols {
-				b.InlineEnd += tableBorder.InlineEnd
-			}
-			if rowIdx == 0 {
-				b.BlockStart += tableBorder.BlockStart
-			}
-			if rowIdx+rowspan >= len(rows) {
-				b.BlockEnd += tableBorder.BlockEnd
-			}
 			source := cell.style
 			clone := source.Clone()
 			p := ToPhysicalEdges(b, wdm)
@@ -695,20 +684,40 @@ func applyCollapsedCellBorders(rows []tableRow, tb *TableBorders, numCols int, w
 	}
 }
 
+// collapsedTableBorder returns a border-collapse:collapse table's own border,
+// TableBorders::TableBorder(): half of each outer collapsed edge
+// (UpdateTableBorder, table_borders.cc:389-398 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). It is resolved once per table
+// node, as Blink keeps a table's TableBorders on its LayoutTable, from the
+// cells' own styles.
+func collapsedTableBorder(node *LayoutInputNode, style *css.Style) (PhysicalEdges, bool) {
+	if node == nil || style == nil || style.GetBorderCollapse() != css.BorderCollapseCollapse {
+		return PhysicalEdges{}, false
+	}
+	if d := style.GetDisplay(); d != css.DisplayTable && d != css.DisplayInlineTable {
+		return PhysicalEdges{}, false
+	}
+	if node.collapsedTableBorder == nil {
+		tla := &TableLayoutAlgorithm{node: node, style: style}
+		rows, _, _, colStyleSpecs := tla.collectRowsAndCaptions()
+		numCols := max(assignColumnIndices(rows), 1)
+		restoreCollapsedCellSourceStyles(rows)
+		wdm := NewWritingDirectionMode(style)
+		border := ToPhysicalEdges(ComputeTableBorders(rows, colStyleSpecs, style, wdm, numCols).TableBorder(), wdm)
+		node.collapsedTableBorder = &border
+	}
+	return *node.collapsedTableBorder, true
+}
+
 // collapsedTableBordersGeometry builds the grid lines a collapsed table's
 // borders paint along: the column start offsets plus the grid end (Blink's
 // CollapsedTableBordersGeometry, table_layout_algorithm.cc:863-880 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b) and each section's row offsets
 // (table_section_layout_algorithm.cc:47, :122-129 @ same SHA), relative to
 // the table border box. rowStarts holds each row's content-box block offset
-// and the last row's end.
-//
-// Because louis14's collapsed table has no border of its own (see
-// applyCollapsedCellBorders), its grid starts at the content box; the outer
-// grid lines are moved in by the table's half of the outer edges so they sit
-// where Blink's do, at the table border's inner edge.
+// and the last row's end. The grid starts at the table border's inner edge:
+// the table's border is its half of the outer edges and it has no padding.
 func collapsedTableBordersGeometry(tb *TableBorders, wdm WritingDirectionMode, geom FragmentGeometry, colWidths, rowStarts []float64) *CollapsedTableBordersGeometry {
-	tableBorder := tb.TableBorder()
 	inlineOrigin := geom.Border.InlineStart + geom.Padding.InlineStart
 	blockOrigin := geom.Border.BlockStart + geom.Padding.BlockStart
 
@@ -719,22 +728,12 @@ func collapsedTableBordersGeometry(tb *TableBorders, wdm WritingDirectionMode, g
 		offset += w
 	}
 	columns[len(colWidths)] = offset
-	columns[0] += tableBorder.InlineStart
-	columns[len(colWidths)] -= tableBorder.InlineEnd
 
 	g := &CollapsedTableBordersGeometry{WritingDirection: wdm, Columns: columns}
-	lastRow := len(rowStarts) - 1
 	for _, sec := range tb.Sections() {
 		offsets := make([]float64, sec.RowCount+1)
 		for i := range offsets {
-			row := sec.StartRow + i
-			offsets[i] = blockOrigin + rowStarts[row]
-			if row == 0 {
-				offsets[i] += tableBorder.BlockStart
-			}
-			if row == lastRow {
-				offsets[i] -= tableBorder.BlockEnd
-			}
+			offsets[i] = blockOrigin + rowStarts[sec.StartRow+i]
 		}
 		g.Sections = append(g.Sections, TableSectionCollapsedBordersGeometry{StartRowIndex: sec.StartRow, RowOffsets: offsets})
 	}

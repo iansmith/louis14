@@ -138,9 +138,28 @@ func ComputeScrollbarLogicalEdges(style *css.Style, wdm WritingDirectionMode) Lo
 // ComputeScrollbars of a node (length_utils.cc:1487-1549 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Use it wherever the node is
 // known.
+//
+// A border-collapse:collapse table's border is its half of the outer
+// collapsed edges, TableBorder(), and it has no padding (ComputeBorders' and
+// ComputePadding's table branches, length_utils.cc:1495-1497, :1522-1525 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func NodeFragmentGeometry(node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode, percentageBase ...float64) FragmentGeometry {
 	geom := ComputeFragmentGeometry(style, wdm, percentageBase...)
 	geom.Scrollbar = computeScrollbarsForNode(node, style, wdm)
+	return withCollapsedTableBorder(geom, node, style, wdm)
+}
+
+// withCollapsedTableBorder returns geom with a border-collapse:collapse
+// table's own border, TableBorder(), and no padding: the table branches of
+// Blink's ComputeBorders and ComputePadding (length_utils.cc:1495-1497,
+// :1522-1525 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Other boxes'
+// geometry is returned unchanged. A stopgap for the style-only geometry
+// sites, which should use NodeFragmentGeometry (LOU-973).
+func withCollapsedTableBorder(geom FragmentGeometry, node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode) FragmentGeometry {
+	if border, ok := collapsedTableBorder(node, style); ok {
+		geom.Border = ToLogicalEdges(border, wdm)
+		geom.Padding = LogicalEdges{}
+	}
 	return geom
 }
 
