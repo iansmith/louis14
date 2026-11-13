@@ -1337,7 +1337,95 @@ func isValidSelector(s string) bool {
 	if bracketDepth != 0 {
 		return false
 	}
+	// :has() disallows pseudo-elements in its unforgiving argument.
+	if _, inHas := scanPseudoElements(s); inHas {
+		return false
+	}
 	return true
+}
+
+// legacyPseudoElements are the pseudo-elements a single colon also names
+// (CSSSelectorParser::ConsumePseudo's single-colon compatibility).
+var legacyPseudoElements = []string{"before", "after", "first-line", "first-letter"}
+
+// scanPseudoElements reports where sel names pseudo-elements (`::name`, or a
+// legacy `:before`, ...), outside strings and escapes. A pseudo-element
+// inside an :is() or :where() argument only voids that argument: the
+// forgiving list keeps the selector valid, the argument matching nothing
+// (contextually invalid; TestMatchesIsWithPseudoElement). Any other
+// pseudo-element is unforgiven. inHas reports an unforgiven one inside a
+// :has() argument: :has() disallows pseudo-elements and its list is
+// unforgiving, so that :has(), and with it the selector, is invalid
+// (CSSSelectorParser::ConsumePseudo kPseudoIs / kPseudoWhere / kPseudoHas,
+// css_selector_parser.cc:1666-1749 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func scanPseudoElements(sel string) (unforgiven, inHas bool) {
+	if strings.IndexByte(sel, ':') < 0 {
+		return false, false
+	}
+	type frame struct{ forgiving, has bool }
+	var frames []frame
+	for i := 0; i < len(sel); i++ {
+		switch sel[i] {
+		case '"', '\'':
+			i, _ = stringTokenEnd(sel, i)
+		case '\\':
+			i++
+		case '(':
+			name := strings.ToLower(functionNameBefore(sel, i))
+			frames = append(frames, frame{forgiving: name == "is" || name == "where", has: name == "has"})
+		case ')':
+			if len(frames) > 0 {
+				frames = frames[:len(frames)-1]
+			}
+		case ':':
+			if !namesPseudoElementAt(sel, i) {
+				continue
+			}
+			// An enclosing :is() or :where() at any depth absorbs the
+			// pseudo-element, and the invalid :has() it may void.
+			forgiven := slices.ContainsFunc(frames, func(f frame) bool { return f.forgiving })
+			if !forgiven {
+				unforgiven = true
+				inHas = inHas || slices.ContainsFunc(frames, func(f frame) bool { return f.has })
+			}
+			if i+1 < len(sel) && sel[i+1] == ':' {
+				i++
+			}
+		}
+	}
+	return unforgiven, inHas
+}
+
+// namesPseudoElementAt reports whether the `:` at sel[i] starts a
+// pseudo-element: `::`, or a single colon before a legacy pseudo-element
+// name that no further name code point continues.
+func namesPseudoElementAt(sel string, i int) bool {
+	if i+1 < len(sel) && sel[i+1] == ':' {
+		return true
+	}
+	if i > 0 && sel[i-1] == ':' {
+		return false
+	}
+	for _, name := range legacyPseudoElements {
+		end := i + 1 + len(name)
+		if end <= len(sel) && strings.EqualFold(sel[i+1:end], name) && (end == len(sel) || !isIdentContinue(sel[end])) {
+			return true
+		}
+	}
+	return false
+}
+
+// functionNameBefore is the pseudo-class function name whose `(` is
+// sel[open], or "" if the `(` does not follow `:name`.
+func functionNameBefore(sel string, open int) string {
+	start := open
+	for start > 0 && isIdentContinue(sel[start-1]) {
+		start--
+	}
+	if start == open || start == 0 || sel[start-1] != ':' {
+		return ""
+	}
+	return sel[start:open]
 }
 
 // parseRules parses a CSS rule string, expanding comma-separated selector
@@ -1366,11 +1454,14 @@ func parseRules(ruleStr string) ([]Rule, error) {
 	declStr := ruleStr[bracePos+1 : declEnd]
 	declResult := parseDeclarations(declStr)
 
+	// One invalid selector invalidates the whole list, and so the rule
+	// (CSSSelectorParser::ConsumeComplexSelectorList, css_selector_parser.cc:277 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	rules := make([]Rule, 0, len(selectors))
 	for _, sel := range selectors {
 		sel = strings.TrimSpace(sel)
 		if sel == "" || !isValidSelector(sel) {
-			continue
+			return nil, fmt.Errorf("invalid selector in group: %q", sel)
 		}
 		selector := parseSelector(sel)
 		rules = append(rules, Rule{

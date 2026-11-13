@@ -381,7 +381,7 @@ func TestScopeAnchorTakesNoDefaultNamespace(t *testing.T) {
 // disallowed (DisallowPseudoElementsScope, css_selector_parser.cc:190 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the whole rule is dropped.
 func TestScopeBoundaryRejectsPseudoElements(t *testing.T) {
-	for _, prelude := range []string{"(.r::before)", "(.r, .x::before)", "(.r) to (.l::after)", "(.r::placeholder)", "(.r::part(x))"} {
+	for _, prelude := range []string{"(.r::before)", "(.r, .x::before)", "(.r) to (.l::after)", "(.r::placeholder)", "(.r::part(x))", "(.r:not(::before))", "(.r:not(:after))", "(.r:has(::before))"} {
 		t.Run(prelude, func(t *testing.T) {
 			// Applied, the scoped red would beat the unscoped green on
 			// proximity; green means the rule was dropped and the sheet
@@ -424,6 +424,22 @@ func TestScopeBoundaryAllowsColonsInStrings(t *testing.T) {
 		t.Run(prelude, func(t *testing.T) {
 			styles := cascadeHTML(t, `<style>@scope `+prelude+` { .t { color: green } }</style>
 			<div class="r" data-x="a::b"><div class="t" id="t"></div></div>`, nil)
+			if got := colorOf(t, styles, "t"); got != "green" {
+				t.Errorf("#t color = %q, want green: @scope %s must apply", got, prelude)
+			}
+		})
+	}
+}
+
+// A pseudo-element nested in a scope limit's :is() or :where() does not
+// drop the rule, as the limit's own pseudo-element does: such a limit is
+// valid and matches nothing (TestMatchesIsWithPseudoElement), so the scope
+// has no effective limit.
+func TestScopeLimitWithNestedPseudoElementApplies(t *testing.T) {
+	for _, prelude := range []string{`(.r) to (.l:is(::before))`, `(.r) to (:where(::after))`} {
+		t.Run(prelude, func(t *testing.T) {
+			styles := cascadeHTML(t, `<style>@scope `+prelude+` { .t { color: green } }</style>
+			<div class="r"><div class="l"><div class="t" id="t"></div></div></div>`, nil)
 			if got := colorOf(t, styles, "t"); got != "green" {
 				t.Errorf("#t color = %q, want green: @scope %s must apply", got, prelude)
 			}
