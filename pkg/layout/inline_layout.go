@@ -466,6 +466,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// for the block (LayoutBlockFlow::ShouldTruncateOverflowingText).
 	shouldTruncateOverflowingText := bla.node.ShouldTruncateOverflowingText()
 	textIndent := 0.0
+	// containerWraps: only a container that wraps moves a line that
+	// overflows the opportunity beside floats to the next one, below them
+	// (InlineLayoutAlgorithm::Layout, inline/inline_layout_algorithm.cc:
+	// 1330-1336 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a nowrap line
+	// stays beside the floats and overflows.
+	containerWraps := shouldAutoWrap(bla.style)
 	if bla.style != nil {
 		textIndent = bla.style.ResolveTextIndent(contentInlineSize)
 	}
@@ -562,7 +568,9 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// CSS 2.1 §9.5: if floats consume all available inline space,
 		// clear past them before generating the line. This avoids
 		// force-fitting content into zero-width space and then clearing,
-		// which produces incorrect line breaks.
+		// which produces incorrect line breaks. Not gated on containerWraps:
+		// whether Blink's AllLayoutOpportunities offers a zero-width
+		// opportunity to a nowrap line is not traced.
 		if lineAvailableInline < 1 && exclusionSpace != nil && (floatStart > 0 || floatEnd > 0) {
 			clearedBlock := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcBlock), wdm).Float64()
 			if clearedBlock > bfcBlock {
@@ -654,7 +662,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// content. Only applies when no committed content precedes the float
 		// on the line — retroactively moving already-positioned content is
 		// handled by a separate path.
-		if exclusionSpace != nil && len(pendingFloats) > 0 {
+		if containerWraps && exclusionSpace != nil && len(pendingFloats) > 0 {
 			lastPendingFloatIdx := -1
 			contentBeforeFloat := false
 			for i, r := range line.Results {
@@ -804,7 +812,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 
 		// CSS 2.1 §9.5: if the line content doesn't fit beside the float,
 		// shift the block offset below the float and use the full width.
-		if (floatStart > 0 || floatEnd > 0) && line.Width > lineAvailableInline && exclusionSpace != nil {
+		if containerWraps && (floatStart > 0 || floatEnd > 0) && line.Width > lineAvailableInline && exclusionSpace != nil {
 			clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcBlockOrigin+blockOffset), wdm).Float64()
 			blockOffset = clearedBfc - bfcBlockOrigin
 			lineInlineOffset = 0
