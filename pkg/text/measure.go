@@ -680,46 +680,32 @@ func NormalizedTypoAscentAndDescent(fontSize float64, fontPath string) (ascent, 
 	return a, d
 }
 
-// FontHeightFromFont returns the font's recommended line height in pixels for
-// CSS line-height: normal. Returns the unrounded m.Height so line-height:normal
-// matches the font's intrinsic spacing exactly; integer rounding is applied at
-// the strut sites (via FontAscent/Descent) where it matters for line-box layout.
+// FontHeightFromFont returns the font's line spacing in pixels, the height
+// of line-height: normal: the ascent, descent and line gap each rounded
+// on its own, as Blink's SimpleFontData::PlatformInit sets it,
+// lroundf(ascent) + lroundf(descent) + lroundf(line_gap)
+// (platform/fonts/simple_font_data.cc:168-176 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The ascent and descent are
+// the rounded ones FontAscentFromFont / FontDescentFromFont give
+// (FontMetrics::AscentDescentWithHacks, font_metrics.cc:116-118).
 //
-// reg is the optional FontRegistry for looking up CSS Fonts 4 line-gap-override
-// values. nil is safe and leaves the native metric unchanged.
+// reg is the optional FontRegistry for looking up CSS Fonts 4 ascent-,
+// descent- and line-gap-override values; an override replaces its term
+// before rounding (PlatformInit's line_gap_override × size). nil is safe
+// and leaves the native metrics unchanged.
 func FontHeightFromFont(fontSize float64, fontPath string, reg *FontRegistry) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
 		return fontSize * 1.2
 	}
+	lineGap := float64(m.Height-m.Ascent-m.Descent) / 64.0
 	if reg != nil {
-		mo := reg.MetricsOverrideForPath(fontPath)
-		// CSS Fonts 4 §6.3: line-gap-override replaces the OS/2 line gap.
-		// Height = Ascent + Descent + LineGap. Any of ascent/descent/line-gap
-		// may be individually overridden; derive each piece and sum.
-		// Mirrors Blink's PlatformInit: line_gap = *metrics_override.line_gap_override × size.
-		if mo.Ascent != nil || mo.Descent != nil || mo.LineGap != nil {
-			var ascent, descent, lineGap float64
-			if mo.Ascent != nil {
-				ascent = *mo.Ascent * fontSize
-			} else {
-				ascent = float64(m.Ascent) / 64.0
-			}
-			if mo.Descent != nil {
-				descent = *mo.Descent * fontSize
-			} else {
-				descent = float64(m.Descent) / 64.0
-			}
-			if mo.LineGap != nil {
-				lineGap = *mo.LineGap * fontSize
-			} else {
-				// Native line gap = Height - Ascent - Descent.
-				lineGap = float64(m.Height)/64.0 - float64(m.Ascent)/64.0 - float64(m.Descent)/64.0
-			}
-			return ascent + descent + lineGap
+		// CSS Fonts 4 §6.3: line-gap-override replaces the native line gap.
+		if mo := reg.MetricsOverrideForPath(fontPath); mo.LineGap != nil {
+			lineGap = *mo.LineGap * fontSize
 		}
 	}
-	return float64(m.Height) / 64.0
+	return FontAscentFromFont(fontSize, fontPath, reg) + FontDescentFromFont(fontSize, fontPath, reg) + math.Round(lineGap)
 }
 
 // FontXHeightFromFont returns the font's x-height in pixels at the given size,
