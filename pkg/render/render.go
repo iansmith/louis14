@@ -5707,9 +5707,11 @@ func (r *Renderer) emphasisMarkAscentDescent(size float64, fontPath string) (asc
 }
 
 // emHeightOverAdjustment is text.EmHeightOverAdjustment for an emphasized
-// item on the alphabetic baseline.
-func (r *Renderer) emHeightOverAdjustment(size float64, fontPath string) float64 {
-	return text.EmHeightOverAdjustment(size, fontPath, false)
+// item on its dominant baseline, which Blink reads from the item's style
+// (style->GetFontBaseline(), ruby_utils.cc:920-929 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (r *Renderer) emHeightOverAdjustment(size float64, fontPath string, centralBaseline bool) float64 {
+	return text.EmHeightOverAdjustment(size, fontPath, centralBaseline)
 }
 
 // drawTextEmphasis renders text emphasis marks (e.g., dots, circles, sesame)
@@ -5764,7 +5766,7 @@ func (r *Renderer) drawTextEmphasis(layer *PaintLayer, text string, box *layout.
 	// box.Y + floor(-emphDescent), lowered by the item's em-height
 	// adjustment (emHeightOverAdjustment), which SetEmphasisMark adds
 	// back through the item's annotation ascent (text_painter.cc:529).
-	emphY := box.Y + r.emHeightOverAdjustment(layer.FontSize, fontPath) + math.Floor(-emphDescent) - emphAscent
+	emphY := box.Y + r.emHeightOverAdjustment(layer.FontSize, fontPath, false) + math.Floor(-emphDescent) - emphAscent
 
 	// Iterate over each character and draw the mark centered above/below it.
 	x := box.X
