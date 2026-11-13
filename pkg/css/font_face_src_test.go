@@ -103,3 +103,22 @@ func TestParseFontFaceSrc_DropsUnsupportedFormats(t *testing.T) {
 		t.Errorf("parseFontFaceSrc kept %v, want %v", urls, want)
 	}
 }
+
+// An @font-face font-family string is its string token's unescaped value
+// (ConsumeFamilyName, css_parsing_utils.cc:6406-6419 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestFontFaceFamilyString(t *testing.T) {
+	ss := mustParseSheet(t, `@font-face { font-family: "a\"b"; src: url(f.woff) }`, nil)
+	if len(ss.FontFaces) != 1 || ss.FontFaces[0].Family != `a"b` {
+		t.Errorf("@font-face rules = %+v, want one with family a\"b", ss.FontFaces)
+	}
+}
+
+// A src format() string is its string token's unescaped value, so
+// `"wo\66 f2"` names woff2 (the hex escape \66 is "f").
+func TestFontFaceFormatString(t *testing.T) {
+	ss := mustParseSheet(t, `@font-face { font-family: f; src: url(f.woff) format("wo\66 f2") }`, nil)
+	if len(ss.FontFaces) != 1 || len(ss.FontFaces[0].Src) != 1 || ss.FontFaces[0].Src[0].Format != "woff2" {
+		t.Errorf("@font-face rules = %+v, want one source with format woff2", ss.FontFaces)
+	}
+}

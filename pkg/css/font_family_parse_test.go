@@ -57,6 +57,11 @@ func TestNormalizeAndValidateFontFamily(t *testing.T) {
 		{"empty value", "", false, ""},
 		{"trailing comma only", ", ", false, ""},
 		{"leading comma", ", serif", false, ""},
+
+		// A bad string (a newline inside it) is no family name
+		// (ConsumeFamilyName, css_parsing_utils.cc:6406-6413 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Guard: rejected today.
+		{"bad string", "\"a\nb\", serif", false, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
