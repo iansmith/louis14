@@ -43,3 +43,28 @@ func TestComplexOutline_DoubleMultiRect(t *testing.T) {
 		opPixel(t, img, 50, y, want, "outer stripe 24-25, gap 26-27, inner stripe 28-29")
 	}
 }
+
+// TestComplexOutline_TranslucentDashedCornerOverlap: a dashed or dotted
+// outline whose color is not opaque paints in an alpha layer at the color's
+// alpha, with the color made opaque (ComplexOutlinePainter::Paint,
+// core/paint/outline_painter.cc:474-479 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so where two edges' dashes
+// overlap at a corner (PaintStraightEdge extends each edge past it) the
+// color is applied once. The second fragment's top-left corner square,
+// x 6-10, y 26-30, is covered by both the top and the left edge's first
+// dash, x 11 by the top edge's alone: half-transparent blue on black is
+// about (0, 0, 128) at both, not the (0, 0, 191) of compositing it twice.
+func TestComplexOutline_TranslucentDashedCornerOverlap(t *testing.T) {
+	img, _ := RenderDocument(t, ParsePage(t, splitInlineOutlinePage("4px dashed rgba(0, 0, 255, 0.5)")), 160, 80)
+	for _, p := range []struct {
+		x, y int
+		why  string
+	}{
+		{11, 27, "guard: one edge's dash alone"},
+		{7, 27, "two edges' dashes overlap at the corner, composited once"},
+	} {
+		if got := img.RGBAAt(p.x, p.y); got.R > 8 || got.G > 8 || got.B < 120 || got.B > 136 {
+			t.Errorf("pixel (%d,%d) = %v, want about (0, 0, 128): %s", p.x, p.y, got, p.why)
+		}
+	}
+}

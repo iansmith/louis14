@@ -1,6 +1,7 @@
 package render
 
 import (
+	"image"
 	"math"
 	"sort"
 
@@ -24,14 +25,15 @@ import (
 //     pkg/css folds groove/ridge/inset/outset into solid, so their painting
 //     (DrawRidgeOrGrooveBoxSide, CalculateInsetOutsetColor,
 //     DrawCurvedRidgeGrooveBoxSide) is unreachable and not ported.
-//   - Straight dashed/dotted sides paint through louis14's drawDashedLine /
-//     drawDottedLine stand-ins for DrawLineWithStyle + StyledStrokeData
-//     (:501-598); curved dashed/dotted sides fill like solid ones in place of
+//   - Straight dashed/dotted sides paint through drawLineWithStyle
+//     (styled_stroke.go, DrawLineWithStyle + StyledStrokeData); curved
+//     dashed/dotted sides fill like solid ones in place of
 //     DrawCurvedDashedDottedBoxSide's dashed centerline stroke (:1827-1861).
 //   - No bleed avoidance: louis14 always paints with Blink's
 //     kBackgroundBleedNone, so DrawBleedAdjustedDRRect is a plain FillDRRect.
-//   - PaintSingleRectOutline serves double outlines only (drawOutline keeps
-//     its own solid/dashed/dotted painting); PaintBorderArea is not ported.
+//   - PaintSingleRectOutline serves double, dashed and dotted outlines
+//     (drawOutline keeps its own solid painting); PaintBorderArea is not
+//     ported.
 
 // BoxSide names a physical box side. Mirrors Blink's BoxSide
 // (core/layout/geometry/box_sides.h @ a9f50e52); the values index
@@ -1015,8 +1017,7 @@ func (r *Renderer) fillIntRect(rect intRect, c css.Color) {
 		return
 	}
 	r.setColor(c)
-	r.dc.DrawRectangle(float64(rect.x), float64(rect.y), float64(rect.w), float64(rect.h))
-	r.dc.Fill()
+	r.fillRectF(float64(rect.x), float64(rect.y), float64(rect.w), float64(rect.h))
 }
 
 // fillQuad fills the quadrilateral p1-p4 (FillQuad, box_border_painter.cc:845-860).
@@ -1059,23 +1060,22 @@ func (r *Renderer) drawLineForBoxSide(x1, y1, x2, y2 int, side BoxSide, c css.Co
 	}
 }
 
-// drawDashedOrDottedBoxSide strokes the side's centerline
-// (DrawDashedOrDottedBoxSide, box_border_painter.cc:562-598) through
-// louis14's dash/dot stand-ins for DrawLineWithStyle.
+// drawDashedOrDottedBoxSide strokes the side's centerline with
+// drawLineWithStyle (DrawDashedOrDottedBoxSide, box_border_painter.cc:
+// 562-598).
 func (r *Renderer) drawDashedOrDottedBoxSide(x1, y1, x2, y2 int, side BoxSide, c css.Color, thickness int, style css.BorderStyle) {
 	r.setColor(c)
-	t := float64(thickness)
-	draw := r.drawDashedLine
+	st := dashedStroke
 	if style == css.BorderStyleDotted {
-		draw = r.drawDottedLine
+		st = dottedStroke
 	}
 	if side == BoxSideTop || side == BoxSideBottom {
-		mid := float64(y1) + t/2
-		draw(float64(x1), mid, float64(x2), mid, t)
+		mid := y1 + thickness/2
+		r.drawLineWithStyle(image.Pt(x1, mid), image.Pt(x2, mid), st, float64(thickness))
 		return
 	}
-	mid := float64(x1) + t/2
-	draw(mid, float64(y1), mid, float64(y2), t)
+	mid := x1 + thickness/2
+	r.drawLineWithStyle(image.Pt(mid, y1), image.Pt(mid, y2), st, float64(thickness))
 }
 
 // drawDoubleBoxSide paints a straight double side as two thirds-thick

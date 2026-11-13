@@ -4237,38 +4237,37 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 			r.fillOutlineSides(outerX, outerY, outerW, outerH, width)
 		}
 	case "dashed", "dotted", "double":
-		// Paint non-solid outline styles per side: each side's run spans the
-		// full outer-rect edge, with its centerline half a band-width inside
-		// the outer edge. Stand-in for Blink painting single-rect non-auto
-		// outlines through the border painter
-		// (BoxBorderPainter::PaintSingleRectOutline, outline_painter.cc:1022
-		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A double outline goes
-		// through that port (paintSingleRectOutline) unless the CSS UI
-		// minimum-size clamp moved its rect; dashed/dotted keep this
-		// per-side geometry, which matches DrawDashedOrDottedBoxSide's.
-		if style == "double" && outerW > minDim && outerH > minDim {
+		// Non-solid single-rect outlines paint as a border through
+		// BoxBorderPainter::PaintSingleRectOutline (outline_painter.cc:
+		// 1018-1026 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), unless the
+		// CSS UI minimum-size clamp moved the rect; then each side's run
+		// spans the full outer edge with its centerline half a band inside.
+		if outerW > minDim && outerH > minDim {
 			ro, wi := layoutunit.FromFloat64Round(offset), layoutunit.FromFloat64Round(width)
 			r.paintSingleRectOutline(layer.BorderRadius, toLayoutRect(x, y, w, h), int(wi.Round()),
-				geometry.PhysicalBoxStrut{Top: ro, Right: ro, Bottom: ro, Left: ro}, layer.OutlineColor, css.BorderStyleDouble)
+				geometry.PhysicalBoxStrut{Top: ro, Right: ro, Bottom: ro, Left: ro}, layer.OutlineColor, css.BorderStyle(style))
 			return
 		}
-		draw := r.drawDashedLine
-		switch style {
-		case "dotted":
-			draw = r.drawDottedLine
-		case "double":
-			draw = r.drawDoubleLine
+		if style == "double" {
+			outerR, outerB := outerX+outerW, outerY+outerH
+			midT, midB := outerY+width/2, outerB-width/2
+			midL, midR := outerX+width/2, outerR-width/2
+			r.drawDoubleLine(outerX, midT, outerR, midT, width) // top
+			r.drawDoubleLine(midR, outerY, midR, outerB, width) // right
+			r.drawDoubleLine(outerX, midB, outerR, midB, width) // bottom
+			r.drawDoubleLine(midL, outerY, midL, outerB, width) // left
+			return
 		}
-		outerR := outerX + outerW
-		outerB := outerY + outerH
-		midT := outerY + width/2
-		midB := outerB - width/2
-		midL := outerX + width/2
-		midR := outerR - width/2
-		draw(outerX, midT, outerR, midT, width) // top
-		draw(midR, outerY, midR, outerB, width) // right
-		draw(outerX, midB, outerR, midB, width) // bottom
-		draw(midL, outerY, midL, outerB, width) // left
+		bs := css.BorderStyleDashed
+		if style == "dotted" {
+			bs = css.BorderStyleDotted
+		}
+		l, t, wi := int(outerX), int(outerY), int(width)
+		rt, b := int(outerX+outerW), int(outerY+outerH)
+		r.drawDashedOrDottedBoxSide(l, t, rt, t+wi, BoxSideTop, layer.OutlineColor, wi, bs)
+		r.drawDashedOrDottedBoxSide(rt-wi, t, rt, b, BoxSideRight, layer.OutlineColor, wi, bs)
+		r.drawDashedOrDottedBoxSide(l, b-wi, rt, b, BoxSideBottom, layer.OutlineColor, wi, bs)
+		r.drawDashedOrDottedBoxSide(l, t, l+wi, b, BoxSideLeft, layer.OutlineColor, wi, bs)
 	default:
 		// Treat unknown / not-yet-implemented styles (groove/ridge/inset/outset)
 		// as solid for visibility — matches Blink's fallback behavior for
