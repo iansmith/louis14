@@ -2813,14 +2813,15 @@ func resolveFontPath(style *css.Style, fonts text.FontConfig) string {
 	return fonts.FontPathForFamilyWithSynthesis(family, bold, italic, mono, ahem, synth.Weight, synth.Style)
 }
 
-// resolveStrutFontPath returns the font path for the CSS 2.1 §10.8.1 strut
-// ("first available font" per CSS Fonts 3 §5.4). Unlike resolveFontPath, it
-// uses FontPathForStrut which skips @font-face faces whose unicode-range
-// excludes U+0020 (SPACE) — the reference character for primary-font
-// determination. This matches Blink's FontFallbackList::DeterminePrimaryFont
+// resolvePrimaryFontPath returns the path of the style's primary font
+// ("first available font" per CSS Fonts 3 §5.4), whose metrics size the
+// CSS 2.1 §10.8.1 strut and every inline box's text metrics. Unlike
+// resolveFontPath, it uses FontPathForStrut, which skips @font-face faces
+// whose unicode-range excludes U+0020 (SPACE), the reference character for
+// primary-font determination. This matches Blink's FontFallbackList::DeterminePrimaryFont
 // (third_party/blink/renderer/platform/fonts/font_fallback_list.cc @
 // SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-func resolveStrutFontPath(style *css.Style, fonts text.FontConfig) string {
+func resolvePrimaryFontPath(style *css.Style, fonts text.FontConfig) string {
 	if style == nil {
 		return fonts.Regular
 	}

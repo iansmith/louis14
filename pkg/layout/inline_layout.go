@@ -2768,7 +2768,7 @@ func createLineBoxEx(
 			return 0, 0
 		}
 		fs, _, _, _, _ := fontPropsFromStyle(style)
-		return leadingAscentDescent(fs, resolveFontPath(style, fonts), style.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
+		return leadingAscentDescent(fs, resolvePrimaryFontPath(style, fonts), style.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
 	}
 	inlinePos := alignOffset
 	for i := range line.Results {
@@ -3290,7 +3290,7 @@ func annotationBlockStart(maxAscent, baseOver, annotationHeight, lineHeight floa
 // ascent-override out of per-item placement: it sizes only the strut.
 func textFragmentMetrics(style *css.Style, fonts text.FontConfig, wdm WritingDirectionMode, centralBaseline bool) (fontSize, ascent, height float64) {
 	fontSize, _, _, _, _ = fontPropsFromStyle(style)
-	ascent, descent := blockAscentDescent(fontSize, resolveFontPath(style, fonts), nil, wdm, centralBaseline)
+	ascent, descent := blockAscentDescent(fontSize, resolvePrimaryFontPath(style, fonts), nil, wdm, centralBaseline)
 	return fontSize, ascent, ascent + descent
 }
 
@@ -3328,7 +3328,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 		// has no clamp): let strut ascent/descent go negative so a taller atomic
 		// inline (canvas, replaced) wins cleanly via the per-side max() below
 		// instead of leaking residual sub-pixel descent into the line box.
-		maxAscent, maxDescent = leadingAscentDescent(fontSize, resolveStrutFontPath(parentStyle, fonts), parentStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
+		maxAscent, maxDescent = leadingAscentDescent(fontSize, resolvePrimaryFontPath(parentStyle, fonts), parentStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
 	}
 	// CSS 2.1 §10.8.1: Elements with vertical-align: top/bottom "do not
 	// affect the calculation of the baseline." Track nesting depth so that
@@ -3354,8 +3354,8 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 
 		case InlineItemOpenTag:
 			// Empty inline boxes (e.g. <span></span>) have no InlineItemText but
-			// still establish a strut: their font's ascent/descent determine the
-			// minimum line box height per CSS 2.1 §10.8.
+			// their box's metrics still count toward the line box height
+			// (CSS 2.1 §10.8).
 			if rStyle == nil {
 				continue
 			}
@@ -3367,7 +3367,12 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// CSS 2.1 §10.8.1: distribute half-leading from line-height.
 			// Negative half-leading (when line-height < font-size) is valid
 			// and reduces the inline box's ascent/descent contribution.
-			ascent, descent := leadingAscentDescent(fontSize, resolveFontPath(rStyle, fonts), rStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
+			// An inline box's metrics, even an empty one's, are its primary
+			// font's (LogicalLineBuilder::HandleOpenTag →
+			// InlineBoxState::ComputeTextMetrics, core/layout/inline/
+			// logical_line_builder.cc:355-370, inline_box_state.cc:116-131 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			ascent, descent := leadingAscentDescent(fontSize, resolvePrimaryFontPath(rStyle, fonts), rStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
 			// CSS 2.1 §10.8.1: Inside a vertical-align: top/bottom subtree,
 			// contribute to maxTopBottom instead of baseline calculation.
 			if topBottomDepth > 0 || va == css.VerticalAlignTop || va == css.VerticalAlignBottom {
@@ -3400,7 +3405,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			// core/layout/inline/inline_box_state.cc:116-160 @
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). CSS 2.1 §10.8.1:
 			// a negative half-leading (line-height < font height) is valid.
-			primaryPath := resolveStrutFontPath(rStyle, fonts)
+			primaryPath := resolvePrimaryFontPath(rStyle, fonts)
 			ascent, descent := blockAscentDescent(fontSize, primaryPath, fonts.Registry, wdm, centralBaseline)
 			if rStyle != nil {
 				ascent, descent = leadingAscentDescent(fontSize, primaryPath, rStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
@@ -3430,17 +3435,18 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 			}
 
 		case InlineItemControl:
-			// A control item (forced line break) contributes a strut using its
-			// parent element's font metrics. This ensures blank lines in
-			// white-space: pre content have the correct height (CSS 2.1 §10.8).
-			// Must mirror the InlineItemText path exactly so that a control-only
-			// line (blank line between two \n in <pre>) has the same ascent/descent
-			// that a text-bearing line would have with the same font.
+			// A control item (forced line break) counts its box's metrics, so a
+			// blank line in white-space: pre content has a text line's height
+			// (CSS 2.1 §10.8).
 			if rStyle == nil {
 				continue
 			}
 			fontSize, _, _, _, _ := fontPropsFromStyle(rStyle)
-			ascent, descent := leadingAscentDescent(fontSize, resolveFontPath(rStyle, fonts), rStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
+			// A forced break adds no metrics of its own in Blink
+			// (LogicalLineBuilder::HandleControlItem, logical_line_builder.cc:
+			// 429-438): it sits in its box, whose metrics are its primary
+			// font's.
+			ascent, descent := leadingAscentDescent(fontSize, resolvePrimaryFontPath(rStyle, fonts), rStyle.GetLineHeight(), fonts.Registry, wdm, centralBaseline)
 			if ascent > maxAscent {
 				maxAscent = ascent
 			}
