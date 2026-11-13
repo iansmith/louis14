@@ -5,6 +5,7 @@ import (
 	"image"
 	"testing"
 
+	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
 )
@@ -20,7 +21,8 @@ type renderPageConfig struct {
 }
 
 // WithEditingState passes the document's selection and focused element to
-// the renderer, as the reftest harness does, so ::selection and the caret
+// the renderer, with the document's stylesheets for ::selection rules, as
+// the reftest harness does (visualtest.helpers), so ::selection and the caret
 // paint.
 func WithEditingState() RenderOption {
 	return func(c *renderPageConfig) { c.withEditingState = true }
@@ -78,7 +80,7 @@ func RenderDocument(t testing.TB, doc *html.Document, w, h int, opts ...RenderOp
 		r.SetExternalSVGFetcher(c.externalSVGFetcher)
 	}
 	if c.withEditingState {
-		r.SetSelectionContext(doc.Selection, nil, float64(w), float64(h))
+		r.SetSelectionContext(doc.Selection, css.ParseDocumentStylesheets(doc), float64(w), float64(h))
 		r.SetFocusedElement(doc.FocusedElement)
 	}
 	r.Render(boxes)

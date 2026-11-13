@@ -14,8 +14,8 @@ import (
 )
 
 // renderScripted lays out, runs the document's scripts, lays out again and
-// paints, as the reftest harness does.
-func renderScripted(t *testing.T, src string, w, h int) (*image.RGBA, []*layout.Box) {
+// paints, as the reftest harness does; opts go to RenderDocument.
+func renderScripted(t *testing.T, src string, w, h int, opts ...render.RenderOption) (*image.RGBA, []*layout.Box) {
 	t.Helper()
 	doc := render.ParsePage(t, src)
 	first := layout.NewLayoutEngine(float64(w), float64(h))
@@ -25,7 +25,7 @@ func renderScripted(t *testing.T, src string, w, h int) (*image.RGBA, []*layout.
 	if err := eng.Execute(doc); err != nil {
 		t.Fatal(err)
 	}
-	return render.RenderDocument(t, doc, w, h)
+	return render.RenderDocument(t, doc, w, h, opts...)
 }
 
 func wantPixel(t *testing.T, img *image.RGBA, x, y int, want color.RGBA, why string) {
