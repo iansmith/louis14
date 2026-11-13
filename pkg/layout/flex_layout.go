@@ -197,9 +197,7 @@ type flexItem struct {
 	crossAutoEnd   bool
 
 	// baseline is the first-line baseline position relative to the item's border-box top.
-	// Per Blink's SynthesizedBaseline(), items with no natural baseline get a
-	// synthesized baseline at the block-end edge (crossSize) for both first and last.
-	// Use resolvedFirstBaseline/resolvedLastBaseline helpers for consistent access.
+	// Use baselineFromCrossStart for baseline alignment.
 	baseline     float64
 	hasBaseline  bool // true if the layout produced a real baseline
 	lastBaseline float64
@@ -303,63 +301,54 @@ func (fi *flexItem) outerHypotheticalMainSize() float64 {
 	return fi.hypothetical + fi.mainBorderPadding() + fi.mainMarginSum()
 }
 
-// resolvedFirstBaseline returns the first baseline position for this item
-// relative to its border-box block-start edge.
-//
-// Orthogonal items participate in baseline alignment with a synthesized
-// baseline at the block-end edge (= crossSize) per Blink's
-// DetermineBaselineWritingMode (baseline_utils.h:15-44) and
-// LogicalBoxFragment::FirstBaselineOrSynthesize. For a row flex with a
-// horizontal-tb container and vertical-rl child, the child's baseline is
-// read in horizontal-tb and synthesizes to the item's physical bottom.
-//
-// For non-orthogonal items:
-//  1. Use natural baseline if available.
-//  2. Otherwise synthesize at block-end of border box (= crossSize) per
-//     Blink's SynthesizedBaseline() and CSS Box Alignment §5.4.
-func (fi *flexItem) resolvedFirstBaseline(baselineParallel, canSynthesizeRow bool) (bl float64, participates bool) {
-	if !baselineParallel {
-		// Orthogonal item: per Blink, baseline is synthesized at block-end
-		// of the item in the container's block-axis frame (= crossSize).
-		return fi.crossSize, true
+// baselineFromCrossStart is the item's first (last) baseline for
+// baseline alignment, measured from the container's cross-start edge of
+// its border box. It is read in the item's baseline writing mode
+// (DetermineBaselineWritingMode, parallel context in a row flex): the
+// item's own baseline when that is the item's writing mode and it has one,
+// else one synthesized over its cross size in the container's font
+// baseline (central: whether that is central), from the baseline writing
+// mode's block-start. Mirrors FlexLayoutAlgorithm::BaselineAscent /
+// SynthesizedBaselineAscent with LogicalBoxFragment::
+// FirstBaselineOrSynthesize / LastBaselineOrSynthesize
+// (flex/flex_layout_algorithm.cc:375-420, :1190; logical_box_fragment.h:
+// 33-77 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink measures an
+// item whose baseline writing mode starts at the cross-end from that end
+// (DetermineBaselineGroup's minor group); louis14 flips it to the
+// cross-start instead, which agrees while a line holds one group
+// (LOU-1020 ports the groups).
+func (fi *flexItem) baselineFromCrossStart(container WritingDirectionMode, isRow, central, isLast bool) float64 {
+	baselineWDM := WritingDirectionMode{WM: DetermineBaselineWritingMode(container, fi.wdm.WM, isRow)}
+	b := fi.ownOrSynthesizedBaseline(baselineWDM.WM, fi.crossSize, central, isLast)
+	crossStart := physicalInlineStart(container)
+	if isRow {
+		crossStart = physicalBlockStart(container)
 	}
-	if fi.hasBaseline || fi.baseline > 0 {
-		return fi.baseline, true
+	if physicalBlockStart(baselineWDM) != crossStart {
+		b = fi.crossSize - b
 	}
-	if canSynthesizeRow {
-		return fi.crossSize, true
-	}
-	return 0, false
+	return b
 }
 
-// resolvedLastBaseline returns the last baseline position for this item
-// relative to its border-box block-start edge.
-//
-// Orthogonal items participate with a synthesized last-baseline at
-// block-end (= crossSize), same as first-baseline; the subsequent
-// wrap-reverse/is_last_baseline flip (flex_layout_algorithm.cc:382-384)
-// transforms this into the appropriate last-baseline position.
-//
-// For non-orthogonal items:
-//  1. Use lastBaseline from layout if available.
-//  2. Fall back to first baseline if lastBaseline is not set.
-//  3. If no baseline at all, synthesize at block-end (= crossSize).
-func (fi *flexItem) resolvedLastBaseline(baselineParallel, canSynthesizeRow bool) (bl float64, participates bool) {
-	if !baselineParallel {
-		// Orthogonal item: synthesize at block-end (flipped to 0 later for
-		// non-wrap-reverse last-baseline per Blink BaselineAscent).
-		return fi.crossSize, true
+// ownOrSynthesizedBaseline is the item's first (last) baseline read in
+// writing mode wm, from wm's block-start edge of its border box: its own
+// when wm is the item's writing mode and it has one (a last baseline falls
+// back to its first), else synthesized over blockSize, its border-box
+// block size in wm, in the container's font baseline (central: whether
+// that is central). Mirrors LogicalBoxFragment::FirstBaselineOrSynthesize /
+// LastBaselineOrSynthesize, whose FirstBaseline / LastBaseline are nullopt
+// unless IsWritingModeEqual (logical_box_fragment.h:28-77 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (fi *flexItem) ownOrSynthesizedBaseline(wm WritingMode, blockSize float64, central, isLast bool) float64 {
+	if wm == fi.wdm.WM {
+		switch {
+		case isLast && fi.lastBaseline > 0:
+			return fi.lastBaseline
+		case fi.hasBaseline || fi.baseline > 0:
+			return fi.baseline
+		}
 	}
-	if lb := fi.lastBaseline; lb > 0 {
-		return lb, true
-	}
-	if fi.baseline > 0 || fi.hasBaseline {
-		return fi.baseline, true
-	}
-	if canSynthesizeRow {
-		return fi.crossSize, true
-	}
-	return 0, false
+	return SynthesizedBaseline(central, WritingDirectionMode{WM: wm}.IsFlippedLines(), blockSize)
 }
 
 // flexLine holds the items on one flex line.
@@ -377,8 +366,9 @@ func (fi *flexItem) resolvedLastBaseline(baselineParallel, canSynthesizeRow bool
 // minorBaseline = Blink's max_minor_ascent: max over kMinor items of
 // margins.CrossEnd() + (possibly wrap-reverse-flipped) baseline.
 // Group membership swaps under wrap-reverse per DetermineBaselineGroup
-// (baseline_utils.h:51-89); the flip is applied in the cross-sizing loop
-// per BaselineAscent (flex_layout_algorithm.cc:382-384). unsetBaseline marks
+// (baseline_utils.h:50-89 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the
+// flip is applied in the cross-sizing loop per BaselineAscent
+// (flex_layout_algorithm.cc:382-384). unsetBaseline marks
 // "no item in that group participated on this line" (analogous to Blink's
 // LayoutUnit::Min()).
 type flexLine struct {
@@ -522,7 +512,6 @@ func (fla *FlexLayoutAlgorithm) computeStrutSizes(
 	}
 
 	// Compute cross-sizes for pre-collapse lines.
-	alignItems := fla.getAlignItems()
 	for _, line := range preLines {
 		lineCrossMax := 0.0
 		for _, item := range line.items {
@@ -537,18 +526,9 @@ func (fla *FlexLayoutAlgorithm) computeStrutSizes(
 				itemCross = lf.InlineSize()
 			}
 
-			selfAlign := fla.getAlignSelf(item.style, alignItems)
 			outerCross := itemCross + item.crossMarginSum()
-			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
-				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-			if selfAlign == "baseline" && baselineParallel {
-				if outerCross > lineCrossMax {
-					lineCrossMax = outerCross
-				}
-			} else {
-				if outerCross > lineCrossMax {
-					lineCrossMax = outerCross
-				}
+			if outerCross > lineCrossMax {
+				lineCrossMax = outerCross
 			}
 		}
 		line.crossSize = lineCrossMax
@@ -600,6 +580,9 @@ func (fla *FlexLayoutAlgorithm) computeStrutSizes(
 // Layout performs flex layout and returns the LayoutResult.
 func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	wdm := fla.space.WritingDirection
+	// centralBaseline: the container's font baseline is central
+	// (ComputedStyle::GetFontBaseline), for synthesized item baselines.
+	centralBaseline := wdm.UsesCentralBaselineWithStyle(fla.style)
 	geom := CalculateInitialFragmentGeometry(fla.ctx, fla.node, fla.style, wdm, fla.space)
 	builder := NewBoxFragmentBuilder(wdm)
 	builder.SetLayoutNode(fla.node)
@@ -608,6 +591,9 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 	// §9.1 — Determine flex direction and whether main axis == inline axis.
 	flexDir := fla.getFlexDirection()
 	isRow := flexDir == "row" || flexDir == "row-reverse"
+	itemBaseline := func(item *flexItem, isLast bool) float64 {
+		return item.baselineFromCrossStart(wdm, isRow, centralBaseline, isLast)
+	}
 	reverseMain := flexDir == "row-reverse" || flexDir == "column-reverse"
 	// Note: RTL direction is handled automatically by the fragment builder's
 	// logical→physical coordinate conversion (ToPhysicalOffset). We do NOT
@@ -789,58 +775,45 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			if item.collapsed && item.strutCrossSize > 0 {
 				outerCross = item.strutCrossSize
 			}
-			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
-				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-			canSynthesizeRow := isRow && !wdm.IsVertical()
 			if selfAlign == "baseline" || selfAlign == "last baseline" {
 				isLastBaseline := selfAlign == "last baseline"
-				var baselineVal float64
-				var ok bool
-				if isLastBaseline {
-					baselineVal, ok = item.resolvedLastBaseline(baselineParallel, canSynthesizeRow)
-				} else {
-					baselineVal, ok = item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow)
+				baselineVal := itemBaseline(item, isLastBaseline)
+				// Mirror Blink's BaselineAscent (flex_layout_algorithm.cc:378-392):
+				//   baseline = is_last_baseline ? LastBaseline : FirstBaseline;
+				//   if (is_wrap_reverse_ != is_last_baseline)
+				//       baseline = BlockSize() - baseline;
+				//   return is_major ? CrossStart + baseline : CrossEnd + baseline;
+				if reverseCross != isLastBaseline {
+					baselineVal = item.crossSize - baselineVal
 				}
-				if ok {
-					// Mirror Blink's BaselineAscent (flex_layout_algorithm.cc:378-392):
-					//   baseline = is_last_baseline ? LastBaseline : FirstBaseline;
-					//   if (is_wrap_reverse_ != is_last_baseline)
-					//       baseline = BlockSize() - baseline;
-					//   return is_major ? CrossStart + baseline : CrossEnd + baseline;
-					if reverseCross != isLastBaseline {
-						baselineVal = item.crossSize - baselineVal
+				// baseline_group per DetermineBaselineGroup (baseline_utils.h:50-89 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+				//   Normal wrap: align:baseline→kMajor, align:last-baseline→kMinor.
+				//   Wrap-reverse swaps both → align:baseline→kMinor,
+				//   align:last-baseline→kMajor. While a line holds one group
+				//   this reduces to isMajor = (isLastBaseline == reverseCross);
+				//   LOU-1020 ports the other group.
+				isMajor := isLastBaseline == reverseCross
+				if isMajor {
+					ascent := item.crossMarginStart() + baselineVal
+					descent := outerCross - ascent
+					if ascent > maxAscent {
+						maxAscent = ascent
 					}
-					// baseline_group per DetermineBaselineGroup (baseline_utils.h:51-89):
-					//   Normal wrap: align:baseline→kMajor, align:last-baseline→kMinor.
-					//   Wrap-reverse swaps both → align:baseline→kMinor,
-					//   align:last-baseline→kMajor. Equivalently:
-					//   isMajor = (isLastBaseline == reverseCross).
-					isMajor := isLastBaseline == reverseCross
-					if isMajor {
-						ascent := item.crossMarginStart() + baselineVal
-						descent := outerCross - ascent
-						if ascent > maxAscent {
-							maxAscent = ascent
-						}
-						if descent > maxDescent {
-							maxDescent = descent
-						}
-						hasBaselineItem = true
-					} else {
-						lastAscent := item.crossMarginEnd() + baselineVal
-						lastDescent := outerCross - lastAscent
-						if lastAscent > maxLastAscent {
-							maxLastAscent = lastAscent
-						}
-						if lastDescent > maxLastDescent {
-							maxLastDescent = lastDescent
-						}
-						hasLastBaselineItem = true
+					if descent > maxDescent {
+						maxDescent = descent
 					}
+					hasBaselineItem = true
 				} else {
-					if outerCross > lineCrossMax {
-						lineCrossMax = outerCross
+					lastAscent := item.crossMarginEnd() + baselineVal
+					lastDescent := outerCross - lastAscent
+					if lastAscent > maxLastAscent {
+						maxLastAscent = lastAscent
 					}
+					if lastDescent > maxLastDescent {
+						maxLastDescent = lastDescent
+					}
+					hasLastBaselineItem = true
 				}
 			} else {
 				if outerCross > lineCrossMax {
@@ -871,7 +844,8 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		//   minorBaseline = max_minor_ascent = max over kMinor items of
 		//                   margins.CrossEnd()   + (possibly flipped) baseline.
 		// Membership of items in kMajor/kMinor swaps under wrap-reverse per
-		// DetermineBaselineGroup (baseline_utils.h:51-89).
+		// DetermineBaselineGroup (baseline_utils.h:50-89 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if hasBaselineItem {
 			line.majorBaseline = maxAscent
 		} else {
@@ -1229,67 +1203,40 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 		// Last baseline: sharedLastDescend = max(crossMarginEnd + (crossSize - lastBaseline)).
 		sharedLastDescend := -math.MaxFloat64
 		hasLastBaselineItem := false
-		// Baseline synthesis at block-end of border-box is only correct for
-		// horizontal writing modes. Vertical writing modes use the central
-		// baseline (text-orientation dependent) which is not yet implemented.
-		canSynthesizeRow := isRow && !wdm.IsVertical()
 		for _, item := range line.items {
 			if item.collapsed {
 				continue // §12: collapsed items don't participate in baseline positioning
 			}
 			selfAlign := fla.getAlignSelf(item.style, alignItems)
-			// Baseline participation requires parallel axes (row with same
-			// vertical-ness, or column with orthogonal vertical-ness).
-			baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
-				(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-			// Column containers with same writing mode: items participate
-			// using a synthesized inline-axis baseline at the item's
-			// inline-start edge (CSS Box Alignment §7 baseline synthesis).
-			// For LTR this is bl=0; for RTL this is bl=crossSize. The
-			// baseline framework below handles the reverseCross flip.
-			columnSameWM := !isRow && item.wdm.IsVertical() == wdm.IsVertical()
 			if selfAlign == "baseline" {
-				var bl float64
-				var ok bool
-				if columnSameWM {
-					bl = 0
-					if wdm.Dir == DirectionRTL {
-						bl = item.crossSize
-					}
-					ok = true
+				bl := itemBaseline(item, false)
+				var b float64
+				if reverseCross {
+					// wrap-reverse: first-baseline items align from cross-end.
+					// sharedBaseline = max(crossMarginEnd + (crossSize - bl)).
+					b = item.crossMarginEnd() + (item.crossSize - bl)
 				} else {
-					bl, ok = item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow)
+					b = item.crossMarginStart() + bl
 				}
-				if ok {
-					var b float64
-					if reverseCross {
-						// wrap-reverse: first-baseline items align from cross-end.
-						// sharedBaseline = max(crossMarginEnd + (crossSize - bl)).
-						b = item.crossMarginEnd() + (item.crossSize - bl)
-					} else {
-						b = item.crossMarginStart() + bl
-					}
-					if b > sharedBaseline {
-						sharedBaseline = b
-					}
-					hasBaselineItem = true
+				if b > sharedBaseline {
+					sharedBaseline = b
 				}
+				hasBaselineItem = true
 			}
 			if selfAlign == "last baseline" {
-				if lb, ok := item.resolvedLastBaseline(baselineParallel, canSynthesizeRow); ok {
-					var d float64
-					if reverseCross {
-						// wrap-reverse: last-baseline items align from cross-start.
-						// sharedLastDescend = max(crossMarginStart + lb).
-						d = item.crossMarginStart() + lb
-					} else {
-						d = item.crossMarginEnd() + (item.crossSize - lb)
-					}
-					if d > sharedLastDescend {
-						sharedLastDescend = d
-					}
-					hasLastBaselineItem = true
+				lb := itemBaseline(item, true)
+				var d float64
+				if reverseCross {
+					// wrap-reverse: last-baseline items align from cross-start.
+					// sharedLastDescend = max(crossMarginStart + lb).
+					d = item.crossMarginStart() + lb
+				} else {
+					d = item.crossMarginEnd() + (item.crossSize - lb)
 				}
+				if d > sharedLastDescend {
+					sharedLastDescend = d
+				}
+				hasLastBaselineItem = true
 			}
 		}
 
@@ -1379,49 +1326,26 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			case "center":
 				itemCrossOffset = crossStart + crossFreeForAlign/2
 			case "baseline", "first baseline":
-				baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
-					(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-				columnSameWM := !isRow && item.wdm.IsVertical() == wdm.IsVertical()
 				if hasBaselineItem {
-					var bl float64
-					var ok bool
-					if columnSameWM {
-						// Synthesized inline-axis baseline: inline-start edge.
-						bl = 0
-						if wdm.Dir == DirectionRTL {
-							bl = item.crossSize
-						}
-						ok = true
+					bl := itemBaseline(item, false)
+					if reverseCross {
+						// wrap-reverse: first-baseline items align from cross-end (bottom).
+						// sharedBaseline = max(crossMarginEnd + crossSize - bl).
+						itemCrossOffset = crossStart + line.crossSize - sharedBaseline - bl - item.crossMarginStart()
 					} else {
-						bl, ok = item.resolvedFirstBaseline(baselineParallel, canSynthesizeRow)
-					}
-					if ok {
-						if reverseCross {
-							// wrap-reverse: first-baseline items align from cross-end (bottom).
-							// sharedBaseline = max(crossMarginEnd + crossSize - bl).
-							itemCrossOffset = crossStart + line.crossSize - sharedBaseline - bl - item.crossMarginStart()
-						} else {
-							itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
-						}
-					} else {
-						itemCrossOffset = crossStart // fallback to flex-start
+						itemCrossOffset = crossStart + sharedBaseline - item.crossMarginStart() - bl
 					}
 				} else {
 					itemCrossOffset = crossStart
 				}
 			case "last baseline":
 				if hasLastBaselineItem {
-					baselineParallel := (isRow && item.wdm.IsVertical() == wdm.IsVertical()) ||
-						(!isRow && item.wdm.IsVertical() != wdm.IsVertical())
-					if bl, ok := item.resolvedLastBaseline(baselineParallel, canSynthesizeRow); ok {
-						if reverseCross {
-							// wrap-reverse: last-baseline items align from cross-start (top).
-							itemCrossOffset = crossStart + sharedLastDescend - item.crossMarginStart() - bl
-						} else {
-							itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginStart() - bl
-						}
+					bl := itemBaseline(item, true)
+					if reverseCross {
+						// wrap-reverse: last-baseline items align from cross-start (top).
+						itemCrossOffset = crossStart + sharedLastDescend - item.crossMarginStart() - bl
 					} else {
-						itemCrossOffset = crossStart + crossFreeForAlign
+						itemCrossOffset = crossStart + line.crossSize - sharedLastDescend - item.crossMarginStart() - bl
 					}
 				} else {
 					itemCrossOffset = crossStart + crossFreeForAlign
@@ -1603,17 +1527,6 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			line.crossAxisOffset = crossBPStart + lineOffsets[i]
 		}
 
-		// isWritingModeEqual gates the fallback path to items whose own
-		// baselines are readable in the container's writing mode: only
-		// items in exactly that writing mode have one, so a vertical-lr
-		// item in a vertical-rl container synthesizes. Mirrors
-		// LogicalBoxFragment::IsWritingModeEqual as FirstBaseline /
-		// LastBaseline use it (logical_box_fragment.h:28-31, :42-70 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		isWritingModeEqual := func(item *flexItem) bool {
-			return item.wdm.WM == wdm.WM
-		}
-
 		// itemBlockOffset returns the block-axis offset of the item's
 		// border-box block-start edge, relative to the container's
 		// content-box block-start. Matches Blink's offset.block_offset that
@@ -1625,43 +1538,13 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			return item.mainOffset
 		}
 
-		// synthesizedBaseline is the baseline FirstBaselineOrSynthesize /
-		// LastBaselineOrSynthesize synthesize for an item with none, in the
-		// container's font baseline (the BaselineAccumulator is constructed
-		// with Style().GetFontBaseline()) over the item's border-box block
-		// size in the container's writing mode — in a column flex its main
-		// size, not its cross size (logical_box_fragment.h:33-40, :53-77,
-		// flex/flex_layout_algorithm.cc:80-153 @
+		// fallbackBaseline is the item's first (last) baseline in the
+		// container's writing mode over its border-box block size there (in
+		// a column flex its main size), as BaselineAccumulator::AccumulateItem
+		// reads it (flex/flex_layout_algorithm.cc:91-101 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		centralBaseline := wdm.UsesCentralBaselineWithStyle(fla.style)
-		synthesizedBaseline := func(item *flexItem) float64 {
-			return SynthesizedBaseline(centralBaseline, wdm.IsFlippedLines(), NewLogicalFragment(wdm, item.fragment).BlockSize())
-		}
-
-		// fallbackFirstBaseline mirrors LogicalBoxFragment::
-		// FirstBaselineOrSynthesize: the item's own first baseline when its
-		// writing mode equals the container's, else a synthesized one.
-		// Returns the distance from the item's border-box block-start.
-		fallbackFirstBaseline := func(item *flexItem) float64 {
-			if isWritingModeEqual(item) && (item.hasBaseline || item.baseline > 0) {
-				return item.baseline
-			}
-			return synthesizedBaseline(item)
-		}
-
-		// fallbackLastBaseline mirrors LastBaselineOrSynthesize under the
-		// same writing-mode gate, falling back to the first baseline when no
-		// last baseline is present.
-		fallbackLastBaseline := func(item *flexItem) float64 {
-			if isWritingModeEqual(item) {
-				if item.lastBaseline > 0 {
-					return item.lastBaseline
-				}
-				if item.hasBaseline || item.baseline > 0 {
-					return item.baseline
-				}
-			}
-			return synthesizedBaseline(item)
+		fallbackBaseline := func(item *flexItem, isLast bool) float64 {
+			return item.ownOrSynthesizedBaseline(wdm.WM, NewLogicalFragment(wdm, item.fragment).BlockSize(), centralBaseline, isLast)
 		}
 
 		// Under row-reverse / column-reverse, Blink's ApplyReversals
@@ -1733,12 +1616,12 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			// is_first_line / is_last_line guards at :91-101).
 			if isFirst {
 				if it := firstNonCollapsed(line.items); it != nil {
-					accum.accumulateFirstFallback(crossBPStart + itemBlockOffset(it) + fallbackFirstBaseline(it))
+					accum.accumulateFirstFallback(crossBPStart + itemBlockOffset(it) + fallbackBaseline(it, false))
 				}
 			}
 			if isLast {
 				if it := lastNonCollapsed(line.items); it != nil {
-					accum.accumulateLastFallback(crossBPStart + itemBlockOffset(it) + fallbackLastBaseline(it))
+					accum.accumulateLastFallback(crossBPStart + itemBlockOffset(it) + fallbackBaseline(it, true))
 				}
 			}
 		}
