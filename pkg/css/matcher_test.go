@@ -953,9 +953,22 @@ func TestDirPseudoClassExactDirValue(t *testing.T) {
 		{`<div dir="auto"><span dir="foo">ת</span><b id="t"></b></div>`, "green"},
 		{`<div dir="auto"><span dir=" ltr ">ת</span><b id="t"></b></div>`, "green"},
 		{`<div dir="auto"><span dir="ltr">ת</span>a<b id="t"></b></div>`, "blue"},
+		{`<div dir="ltr"><b id="t" dir=" auto ">ת</b></div>`, "blue"},
 	} {
 		if got, _ := styleByID(t, cascadeHTML(t, css+tc.html, nil), "t").Get("color"); got != tc.want {
 			t.Errorf("%s: color = %q, want %q", tc.html, got, tc.want)
 		}
+	}
+}
+
+// The dir presentational hint reads dir as :dir() does: a padded value is
+// invalid, so it sets no direction and the element inherits
+// (HTMLElement::CollectStyleForPresentationAttribute / IsValidDirAttribute,
+// core/html/html_element.cc:357-361, 424-445 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestDirHintPaddedValueInherits(t *testing.T) {
+	st := styleByID(t, cascadeHTML(t, `<div dir="ltr"><span id="t" dir=" rtl "></span></div>`, nil), "t")
+	if got := st.GetDirection(); got != DirectionLTR {
+		t.Errorf(`dir=" rtl " under dir=ltr: direction = %v, want ltr`, got)
 	}
 }
