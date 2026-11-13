@@ -414,3 +414,57 @@ func TestOOFBlockLevelStaticPositionVisualOrder(t *testing.T) {
 		})
 	}
 }
+
+// oofAhemPrefix starts a page whose .a boxes are 20x20 abspos, in Ahem.
+const oofAhemPrefix = `<!DOCTYPE html><style>body{margin:0;font:10px/10px Ahem}` +
+	`.a{position:absolute;width:20px;height:20px}</style>`
+
+// An out-of-flow box alone in an RTL block's inline content is a U+FFFC
+// neutral at the paragraph's base level, so its container direction is RTL
+// and start aligns to the right even with no text (SegmentBidiRuns,
+// inline_node.cc:1361-1430 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestOOFStaticPositionEmptyRTLParagraph(t *testing.T) {
+	for _, tc := range []struct {
+		name, box string
+		x         float64
+	}{
+		{"inline-level start", `<span><span id=a class=a style="justify-self:start"></span></span>`, 180},
+		{"inline-level LTR self-start", `<span><span id=a class=a style="justify-self:self-start;direction:ltr"></span></span>`, 180},
+		{"block-level start", `<span><div id=a class=a style="justify-self:start"></div></span>`, 180},
+		{"inline-level end", `<span><span id=a class=a style="justify-self:end"></span></span>`, 200},
+		{"inline-level LTR self-end", `<span><span id=a class=a style="justify-self:self-end;direction:ltr"></span></span>`, 200},
+		{"inline-level left", `<span><span id=a class=a style="justify-self:left"></span></span>`, 180},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, oofAhemPrefix+
+				`<div dir=rtl style="position:relative;width:200px;height:50px">`+tc.box+`</div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {{tc.x, 0, 20, 20}}}, chrome157)
+		})
+	}
+}
+
+// Whether an inline box's tags count as content preceding a block-level
+// out-of-flow box, which then takes its static position on the next line
+// (PlaceOutOfFlowObjects' has_preceding_inline_level_content,
+// inline_layout_algorithm.cc:760-855 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). From Chrome 157 headless.
+func TestOOFBlockLevelAfterInlineBoxTags(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		y             float64
+	}{
+		{"inside an undecorated span", `<span><div id=a class=a></div></span>X`, 0},
+		{"inside a span with start padding", `<span style="padding-left:5px"><div id=a class=a></div></span>X`, 10},
+		{"inside a span with a start border", `<span style="border-left:1px solid"><div id=a class=a></div></span>X`, 10},
+		{"inside a span with a start margin", `<span style="margin-left:5px"><div id=a class=a></div></span>X`, 10},
+		{"inside a span with end padding", `<span style="padding-right:5px"><div id=a class=a></div></span>X`, 0},
+		{"after an empty span", `<span></span><div id=a class=a></div>X`, 10},
+		{"after a nested empty span", `<b><span></span></b><div id=a class=a></div>X`, 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, oofAhemPrefix+
+				`<div style="position:relative;width:200px;height:50px">`+tc.content+`</div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {{0, tc.y, 20, 20}}}, chrome157)
+		})
+	}
+}
