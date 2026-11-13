@@ -794,9 +794,13 @@ func collectTextNode(
 		// item's end collapse type to collapsible,
 		// inline/inline_items_builder.cc:1314-1316 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		// Bidi controls are opaque to collapsing (InlineItemsBuilder's
+		// LastItemToCollapseWith skips kOpaqueToCollapsing items,
+		// inline/inline_items_builder.cc:216-226 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): skip trailing injected ones.
 		if text.Len() > 0 {
-			s := text.String()
-			prevSpace = s[len(s)-1] == ' ' || lastNonEmptyItemIsBlockInInline(data)
+			s := strings.TrimRightFunc(text.String(), isBidiControlChar)
+			prevSpace = (s != "" && s[len(s)-1] == ' ') || lastNonEmptyItemIsBlockInInline(data)
 		}
 
 		for _, r := range content {
