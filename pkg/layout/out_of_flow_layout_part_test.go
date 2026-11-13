@@ -310,3 +310,35 @@ func TestOOFInsetAlignment(t *testing.T) {
 		})
 	}
 }
+
+// TestOOFInlineStaticPositionAlignment pins an out-of-flow box in a line
+// (here after "XX ", in a 25px-tall line of 10px Ahem) at its static
+// position aligned by its justify-self within a zero-thickness line in the
+// inline direction (a block-level box sits on the next line, at the line's
+// start) and by its align-self within the line box's block extent: a center
+// or end block edge moves its static point to the line box's middle or end.
+// justify-items / align-items do not apply in inline layout. Blink sets the
+// edges in FragmentBuilder::AddOutOfFlowInlineChildCandidate
+// (fragment_builder.cc:545-585 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// `a` (20x20) is in a 100x100 positioned container with a 1px border.
+func TestOOFInlineStaticPositionAlignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, abs string
+		want      fragRect
+	}{
+		{"start", "", fragRect{1, 26, 20, 20}},
+		{"justify-self:end", "justify-self:end", fragRect{-19, 26, 20, 20}},
+		{"justify-self:center", "justify-self:center", fragRect{-9, 26, 20, 20}},
+		{"align-self:end", "align-self:end", fragRect{1, 31, 20, 20}},
+		{"align-self:center", "align-self:center", fragRect{1, 28.5, 20, 20}},
+		{"self-end, rtl box", "justify-self:self-end;direction:rtl", fragRect{1, 26, 20, 20}},
+		{"align-self:end, inline-level", "align-self:end;display:inline-block", fragRect{21, 6, 20, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+				`<div style="position:relative;width:100px;height:100px;border:1px solid">`+
+				`<span style="font:10px/25px Ahem">XX <div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div><br>XX</span></div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
