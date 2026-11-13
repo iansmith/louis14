@@ -542,7 +542,9 @@ func (fla *FieldsetLayoutAlgorithm) createConstraintSpaceForFieldsetContent(cont
 		SetPercentageResolutionInlineSize(fla.space.PercentageResolutionSize.InlineSize.Float64()).
 		SetIsFixedBlockSize(paddingBoxSize.BlockSize != Indefinite).
 		SetBreakToken(breakToken).
-		SetEarlyBreak(earlyBreak)
+		SetEarlyBreak(earlyBreak).
+		// fieldset_layout_algorithm.cc:539 @ a9f50e522efa.
+		SetBaselineAlgorithmType(fla.space.BaselineAlgorithm)
 	if fla.space.HasBlockFragmentation && !content.IsMonolithic(wdm.WM != contentWDM.WM) {
 		SetupSpaceBuilderForFragmentationFromBuilder(fla.containerBuilder,
 			fla.fragmentainerOffsetFor+fla.intrinsicBlockSize,
