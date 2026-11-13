@@ -1,6 +1,10 @@
 package layout
 
-import "louis14/pkg/text"
+import (
+	"math"
+
+	"louis14/pkg/text"
+)
 
 // baseFontAscentFromSubLine returns the maximum natural font ascent across
 // all text items in a sub-line, EXCLUDING the line-height half-leading.
@@ -134,17 +138,16 @@ func annotationEmHeightFromSubLine(
 }
 
 // EmphasisMarkFontSize returns the font size for a text-emphasis mark glyph:
-// half the base font size, floored at 4px. Single source of the rule shared
-// by layout inflation (emphasisMarkAscentFromLine) and the render paint paths
-// (drawTextEmphasis, drawSidewaysEmphasisMarks) so paint never exceeds the
-// layout outset. Mirrors Blink's 50% emphasis mark size in
-// `core/paint/text_painter.cc` @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
+// half the base font size, rounded half away from zero, as Blink scales the
+// mark glyph's font data to lroundf(computed size * 0.5)
+// (SimpleFontData::EmphasisMarkFontData → CreateScaledFontData,
+// kEmphasisMarkFontSizeMultiplier, platform/fonts/simple_font_data.cc:68 and
+// :301-317 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Single source of the
+// rule shared by layout inflation (emphasisMarkAscentFromLine) and the render
+// paint paths (drawTextEmphasis, drawSidewaysEmphasisMarks) so paint never
+// exceeds the layout outset.
 func EmphasisMarkFontSize(baseFontSize float64) float64 {
-	size := baseFontSize * 0.5
-	if size < 4 {
-		size = 4
-	}
-	return size
+	return math.Round(baseFontSize * 0.5)
 }
 
 // emphasisMarkAscentFromLine returns the line-box ascent needed to contain
