@@ -19,10 +19,9 @@ import (
 // painted in the outline style, with border-radius baked into both paths.
 //
 // louis14 folds groove/ridge/inset/outset into solid (pkg/css), so solid,
-// double, dashed and dotted are the reachable styles. Not ported: the
-// alpha layer for a translucent dashed/dotted outline, and dashed/dotted
-// strokes along a rounded path (each straight edge of the right-angle
-// center path is dashed instead).
+// double, dashed and dotted are the reachable styles. Not ported:
+// dashed/dotted strokes along a rounded path (each straight edge of the
+// right-angle center path is dashed instead).
 func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 	// LayoutObject::OutlineInfo's int width and offset truncate.
 	width, offset := int(layer.OutlineWidth), int(layer.OutlineOffset)
@@ -49,9 +48,19 @@ func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 			addCornerRadiiToPath(r.dc, c, layer.BorderRadius.Outset(cv, cv, cv, cv), layer.BorderRadius.Outset(cc, cc, cc, cc))
 		}
 	}
+	// A translucent dashed or dotted outline paints opaque into a layer at
+	// its color's alpha, so dashes overlapping at corners composite once
+	// (:474-479).
+	color := layer.OutlineColor
+	if color.A < 1 && style != "solid" && style != "double" {
+		alpha := color.A
+		color.A = 1
+		r.dc.PushGroup()
+		defer r.dc.PopGroupWithAlpha(alpha)
+	}
 	bounds := contoursBounds(outer)
 	fillBounds := func() {
-		r.fillIntRect(intRect{bounds.Min.X, bounds.Min.Y, bounds.Dx(), bounds.Dy()}, layer.OutlineColor)
+		r.fillIntRect(intRect{bounds.Min.X, bounds.Min.Y, bounds.Dx(), bounds.Dy()}, color)
 	}
 
 	r.dc.Push()
@@ -61,7 +70,7 @@ func (r *Renderer) complexOutline(layer *PaintLayer, rects []image.Rectangle) {
 	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 	path(shrinkRightAnglePath(outer, width), 0, width)
 	r.clipOutTracedPath(bounds)
-	r.setColor(layer.OutlineColor)
+	r.setColor(color)
 
 	switch style {
 	case "double":
