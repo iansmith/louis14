@@ -49,23 +49,27 @@ func baseFontAscentFromSubLine(
 			continue
 		}
 		fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
+		// CSS Fonts 4 §6.1: base font ascent for annotation placement uses the
+		// native (non-overridden) ascent. The override grows the line box's
+		// strut ascent (maxAscent), and annotationBlockTop is computed relative
+		// to that grown maxAscent. Using overridden baseFontAsc here would
+		// double-count the override delta and push the annotation into the base.
+		fontPath := resolveFontPath(r.Item.Style, fonts)
 		var asc float64
-		if centralBaseline {
-			asc = fontSize / 2
+		if wdm.WM == WritingModeVerticalLR {
+			// louis14 places vertical-lr annotations on the block-start
+			// (line-under) side, so this measures that side, less the
+			// em-height adjustment.
+			if centralBaseline {
+				asc = fontSize / 2
+			} else {
+				asc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
+			}
+			asc -= text.EmHeightOverAdjustment(fontSize, fontPath, centralBaseline)
 		} else {
-			fontPath := resolveFontPath(r.Item.Style, fonts)
-			// CSS Fonts 4 §6.1: base font ascent for annotation placement uses the
-			// native (non-overridden) ascent. The override grows the line box's
-			// strut ascent (maxAscent), and annotationBlockTop is computed relative
-			// to that grown maxAscent. Using overridden baseFontAsc here would
-			// double-count the override delta and push the annotation into the base.
-			asc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
+			// Annotations sit on the base's em height (text.EmHeightAscent).
+			asc = text.EmHeightAscent(fontSize, fontPath, centralBaseline)
 		}
-		// Annotations sit on the base's em height, ComputeEmHeight's
-		// min(ceil(normalized typo ascent), ascent) (ruby_utils.cc:82-107 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): for an integer ascent,
-		// the ascent less the em-height adjustment emphasis marks also take.
-		asc -= text.EmHeightOverAdjustment(fontSize, resolveFontPath(r.Item.Style, fonts), centralBaseline)
 		if asc > maxAscent {
 			maxAscent = asc
 		}

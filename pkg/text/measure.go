@@ -1075,14 +1075,31 @@ func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string)
 // the normalized ascent em - em / 2 (simple_font_data.cc:346-348), both @ the
 // same SHA.
 func EmHeightOverAdjustment(fontSize float64, fontPath string, centralBaseline bool) float64 {
-	ascent := FontAscentFromFont(fontSize, fontPath, nil)
-	var normAscent float64
-	if centralBaseline {
-		ascent = (ascent + FontDescentFromFont(fontSize, fontPath, nil)) / 2
-		em := layoutunit.FromFloat64Round(fontSize)
-		normAscent = em.Sub(em.DivInt(2)).Float64()
-	} else {
-		normAscent, _ = NormalizedTypoAscentAndDescent(fontSize, fontPath)
-	}
+	ascent, normAscent := emHeightAscents(fontSize, fontPath, centralBaseline)
 	return math.Floor(math.Max(0, ascent-normAscent))
+}
+
+// EmHeightAscent is how far above the baseline a ruby annotation sits: the
+// base's em height, ComputeEmHeight's run-font normalized ascent rounded up
+// and capped at the primary ascent, moved to the integer text top
+// (core/layout/inline/ruby_utils.cc:90-107 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): ceil(ascent) - max(0, ascent -
+// ceil(normalized ascent)). For an integer ascent it is the over edge
+// EmHeightOverAdjustment leaves an emphasized item; on the central baseline
+// the ascent Height() / 2 can be a half pixel and the two differ.
+func EmHeightAscent(fontSize float64, fontPath string, centralBaseline bool) float64 {
+	ascent, normAscent := emHeightAscents(fontSize, fontPath, centralBaseline)
+	return math.Ceil(ascent) - math.Max(0, ascent-math.Ceil(normAscent))
+}
+
+// emHeightAscents returns the primary font's ascent and normalized typo
+// ascent for the alphabetic or central baseline.
+func emHeightAscents(fontSize float64, fontPath string, centralBaseline bool) (ascent, normAscent float64) {
+	ascent = FontAscentFromFont(fontSize, fontPath, nil)
+	if !centralBaseline {
+		normAscent, _ = NormalizedTypoAscentAndDescent(fontSize, fontPath)
+		return ascent, normAscent
+	}
+	em := layoutunit.FromFloat64Round(fontSize)
+	return (ascent + FontDescentFromFont(fontSize, fontPath, nil)) / 2, em.Sub(em.DivInt(2)).Float64()
 }
