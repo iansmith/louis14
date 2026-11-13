@@ -524,7 +524,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	// The orthogonal sizes layoutInlineChildren gives its lines
 	// (orthogonalChildBlockSizes), so an atomic is sized against what it is
 	// laid out against: computed on the first atomic that needs them.
-	orthogonal := newLazyOrthogonalSizes(ctx, node.Style(), wdm, space)
+	orthogonal := newLazyOrthogonalSizes(ctx, node, wdm, space)
 	minSpace := lineSpace(0)
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
 	minLB.orthogonalSizes = orthogonal
@@ -1033,7 +1033,7 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		// grid_layout_algorithm.cc:1460-1500); the additional column pass
 		// measures it again against its rows.
 		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space, Indefinite, Indefinite)
-		edges = withCollapsedTableBorder(ComputeFragmentGeometry(cs, containerWDM), node, cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
+		edges = geometryWithStyleScrollbars(node, cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
 		return minContrib, maxContrib, edges
 	}
 	// Parallel: compute intrinsic sizes in the child's writing mode, then add
@@ -1492,8 +1492,9 @@ func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, c
 // (resolveInitialBorderBoxBlockSize, which needs no inline size) clamped by
 // min/max-block-size as CalculateInitialFragmentGeometry clamps it, with its
 // definite content block size if it has one.
-func intrinsicContainerBlockGeometry(style *css.Style, wdm WritingDirectionMode, space ConstraintSpace) (geom FragmentGeometry, explicit float64, has bool) {
-	geom = ComputeFragmentGeometry(style, wdm, space.PercentageResolutionInlineSize)
+func intrinsicContainerBlockGeometry(node *LayoutInputNode, wdm WritingDirectionMode, space ConstraintSpace) (geom FragmentGeometry, explicit float64, has bool) {
+	style := node.Style()
+	geom = NodeFragmentGeometry(node, style, wdm, space.PercentageResolutionInlineSize)
 	geom.BorderBoxSize.BlockSize = clampDefiniteBorderBoxBlock(style, wdm, space, geom,
 		resolveInitialBorderBoxBlockSize(style, wdm, space, geom, logicalBlockSizeValue(style, wdm)))
 	explicit, has = explicitContentBlockSize(geom.BorderBoxSize.BlockSize, geom.BlockBorderPadding())
@@ -1504,21 +1505,21 @@ func intrinsicContainerBlockGeometry(style *css.Style, wdm WritingDirectionMode,
 // fallback block sizes (orthogonalChildBlockSizes) once, on first use.
 type lazyOrthogonalSizes struct {
 	ctx                 *LayoutContext
-	style               *css.Style
+	node                *LayoutInputNode
 	wdm                 WritingDirectionMode
 	space               ConstraintSpace
 	done                bool
 	available, fallback float64
 }
 
-func newLazyOrthogonalSizes(ctx *LayoutContext, style *css.Style, wdm WritingDirectionMode, space ConstraintSpace) *lazyOrthogonalSizes {
-	return &lazyOrthogonalSizes{ctx: ctx, style: style, wdm: wdm, space: space}
+func newLazyOrthogonalSizes(ctx *LayoutContext, node *LayoutInputNode, wdm WritingDirectionMode, space ConstraintSpace) *lazyOrthogonalSizes {
+	return &lazyOrthogonalSizes{ctx: ctx, node: node, wdm: wdm, space: space}
 }
 
 func (l *lazyOrthogonalSizes) compute() {
 	if !l.done {
-		geom, explicit, has := intrinsicContainerBlockGeometry(l.style, l.wdm, l.space)
-		l.available, l.fallback = orthogonalChildBlockSizes(l.ctx, l.style, l.wdm, l.space, geom, has, explicit)
+		geom, explicit, has := intrinsicContainerBlockGeometry(l.node, l.wdm, l.space)
+		l.available, l.fallback = orthogonalChildBlockSizes(l.ctx, l.node.Style(), l.wdm, l.space, geom, has, explicit)
 		l.done = true
 	}
 }

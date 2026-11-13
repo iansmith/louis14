@@ -1887,10 +1887,11 @@ func (lb *LineBreaker) handleOpenTag(item *InlineItem, line *LineInfo) {
 	wdm := lb.space.WritingDirection
 	base := lb.percentageMarginBase()
 	margins := ResolveMargins(item.Style, wdm, base)
-	geom := withCollapsedTableBorder(ComputeFragmentGeometry(item.Style, wdm, base), item.LayoutNode, item.Style, wdm)
+	border := ComputeBorders(item.LayoutNode, item.Style, wdm)
+	padding := ComputePadding(item.LayoutNode, item.Style, wdm, base)
 
 	// Add inline-start margin + border + padding.
-	startEdge := margins.InlineStart + geom.Border.InlineStart + geom.Padding.InlineStart
+	startEdge := margins.InlineStart + border.InlineStart + padding.InlineStart
 	lb.position += startEdge
 	// The line's width follows the position, as for a close tag: an open
 	// tag that ends a line (before a forced break, where
@@ -1918,10 +1919,11 @@ func (lb *LineBreaker) handleCloseTag(item *InlineItem, line *LineInfo) {
 	wdm := lb.space.WritingDirection
 	base := lb.percentageMarginBase()
 	margins := ResolveMargins(item.Style, wdm, base)
-	geom := withCollapsedTableBorder(ComputeFragmentGeometry(item.Style, wdm, base), item.LayoutNode, item.Style, wdm)
+	border := ComputeBorders(item.LayoutNode, item.Style, wdm)
+	padding := ComputePadding(item.LayoutNode, item.Style, wdm, base)
 
 	// Add inline-end border + padding + margin.
-	endEdge := geom.Border.InlineEnd + geom.Padding.InlineEnd + margins.InlineEnd
+	endEdge := border.InlineEnd + padding.InlineEnd + margins.InlineEnd
 	lb.position += endEdge
 
 	// Update line.Width to reflect the cursor position after the close tag.
