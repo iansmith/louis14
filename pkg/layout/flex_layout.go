@@ -10,7 +10,6 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry/layoutunit"
-	"louis14/pkg/html"
 )
 
 const flexDebug = false
@@ -4455,18 +4454,6 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			if item.crossAutoStart || item.crossAutoEnd {
 				continue
 			}
-			// CSS Flexbox §9.4 + CSS Sizing 3: replaced elements with only an
-			// intrinsic aspect ratio (no intrinsic dimensions) are not stretched.
-			// Their cross-size was determined by the replaced element sizing
-			// algorithm using the CSS default (300×150), and the transferred size
-			// suggestion used that definite size. Stretching would override both
-			// the cross-size and (via aspect ratio) the flex-resolved main-size.
-			if item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode) {
-				info := GetNaturalSizingInfo(fla.ctx, item.node)
-				if !info.AspectRatio.IsEmpty() && !info.HasWidth && !info.HasHeight {
-					continue
-				}
-			}
 			// Stretch item's border-box to the line cross-size minus cross margins.
 			stretchBorderBox := line.crossSize - item.crossMarginSum()
 			if stretchBorderBox < 0 {
@@ -4520,17 +4507,16 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			}
 			newBorderBox := stretchContent + crossBP
 
-			// CSS Flexbox §9.2 step B / §9.4: For elements with an aspect ratio
-			// (intrinsic for <img>, or CSS aspect-ratio), no explicit CSS main-size,
-			// and a stretch cross-size, build the constraint space without fixing
-			// the main-size so it can be derived from the cross-size via the ratio.
-			//
-			// For <img>: uses intrinsic aspect ratio from the image.
-			// For other elements: uses CSS aspect-ratio property.
-			//
+			// CSS Flexbox §9.2 step B / §9.4: For a non-replaced element with a
+			// CSS aspect-ratio, no explicit CSS main-size, and a stretch
+			// cross-size, build the constraint space without fixing the
+			// main-size so it can be derived from the cross-size via the ratio.
 			// Only applies when the item's main-size was NOT resolved by
-			// flex-grow/flex-shrink (i.e., flex-grow is 0 and no explicit main-size).
-			// Otherwise, flex:1 items would have their grown main-size overridden.
+			// flex-grow (flex-grow is 0 and no explicit main-size). A replaced
+			// item keeps its flexed main size: its layout space fixes it and
+			// stretches the cross axis (BuildSpaceForLayout,
+			// flex/flex_layout_algorithm.cc:699-797 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			useAspectRatioStretch := false
 			hasExplicitMainSize := false
 			tmpSpace := NewConstraintSpaceBuilder(wdm, item.wdm, false).
@@ -4544,13 +4530,9 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			} else {
 				_, hasExplicitMainSize = ResolveBlockSize(item.style, item.wdm, tmpSpace, item.geom)
 			}
-			if !hasExplicitMainSize {
-				if html.CreatesLayoutImage(item.node.DOMNode) {
-					info := GetNaturalSizingInfo(fla.ctx, item.node)
-					if !info.AspectRatio.IsEmpty() {
-						useAspectRatioStretch = true
-					}
-				} else if ar := item.style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
+			isReplaced := item.node.DOMNode != nil && IsReplacedElement(item.node.DOMNode)
+			if !hasExplicitMainSize && !isReplaced {
+				if ar := item.style.GetAspectRatio(); ar.IsSet && ar.Width > 0 && ar.Height > 0 {
 					// CSS aspect-ratio property on non-replaced elements.
 					// Only apply when flex-grow is 0 — if the item grew via flex,
 					// its main-size is already determined and shouldn't be overridden.
@@ -4564,8 +4546,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 			var cs ConstraintSpace
 			if useAspectRatioStretch {
 				// Build constraint space with cross-size fixed but main-size NOT
-				// fixed. ComputeReplacedSize will derive the main-size from the
-				// fixed cross-size and the image's intrinsic aspect ratio.
+				// fixed, so the aspect ratio derives the main-size from it.
 				childWDM := item.wdm
 				b := NewConstraintSpaceBuilder(wdm, childWDM, true)
 				b.SetIsInsideFlexibleBox(true)
