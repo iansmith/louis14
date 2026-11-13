@@ -44,6 +44,14 @@ type Node struct {
 	// focused element.
 	IsFocused bool
 
+	// FocusVisibleSuppressed is true while this element holds focus from
+	// focus({focusVisible: false}), which forces :focus-visible off. Stands in
+	// for Blink's Document::GetFocusOptions as
+	// SelectorChecker::MatchesFocusVisiblePseudoClass reads it
+	// (core/css/selector_checker.cc:3846-3852 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Cleared when focus moves.
+	FocusVisibleSuppressed bool
+
 	// HasFocusWithin is true when this element OR any of its descendants has
 	// IsFocused set. Mirrors Blink's per-Element HasFocusWithin() bit
 	// (Element::HasFocusWithin), updated by SetFocusedElement walking up from
@@ -516,6 +524,7 @@ func (d *Document) SetFocusedElement(node *Node) {
 	}
 	if old := d.FocusedElement; old != nil {
 		old.IsFocused = false
+		old.FocusVisibleSuppressed = false
 		for a := old; a != nil && a.TagName != "document"; a = a.Parent {
 			a.HasFocusWithin = false
 		}

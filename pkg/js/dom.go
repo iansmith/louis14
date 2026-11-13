@@ -961,6 +961,17 @@ func (e *elementAccessor) Get(key string) goja.Value {
 		return vm.ToValue(func(call goja.FunctionCall) goja.Value {
 			if e.ctx.doc != nil {
 				e.ctx.doc.SetFocusedElement(e.node)
+				// FocusOptions.focusVisible: false forces :focus-visible off
+				// for this focus (FocusOptions, core/dom/focus_options.idl;
+				// read by SelectorChecker::MatchesFocusVisiblePseudoClass,
+				// core/css/selector_checker.cc:3846-3852 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				e.node.FocusVisibleSuppressed = false
+				if arg := call.Argument(0); !goja.IsUndefined(arg) && !goja.IsNull(arg) {
+					if v := arg.ToObject(vm).Get("focusVisible"); v != nil && !goja.IsUndefined(v) && !v.ToBoolean() {
+						e.node.FocusVisibleSuppressed = true
+					}
+				}
 				// Element::Focus then places the selection
 				// (Element::UpdateSelectionOnFocus, core/dom/element.cc:
 				// 8559-8600 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).

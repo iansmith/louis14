@@ -437,13 +437,7 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		}
 		return isVisitedLink(node)
 	case pc == "focus-visible":
-		// :focus-visible matches when the UA decides the focus indicator
-		// should be drawn. In a static reftest engine driven only by JS
-		// Element.focus(), the UA never has a heuristic input to mark focus
-		// as "visible" (no keyboard tab, no script-focus-after-key-event
-		// signal). Match nothing — same conservative answer Blink gives
-		// when there's no keyboard input modality.
-		return false
+		return MatchesFocusVisible(node)
 	case pc == "focus-within":
 		// Mirrors Blink's SelectorChecker::CheckPseudoFocusWithin, which
 		// consults the per-Element HasFocusWithin bit maintained by
@@ -1562,4 +1556,16 @@ func findMatchingRules(node *html.Node, stylesheet *Stylesheet, viewportWidth, v
 	}
 
 	return matches
+}
+
+// MatchesFocusVisible reports whether node matches :focus-visible, as Blink's
+// SelectorChecker::MatchesFocusVisiblePseudoClass decides it
+// (core/css/selector_checker.cc:3826-3866 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a focused element matches
+// unless focus({focusVisible: false}) forced it invisible, and otherwise when
+// it is editable, the last focus was not from the mouse, or a keyboard event
+// happened. louis14 has no mouse input, so the last focus never came from it
+// and every remaining focused element matches.
+func MatchesFocusVisible(node *html.Node) bool {
+	return node.IsFocused && !node.FocusVisibleSuppressed
 }

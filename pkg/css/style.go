@@ -3424,10 +3424,8 @@ func expandOutlineShorthand(style *Style, value string) {
 			style.Set("outline-style", "none")
 		} else if part == "auto" || part == "solid" || part == "dotted" || part == "dashed" || part == "double" ||
 			part == "groove" || part == "ridge" || part == "inset" || part == "outset" {
-			// CSS UI 4 §4: `auto` is a valid outline-style. We treat it as
-			// `solid` at paint time (no platform focus ring); recording it as
-			// `auto` keeps the computed-value reflection honest for getters
-			// that compare against the keyword.
+			// CSS UI 4 §4: `auto` is a valid outline-style, painted as
+			// Blink's focus ring (drawFocusRing in pkg/render).
 			style.Set("outline-style", part)
 		} else if bw, ok := borderWidthKeyword(part); ok {
 			style.Set("outline-width", bw)
@@ -3822,9 +3820,10 @@ func ClampLineWidth(w float64) float64 {
 // (focus-ring) outline style it resolves to the element's accent-color if
 // one is set, otherwise — and for non-auto outline styles — to currentcolor
 // (the element's computed color). The accent-color rule
-// has no clean Blink analog at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f
-// (Blink routes focus-ring color through LayoutTheme::FocusRingColor,
-// layout_theme.cc:843); the contract here is CSS UI 4 §4.4 plus WPT
+// has no Blink analog at a9f50e522efa9005e6ec765a9a785c74f5c2c86b, where
+// outline-color has no auto keyword and resolves to currentColor; Blink's
+// focus ring takes the UA stylesheet's -webkit-focus-ring-color instead
+// (focusRingColor). The contract here is CSS UI 4 §4.4 plus WPT
 // css-ui/outline-color-002..004.
 func (s *Style) GetOutlineColor() (r, g, b uint8, a float64) {
 	colorStr := "auto"
@@ -5675,8 +5674,19 @@ func ParseColor(colorStr string) (Color, bool) {
 	if color, ok := systemColors[colorStr]; ok {
 		return color, true
 	}
+	if colorStr == "-webkit-focus-ring-color" {
+		return focusRingColor, true
+	}
 	return Color{}, false
 }
+
+// focusRingColor is -webkit-focus-ring-color: LayoutTheme::FocusRingColor
+// (core/layout/layout_theme.cc:913-916 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which Chrome on Linux sets
+// through renderer preferences to #101010
+// (chrome/browser/renderer_preferences_util.cc:114-115, same SHA). A profile
+// using the GTK system theme would take the theme's focus color instead.
+var focusRingColor = Color{R: 0x10, G: 0x10, B: 0x10, A: 1}
 
 // Phase 6: Text rendering helpers
 
