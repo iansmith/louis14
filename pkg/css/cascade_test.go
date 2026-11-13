@@ -1143,11 +1143,11 @@ func TestUAStyles_ReplacedOverflowClip(t *testing.T) {
 // declaration-map order: `--b: unset` is the inherited green before
 // `--a: var(--b)` reads it (WPT css-variables/variable-declaration-58), and
 // `--c: var(--a)` reads `--a` after `var(--x, unset)` collapsed it to
-// the inherited blue.
+// the inherited blue. A `VAR(` function token is the same var().
 func TestCustomPropertyReferencesSeeAppliedValue(t *testing.T) {
 	const src = `<style>
 		.outer { --b: green; --a: blue; }
-		.inner { --a: var(--x, unset); --b: unset; --c: var(--a); --d: var(--b); color: var(--d); }
+		.inner { --a: var(--x, unset); --b: unset; --c: var(--a); --d: VAR(--b); color: var(--d); }
 	</style>
 	<div class="outer"><div class="inner" id="inner"></div></div>`
 	for i := 0; i < 200; i++ {

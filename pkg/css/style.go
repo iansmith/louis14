@@ -456,6 +456,30 @@ func isResolvedColorValue(value string) bool {
 	return ok
 }
 
+// varReferenceNames returns the custom property name of every var() in value,
+// fallbacks included, in order.
+func varReferenceNames(value string) []string {
+	var names []string
+	for off := 0; ; {
+		i := indexVarFunction(value[off:])
+		if i < 0 {
+			return names
+		}
+		j := off + i + len("var(")
+		for j < len(value) && isCSSWhitespace(value[j]) {
+			j++
+		}
+		k := j
+		for k < len(value) && value[k] != ',' && value[k] != ')' && !isCSSWhitespace(value[k]) {
+			k++
+		}
+		if k > j {
+			names = append(names, value[j:k])
+		}
+		off = j
+	}
+}
+
 // containsVarReferenceTo reports whether value contains a `var(<name>` token
 // (case-sensitive, name matched as a whole word). Used by resolveVarReferences
 // to detect a single-property self-cycle before recursing into the value.
@@ -3307,13 +3331,35 @@ func applyInitialOrUnset(s *Style, prop, kw string) {
 // Mirrors Blink's CSSRevertValue / CSSRevertLayerValue handling at SHA
 // 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSnapshot) {
-	for prop, val := range s.Properties {
+	// A custom property's var() reads the referenced property's applied
+	// value, so a referenced custom property is resolved first
+	// (StyleCascade::ResolveVarInto -> LookupAndApply,
+	// core/css/resolver/style_cascade.cc:1786-1800 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); map order must not decide
+	// whether `--a: var(--b)` sees `--b: unset` raw or collapsed. Marking a
+	// property done before its references stops a cycle from recursing.
+	var done map[string]bool // custom properties already resolved
+	var resolve func(prop string)
+	resolve = func(prop string) {
+		val, ok := s.Properties[prop]
+		if !ok {
+			return
+		}
 		isCustom := strings.HasPrefix(prop, "--")
+		if isCustom {
+			if done[prop] {
+				return
+			}
+			if done == nil {
+				done = make(map[string]bool)
+			}
+			done[prop] = true
+		}
 		// A logical longhand's initial / unset applies to the physical
 		// longhand it maps onto (resolveDirectionAwareProperties).
 		if logicalLonghandStorageKeys[prop] != "" {
 			if kw, _ := cssWideKeyword(val); kw == "initial" || kw == "unset" {
-				continue
+				return
 			}
 		}
 
@@ -3323,6 +3369,9 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 		// the computed value (not the raw token list) is inherited.
 		resolvedVal := val
 		if isCustom && containsVarFunction(val) {
+			for _, name := range varReferenceNames(val) {
+				resolve(name)
+			}
 			resolvedVal = s.resolveVarReferences(val)
 		}
 
@@ -3344,7 +3393,7 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 				// Mirrors Blink's CSSCustomPropertyDeclaration with value
 				// type kInitial at SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 				s.Set(prop, "")
-				continue
+				return
 			}
 			applyInitialOrUnset(s, prop, "initial")
 		case "unset":
@@ -3355,7 +3404,7 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 				// the post-cascade custom-property inheritance copy in
 				// ApplyInheritedProperties) does the actual lookup.
 				s.Set(prop, "inherit")
-				continue
+				return
 			}
 			applyInitialOrUnset(s, prop, "unset")
 		case "revert":
@@ -3373,6 +3422,9 @@ func resolveCSSWideKeywords(s *Style, originSnap, layerSnap allShorthandRevertSn
 				delete(s.Properties, prop)
 			}
 		}
+	}
+	for prop := range s.Properties {
+		resolve(prop)
 	}
 }
 
