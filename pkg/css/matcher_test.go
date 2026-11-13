@@ -362,9 +362,8 @@ func TestPseudoClass_Specificity(t *testing.T) {
 }
 
 // TestDirPseudoClass covers :dir(ltr)/:dir(rtl) for the static cases
-// (explicit dir=ltr/rtl, inheritance, invalid values, default LTR).
-// Dynamic dir-attribute changes and dir=auto first-strong-Unicode detection
-// are out of scope for this matcher.
+// (explicit dir=ltr/rtl, inheritance, invalid values, default LTR);
+// TestDirPseudoClass_Auto covers dir=auto's first-strong detection.
 func TestDirPseudoClass(t *testing.T) {
 	mkDiv := func(parent *html.Node, dir string) *html.Node {
 		n := &html.Node{Type: html.ElementNode, TagName: "div"}
@@ -391,7 +390,7 @@ func TestDirPseudoClass(t *testing.T) {
 	// <div dir="foopy"> — invalid value, inherits from parent (rtl)
 	invalidDiv := mkDiv(root, "foopy")
 
-	// <div dir="auto"> — out-of-scope first-strong; falls through to inherit rtl
+	// <div dir="auto"> with no strong character falls through to inherit rtl
 	autoDiv := mkDiv(root, "auto")
 
 	// Orphan element with no dir, no parent → default ltr

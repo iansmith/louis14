@@ -588,12 +588,9 @@ func matchesPseudoClass(node *html.Node, pc string, ctx matchContext) bool {
 		// matches the argument. Per Selectors 4 §15, directionality follows
 		// the HTML "directionality of an element" algorithm.
 		//
-		// Scope: handles the static cases — explicit `dir=ltr`/`dir=rtl`
-		// attributes, inheritance from ancestor, and default LTR. The
-		// `dir=auto` case (which would require first-strong-Unicode
-		// detection over text content) is treated as "no explicit
-		// directionality on this element" and falls through to ancestor
-		// inheritance / default LTR. Any value other than ltr/rtl on the
+		// elementDirectionality resolves it: a valid dir=ltr|rtl, dir=auto's
+		// first strong character (else inheritance), inheritance from the
+		// ancestors, default LTR. Any value other than ltr/rtl on the
 		// pseudo-class argument never matches (per the spec).
 		arg := strings.ToLower(strings.TrimSpace(functionalPseudoArg(pc, "dir(")))
 		switch arg {
@@ -643,6 +640,14 @@ func isVisitedLink(node *html.Node) bool {
 	return isLink && strings.TrimSpace(href) == ""
 }
 
+// isValidDirValue reports whether dir is a valid dir attribute value:
+// exactly ltr, rtl or auto, ASCII case-insensitively, untrimmed
+// (HTMLElement::IsValidDirAttribute, core/html/html_element.cc:357-361 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func isValidDirValue(dir string) bool {
+	return strings.EqualFold(dir, "ltr") || strings.EqualFold(dir, "rtl") || strings.EqualFold(dir, "auto")
+}
+
 // elementDirectionality returns the element's directionality per the HTML
 // "directionality of an element" algorithm
 // (https://html.spec.whatwg.org/#the-directionality):
@@ -670,12 +675,15 @@ func elementDirectionality(node *html.Node) Direction {
 		if !ok {
 			continue
 		}
-		switch strings.ToLower(strings.TrimSpace(dirAttr)) {
-		case "ltr":
+		// A valid value matches exactly, ASCII case-insensitively
+		// (HTMLElement::IsValidDirAttribute, core/html/html_element.cc:
+		// 357-361 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		switch {
+		case strings.EqualFold(dirAttr, "ltr"):
 			return DirectionLTR
-		case "rtl":
+		case strings.EqualFold(dirAttr, "rtl"):
 			return DirectionRTL
-		case "auto":
+		case strings.EqualFold(dirAttr, "auto"):
 			if dir, found := autoDirectionality(n); found {
 				return dir
 			}
@@ -723,7 +731,11 @@ func autoDirectionality(root *html.Node) (Direction, bool) {
 			case "bdi", "script", "style", "textarea":
 				return DirectionLTR, false
 			}
-			if _, has := n.GetAttribute("dir"); has {
+			// Only a valid dir sets a boundary
+			// (HTMLElement::ElementAffectsDirectionality,
+			// core/html/html_element.cc:3662-3669 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			if dir, has := n.GetAttribute("dir"); has && isValidDirValue(dir) {
 				return DirectionLTR, false
 			}
 		}
