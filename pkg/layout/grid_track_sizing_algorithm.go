@@ -75,11 +75,26 @@ func (s gridTrackSize) hasMaxContentOrAutoMax() bool {
 	return s.isFitContent || s.max.kind == gridBreadthMaxContent || s.max.kind == gridBreadthAuto
 }
 
+// gridBreadthOfType is the breadth of a minmax() bound's non-length type
+// (auto, min-content, max-content); ok is false for a length.
+func gridBreadthOfType(t css.GridTrackBreadthType) (gridBreadth, bool) {
+	switch t {
+	case css.GridTrackBreadthAuto:
+		return gridBreadth{kind: gridBreadthAuto}, true
+	case css.GridTrackBreadthMinContent:
+		return gridBreadth{kind: gridBreadthMinContent}, true
+	case css.GridTrackBreadthMaxContent:
+		return gridBreadth{kind: gridBreadthMaxContent}, true
+	}
+	return gridBreadth{}, false
+}
+
 // newGridTrackSize maps a louis14 track definition to Blink's normalized
 // GridTrackSize (GridSet::GridSet, grid_track_collection.cc:389-421): a
 // percentage resolves against a definite available size and is auto
-// otherwise, and a flexible minimum is auto. louis14 parses a minmax()
-// minimum only as a length (LOU-760), so it stays fixed here.
+// otherwise, and a flexible minimum is auto. A minmax() bound is its
+// breadth type when it has one (auto, min-content, max-content), else its
+// length.
 func newGridTrackSize(t css.GridTrack, available float64) gridTrackSize {
 	fixed := func(l float64) gridBreadth { return gridBreadth{kind: gridBreadthFixed, length: l} }
 	auto := gridBreadth{kind: gridBreadthAuto}
@@ -88,7 +103,12 @@ func newGridTrackSize(t css.GridTrack, available float64) gridTrackSize {
 		return gridTrackSize{min: auto, isFitContent: true, fitContent: t.FitContentMax}
 	case t.IsMinMax:
 		s := gridTrackSize{min: fixed(t.MinSize)}
-		switch {
+		if b, ok := gridBreadthOfType(t.MinBreadthType); ok {
+			s.min = b
+		}
+		switch b, ok := gridBreadthOfType(t.MaxBreadthType); {
+		case ok:
+			s.max = b
 		case t.MaxFr > 0:
 			s.max = gridBreadth{kind: gridBreadthFlex, flex: t.MaxFr}
 		case t.MaxAuto:
@@ -96,10 +116,9 @@ func newGridTrackSize(t css.GridTrack, available float64) gridTrackSize {
 		case t.MaxSize > 0:
 			s.max = fixed(t.MaxSize)
 		default:
-			// A zero maximum, or one the parser cannot represent:
-			// min-content, max-content and percentage maximums all arrive
-			// as MaxSize 0 (LOU-760). Either way the growth limit is the
-			// minimum (EnsureGrowthLimitIsNotLessThanBaseSize).
+			// A zero maximum, or one the parser cannot represent (a
+			// percentage arrives as MaxSize 0). Either way the growth
+			// limit is the minimum (EnsureGrowthLimitIsNotLessThanBaseSize).
 			s.max = fixed(t.MinSize)
 		}
 		return s

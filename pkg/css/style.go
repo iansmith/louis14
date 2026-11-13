@@ -9146,29 +9146,7 @@ func parseGridTracksWithNames(val string) ([]GridTrack, map[string]int) {
 			t := GridTrack{MaxContent: true}
 			newTrack = &t
 		} else if strings.HasPrefix(part, "minmax(") && strings.HasSuffix(part, ")") {
-			inner := part[7 : len(part)-1]
-			commaIdx := strings.Index(inner, ",")
-			if commaIdx >= 0 {
-				minStr := strings.TrimSpace(inner[:commaIdx])
-				maxStr := strings.TrimSpace(inner[commaIdx+1:])
-				track := GridTrack{IsMinMax: true}
-				if minStr == "0" || minStr == "0px" {
-					track.MinSize = 0
-				} else if minStr == "auto" {
-					// MinSize stays 0
-				} else if size, ok := ParseLength(minStr); ok {
-					track.MinSize = size
-				}
-				if strings.HasSuffix(maxStr, "fr") {
-					frStr := strings.TrimSuffix(maxStr, "fr")
-					if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
-						track.MaxFr = fr
-					}
-				} else if maxStr == "auto" {
-					track.MaxAuto = true
-				} else if size, ok := ParseLength(maxStr); ok {
-					track.MaxSize = size
-				}
+			if track, ok := parseGridMinMaxTrack(part[7 : len(part)-1]); ok {
 				newTrack = &track
 			}
 		} else if strings.HasPrefix(part, "fit-content(") && strings.HasSuffix(part, ")") {
@@ -9213,91 +9191,56 @@ func parseGridTracksWithNames(val string) ([]GridTrack, map[string]int) {
 	return tracks, lineNames
 }
 
-// parseGridTracks parses a space-separated list of track sizes (e.g., "100px 200px auto 1fr")
-// Supports minmax(), min-content, max-content, fr, px, rem, auto, and subgrid values.
+// parseGridTracks parses a space-separated list of track sizes (e.g.,
+// "100px 200px auto 1fr"): parseGridTracksWithNames without the line names.
 func parseGridTracks(val string) []GridTrack {
-	if val == "none" {
-		return nil
-	}
-	// Handle "subgrid" keyword — return a single sentinel track
-	if strings.TrimSpace(strings.ToLower(val)) == "subgrid" {
-		return []GridTrack{{IsSubgrid: true}}
-	}
-	tracks := make([]GridTrack, 0)
-	rawParts := splitComponentValues(val)
-	parts := expandRepeatTracks(rawParts)
-
-	for _, part := range parts {
-		if strings.HasPrefix(part, "auto-fill:") || strings.HasPrefix(part, "auto-fit:") {
-			colonIdx := strings.Index(part, ":")
-			mode := part[:colonIdx]
-			trackListStr := part[colonIdx+1:]
-			templateTracks := parseGridTracks(trackListStr)
-			sentinel := GridTrack{AutoTemplate: templateTracks}
-			if mode == "auto-fill" {
-				sentinel.AutoFill = true
-			} else {
-				sentinel.AutoFit = true
-			}
-			tracks = append(tracks, sentinel)
-		} else if part == "auto" {
-			tracks = append(tracks, GridTrack{Auto: true})
-		} else if part == "min-content" {
-			tracks = append(tracks, GridTrack{MinContent: true})
-		} else if part == "max-content" {
-			tracks = append(tracks, GridTrack{MaxContent: true})
-		} else if strings.HasPrefix(part, "minmax(") && strings.HasSuffix(part, ")") {
-			inner := part[7 : len(part)-1] // strip "minmax(" and ")"
-			// Split on comma at depth 0
-			commaIdx := strings.Index(inner, ",")
-			if commaIdx < 0 {
-				continue
-			}
-			minStr := strings.TrimSpace(inner[:commaIdx])
-			maxStr := strings.TrimSpace(inner[commaIdx+1:])
-			track := GridTrack{IsMinMax: true}
-			// Parse min
-			if minStr == "0" || minStr == "0px" {
-				track.MinSize = 0
-			} else if minStr == "auto" {
-				// MinSize stays 0, treated as auto
-			} else if size, ok := ParseLength(minStr); ok {
-				track.MinSize = size
-			}
-			// Parse max
-			if strings.HasSuffix(maxStr, "fr") {
-				frStr := strings.TrimSuffix(maxStr, "fr")
-				if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
-					track.MaxFr = fr
-				}
-			} else if maxStr == "auto" {
-				track.MaxAuto = true
-			} else if size, ok := ParseLength(maxStr); ok {
-				track.MaxSize = size
-			}
-			tracks = append(tracks, track)
-		} else if strings.HasPrefix(part, "fit-content(") && strings.HasSuffix(part, ")") {
-			// fit-content(X) = min(max-content, max(min-content, X))
-			argStr := strings.TrimSpace(part[12 : len(part)-1])
-			if size, ok := ParseLength(argStr); ok {
-				tracks = append(tracks, GridTrack{IsFitContent: true, FitContentMax: size})
-			}
-		} else if strings.HasSuffix(part, "fr") {
-			frStr := strings.TrimSuffix(part, "fr")
-			if fr, err := strconv.ParseFloat(frStr, 64); err == nil {
-				tracks = append(tracks, GridTrack{Fr: fr})
-			}
-		} else if strings.HasSuffix(part, "%") {
-			numStr := strings.TrimSuffix(part, "%")
-			if pct, err := strconv.ParseFloat(numStr, 64); err == nil {
-				tracks = append(tracks, GridTrack{Percent: pct})
-			}
-		} else if size, ok := ParseLength(part); ok {
-			tracks = append(tracks, GridTrack{Size: size})
-		}
-	}
-
+	tracks, _ := parseGridTracksWithNames(val)
 	return tracks
+}
+
+// parseGridMinMaxTrack parses the arguments of a minmax() track. Each bound
+// keeps its sizing function: a length, or auto, min-content or max-content
+// as its breadth type, and the maximum may be flexible (GridTrackSize's
+// min and max breadths, core/style/grid_track_size.h:132-133 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). ok is false without a comma.
+func parseGridMinMaxTrack(inner string) (track GridTrack, ok bool) {
+	commaIdx := strings.Index(inner, ",")
+	if commaIdx < 0 {
+		return GridTrack{}, false
+	}
+	minStr := strings.TrimSpace(inner[:commaIdx])
+	maxStr := strings.TrimSpace(inner[commaIdx+1:])
+	track = GridTrack{IsMinMax: true}
+	if kind, isKeyword := gridTrackBreadthKeyword(minStr); isKeyword {
+		track.MinBreadthType = kind
+	} else if size, ok := ParseLength(minStr); ok {
+		track.MinSize = size
+	}
+	if strings.HasSuffix(maxStr, "fr") {
+		if fr, err := strconv.ParseFloat(strings.TrimSuffix(maxStr, "fr"), 64); err == nil {
+			track.MaxFr = fr
+		}
+	} else if maxStr == "auto" {
+		track.MaxAuto = true
+	} else if kind, isKeyword := gridTrackBreadthKeyword(maxStr); isKeyword {
+		track.MaxBreadthType = kind
+	} else if size, ok := ParseLength(maxStr); ok {
+		track.MaxSize = size
+	}
+	return track, true
+}
+
+// gridTrackBreadthKeyword maps a track breadth keyword to its type.
+func gridTrackBreadthKeyword(v string) (GridTrackBreadthType, bool) {
+	switch v {
+	case "auto":
+		return GridTrackBreadthAuto, true
+	case "min-content":
+		return GridTrackBreadthMinContent, true
+	case "max-content":
+		return GridTrackBreadthMaxContent, true
+	}
+	return GridTrackBreadthFixed, false
 }
 
 // ResolveGap resolves the gap longhand prop (row-gap or column-gap): a
