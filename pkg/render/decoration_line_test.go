@@ -59,15 +59,7 @@ func TestDecorationLine_UprightVerticalDashed(t *testing.T) {
 	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
 		`<div style="position:absolute;left:40px;top:10px;writing-mode:vertical-rl;text-orientation:upright;font:20px/20px Ahem;`+
 		`text-decoration:underline dashed black;text-decoration-thickness:3px;text-underline-offset:6px;text-decoration-skip-ink:none">XXXXX</div></body></html>`, 70, 130)
-	col := -1
-	for x := 39; x >= 0 && col < 0; x-- {
-		for y := 10; y < 110; y++ {
-			if r, _, _, _ := img.At(x, y).RGBA(); r>>8 < 64 {
-				col = x
-				break
-			}
-		}
-	}
+	col := firstDarkColumn(img, 39, -1, 13) // y 13 is in the first dash
 	if col < 0 {
 		t.Fatal("no underline found left of the glyph column")
 	}
@@ -98,12 +90,7 @@ func TestDecorationLine_UprightVerticalDouble(t *testing.T) {
 		return r>>8 < 64
 	}
 	solid := render.RenderPage(t, page("solid"), 160, 140)
-	right := -1
-	for x := 99; x >= 0 && right < 0; x-- {
-		if dark(solid, x) {
-			right = x
-		}
-	}
+	right := firstDarkColumn(solid, 99, -1, 60)
 	if right < 0 {
 		t.Fatal("no solid underline left of the glyph column")
 	}
@@ -169,5 +156,94 @@ func TestDecorationLine_UprightVerticalPlacement(t *testing.T) {
 				t.Errorf("%s %s: dark x %d-%d, want Chrome's %d-%d", wm, c.line, first, last, c.x0, c.x1)
 			}
 		}
+	}
+}
+
+// A wavy decoration is Blink's WavyGeometry (core/paint/
+// decoration_line_painter.cc:125-370 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// MakeWave(t) sets the wavelength to 1 + 2·round(2t + 0.5) and the
+// control-point distance to 0.5 + round(3t + 0.5), one cubic per
+// wavelength whose centreline sits wavy_offset (t+1, TextDecorationInfo::
+// ComputeLineData, core/paint/text_decoration_info.cc:255-280) + 0.5 below
+// the line's top and starts each run at the line's start heading away from
+// the text. The underline's top is y 28 (baseline 26 + 2px offset). At 3px
+// the wave is 15px long, centred on y 32.5, its first trough at x ≈ 13 and
+// first crest at x ≈ 22; at 5px it is 23px long, centred on y 34.5, trough
+// x ≈ 15, crest x ≈ 27. Pixels from Chrome.
+func TestDecorationLine_WavyGeometry(t *testing.T) {
+	for _, tc := range []struct {
+		thickness                  string
+		height                     int
+		trough, aboveTrough, crest image.Point
+		belowCrest, nextTrough     image.Point
+	}{
+		{"3px", 40, image.Pt(14, 36), image.Pt(13, 29), image.Pt(21, 29), image.Pt(21, 35), image.Pt(29, 36)},
+		{"5px", 50, image.Pt(15, 40), image.Pt(15, 30), image.Pt(27, 28), image.Pt(27, 38), image.Pt(38, 40)},
+	} {
+		t.Run(tc.thickness, func(t *testing.T) {
+			img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+				`<div style="position:absolute;left:10px;top:10px;font:20px/20px Ahem;color:transparent;`+
+				`text-decoration:underline wavy black;text-decoration-thickness:`+tc.thickness+`;text-underline-offset:2px;text-decoration-skip-ink:none">XXXXX</div></body></html>`, 130, tc.height)
+			assertWaveInk(t, img, tc.trough.X, tc.trough.Y, "first trough, bottom")
+			assertPixel(t, img, tc.aboveTrough.X, tc.aboveTrough.Y, white, "above the first trough")
+			assertWaveInk(t, img, tc.crest.X, tc.crest.Y, "first crest, top")
+			assertPixel(t, img, tc.belowCrest.X, tc.belowCrest.Y, white, "below the first crest")
+			assertWaveInk(t, img, tc.nextTrough.X, tc.nextTrough.Y, "second trough, one wavelength on")
+		})
+	}
+}
+
+// Upright vertical text paints the same wave line-relative, rotated
+// clockwise, so it runs down from the run's start with its first trough
+// away from the glyphs (left, line-under) and its first crest towards
+// them. The wave is measured from the solid underline's left edge, so the
+// test pins the wave, not where the line sits (LOU-1027): Chrome draws the
+// 3px line at x 31-34 and the wave's first trough reaches x 25, its first
+// crest x 32.
+func TestDecorationLine_UprightVerticalWavy(t *testing.T) {
+	page := func(style string) string {
+		return `<!DOCTYPE html><html><body style="margin:0">` +
+			`<div style="position:absolute;left:40px;top:10px;writing-mode:vertical-rl;text-orientation:upright;font:20px/20px Ahem;color:transparent;` +
+			`text-decoration:underline ` + style + ` black;text-decoration-thickness:3px;text-underline-offset:6px;text-decoration-skip-ink:none">XXXXX</div></body></html>`
+	}
+	solid := render.RenderPage(t, page("solid"), 70, 130)
+	left := firstDarkColumn(solid, 0, 40, 50)
+	if left < 0 {
+		t.Fatal("no solid underline left of the glyph column")
+	}
+	img := render.RenderPage(t, page("wavy"), 70, 130)
+	assertWaveInk(t, img, left-6, 13, "first trough, leftmost")
+	assertPixel(t, img, left+1, 13, white, "right of the first trough")
+	assertWaveInk(t, img, left-2, 17, "centreline crossing")
+	assertWaveInk(t, img, left+1, 20, "first crest, rightmost")
+	assertPixel(t, img, left-5, 20, white, "left of the first crest")
+	assertWaveInk(t, img, left-6, 28, "second trough, one 15px wavelength on")
+}
+
+// firstDarkColumn scans row y from column from towards to (exclusive)
+// and returns the first column darker than 64, or -1.
+func firstDarkColumn(img image.Image, from, to, y int) int {
+	step := 1
+	if to < from {
+		step = -1
+	}
+	for x := from; x != to; x += step {
+		if r, _, _, _ := img.At(x, y).RGBA(); r>>8 < 64 {
+			return x
+		}
+	}
+	return -1
+}
+
+// assertWaveInk checks that the pixel at (x, y) is wave ink. Chrome paints
+// it black; louis14 may leave up to 16 levels of background at the ink's
+// outer edge, since textshape strokes a 32-segment flattening where Skia
+// offsets the curve: a real divergence, tracked by MAZ-222 — tighten to an
+// exact match when it lands. A stroke join missing the outer side of a
+// turn (MAZ-221) leaves ~100.
+func assertWaveInk(t *testing.T, img image.Image, x, y int, why string) {
+	t.Helper()
+	if r, _, _, _ := img.At(x, y).RGBA(); r>>8 > 16 {
+		t.Errorf("pixel (%d,%d) = %d, want ink (≤ 16): %s", x, y, r>>8, why)
 	}
 }

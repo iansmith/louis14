@@ -6547,7 +6547,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 
 	thickness := layer.TextDecorationThickness
 
-	var rectTop, centerY float64
+	var rectTop, centerY, wavyOffset float64
 	switch layer.TextDecoration {
 	case css.TextDecorationUnderline:
 		if onlyLineThrough {
@@ -6569,12 +6569,14 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// text-decoration takes this legacy path).
 		centerY = math.Round(box.Y + ascent + layer.TextUnderlineOffset)
 		rectTop = centerY // already Blink's paint_underline_offset (rect TOP)
+		wavyOffset = doubleOffsetFromThickness(thickness)
 	case css.TextDecorationOverline:
 		if onlyLineThrough {
 			return
 		}
 		centerY = box.Y
 		rectTop = centerY - thickness // overline rect grows UPWARD from TextTop
+		wavyOffset = -doubleOffsetFromThickness(thickness)
 	case css.TextDecorationLineThrough:
 		if !onlyLineThrough {
 			return
@@ -6598,7 +6600,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	case "double":
 		r.drawDoubleLine(legacyXStart, centerY, legacyXEnd, centerY, thickness)
 	case "wavy":
-		r.drawWavyLine(legacyXStart, centerY, legacyXEnd-legacyXStart, thickness)
+		r.drawWavyLine(legacyXStart, rectTop, legacyXEnd-legacyXStart, thickness, wavyOffset, nil)
 	default: // "solid"
 		r.drawLineAsRect(legacyXStart, rectTop, legacyXEnd-legacyXStart, thickness)
 	}
@@ -6727,9 +6729,8 @@ func clampDecorationBounds(logicalStart, logicalEnd float64, td css.AppliedTextD
 
 // drawLineThroughStroke paints a line-through in the style given by styleVal
 // ("solid", "dashed", "dotted", "double", "wavy"). lineY is the stroke
-// center, thickness the stroke width. phaseFromLogicalStart keeps a wavy
-// line phase-continuous across adjacent fragments.
-func (r *Renderer) drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFromLogicalStart float64, styleVal string) {
+// center, thickness the stroke width.
+func (r *Renderer) drawLineThroughStroke(xStart, xEnd, lineY, thickness float64, styleVal string) {
 	if st, ok := decorationStrokeStyle(styleVal); ok {
 		r.drawLineAsStroke(xStart, lineY-thickness/2, xEnd-xStart, thickness, st, nil)
 		return
@@ -6738,7 +6739,7 @@ func (r *Renderer) drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFr
 	case "double":
 		r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
 	case "wavy":
-		r.drawWavyLinePhased(xStart, lineY, xEnd-xStart, thickness, phaseFromLogicalStart)
+		r.drawWavyLine(xStart, lineY-thickness/2, xEnd-xStart, thickness, 0, nil)
 	default: // "solid"
 		r.drawLineAsRect(xStart, lineY-thickness/2, xEnd-xStart, thickness)
 	}
@@ -6823,8 +6824,6 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		return
 	}
 
-	phaseFromLogicalStart := xStart - logicalStart
-
 	r.setColor(td.Color)
 	r.dc.SetLineWidth(thickness)
 
@@ -6858,35 +6857,40 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// skipInk: when true and the decoration's perpendicular position overlaps
 	// the glyph ink extent, the paint is split into sub-segments that avoid
 	// the glyph extents (CSS Text Decor 4 §1.1.5). Skip-ink does NOT apply
-	// to line-through per spec.
-	paintLine := func(rectTop, centerY float64, skipInk bool) {
+	// to line-through per spec. wavyOffset places a wavy line (drawWavyLine).
+	paintLine := func(rectTop, centerY, wavyOffset float64, skipInk bool) {
 		segments := []inkSegment{{Start: xStart, End: xEnd}}
-		// Apply skip-ink only when the line's perpendicular position
-		// (rect [rectTop, rectTop+thickness]) overlaps the glyph ink.
-		lineTop := rectTop
-		lineBottom := rectTop + thickness
+		// Apply skip-ink only when the line's perpendicular extent overlaps
+		// the glyph ink: its rect [rectTop, rectTop+thickness], or a wavy
+		// line's paint rect (DecorationLinePainter::Bounds).
+		lineTop, lineBottom := rectTop, rectTop+thickness
+		if td.Style == "wavy" {
+			top, height := wavyPaintRect(rectTop, thickness, wavyOffset)
+			lineTop, lineBottom = top, top+height
+		}
 		linePerpOverlapsGlyph := lineBottom > glyphYTop && lineTop < glyphYBottom
 		skipped := skipInk && len(glyphs) > 0 && linePerpOverlapsGlyph
 		if skipped {
 			segments = skipInkSegments(xStart, xEnd, thickness, glyphs)
 		}
+		// Dashed, dotted and wavy lines paint the fragment's whole line, their
+		// pattern starting at its own start; skip-ink clips.
+		var keep []inkSegment
+		if skipped {
+			keep = segments
+		}
 		if st, ok := decorationStrokeStyle(td.Style); ok {
-			// The fragment's whole line, its dashes starting at its own
-			// start; skip-ink clips (drawLineAsStroke).
-			var keep []inkSegment
-			if skipped {
-				keep = segments
-			}
 			r.drawLineAsStroke(xStart, rectTop, xEnd-xStart, thickness, st, keep)
 			return
 		}
+		if td.Style == "wavy" {
+			r.drawWavyLine(xStart, rectTop, xEnd-xStart, thickness, wavyOffset, keep)
+			return
+		}
 		for _, seg := range segments {
-			segPhase := phaseFromLogicalStart + (seg.Start - xStart)
 			switch td.Style {
 			case "double":
 				r.drawDoubleLine(seg.Start, centerY, seg.End, centerY, thickness)
-			case "wavy":
-				r.drawWavyLinePhased(seg.Start, centerY, seg.End-seg.Start, thickness, segPhase)
 			default: // "solid"
 				r.drawLineAsRect(seg.Start, rectTop, seg.End-seg.Start, thickness)
 			}
@@ -6899,7 +6903,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// aligns with the rounded baseline used by drawTextStr (math.Round),
 		// preventing a sub-pixel gap that exposes the underline below the glyph.
 		lineY := math.Round(info.computeUnderlineLineY(td))
-		paintLine(lineY, lineY, true)
+		paintLine(lineY, lineY, doubleOffsetFromThickness(thickness), true)
 	}
 	if !onlyLineThrough && td.Lines.Has(css.TextDecorationLineOverline) {
 		// computeOverlineLineY returns the TextTop position (box.Y), which
@@ -6909,7 +6913,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// TOP is `TextTop - thickness` (overline grows UPWARD from
 		// text-top — see text-decoration-thickness-overline-001).
 		centerY := info.computeOverlineLineY()
-		paintLine(centerY-thickness, centerY, true)
+		paintLine(centerY-thickness, centerY, -doubleOffsetFromThickness(thickness), true)
 	}
 	if onlyLineThrough && td.Lines.Has(css.TextDecorationLineLineThrough) {
 		// Line-through stays stroke-centered for all styles. Blink centers
@@ -6918,7 +6922,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// regress text-decoration-thickness-linethrough-001 which uses
 		// 1.1em thickness on a 1em-tall box.
 		lineY := info.computeLineThroughLineY(thickness)
-		r.drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFromLogicalStart, td.Style)
+		r.drawLineThroughStroke(xStart, xEnd, lineY, thickness, td.Style)
 	}
 }
 
@@ -7021,13 +7025,14 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 	//
 	// doubleOffset is where a double decoration's second line sits,
 	// line-relative along y: thickness + 1 away from the text for under and
-	// over, floor(thickness + 1) toward line-under for line-through
-	// (TextDecorationInfo::
+	// over, floor(thickness + 1) toward line-under for line-through;
+	// wavyOffset where a wavy line's centreline sits, the same but 0 for
+	// line-through (TextDecorationInfo::
 	// ComputeLineData, text_decoration_info.cc:255-282;
 	// DecorationLinePainter::Paint's kDoubleStroke,
 	// decoration_line_painter.cc:464-473). Under the rotation, line-relative
 	// +y is physical -x.
-	paintLine := func(rectLeft, doubleOffset float64) {
+	paintLine := func(rectLeft, doubleOffset, wavyOffset float64) {
 		r.dc.Push()
 		defer r.dc.Pop()
 		r.dc.Translate(rectLeft+thickness, 0)
@@ -7042,7 +7047,7 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 			r.drawLineAsRect(lineStart, 0, inlineLen, thickness)
 			r.drawLineAsRect(lineStart, doubleOffset, inlineLen, thickness)
 		case "wavy":
-			r.drawWavyLinePhased(lineStart, thickness/2, inlineLen, thickness, 0)
+			r.drawWavyLine(lineStart, 0, inlineLen, thickness, wavyOffset, nil)
 		default: // "solid"
 			r.drawLineAsRect(lineStart, 0, inlineLen, thickness)
 		}
@@ -7050,7 +7055,8 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 
 	if td.Lines.Has(css.TextDecorationLineUnderline) {
 		perpX := info.computeUnderlinePerpX(td)
-		paintLine(vertDecorationRectLeft(perpX, thickness, info.underDir), awayFromText(info.underDir)*(thickness+1))
+		offset := awayFromText(info.underDir) * doubleOffsetFromThickness(thickness)
+		paintLine(vertDecorationRectLeft(perpX, thickness, info.underDir), offset, offset)
 	}
 	if td.Lines.Has(css.TextDecorationLineOverline) {
 		perpX := info.computeOverlinePerpX()
@@ -7059,10 +7065,11 @@ func (r *Renderer) drawOneAppliedVerticalDecoration(td css.AppliedTextDecoration
 		if info.underDir == blockUnderRight {
 			overDir = blockUnderLeft
 		}
-		paintLine(vertDecorationRectLeft(perpX, thickness, overDir), awayFromText(overDir)*(thickness+1))
+		offset := awayFromText(overDir) * doubleOffsetFromThickness(thickness)
+		paintLine(vertDecorationRectLeft(perpX, thickness, overDir), offset, offset)
 	}
 	if td.Lines.Has(css.TextDecorationLineLineThrough) {
-		paintLine(info.computeLineThroughPerpX()-thickness/2, awayFromText(info.underDir)*math.Floor(thickness+1))
+		paintLine(info.computeLineThroughPerpX()-thickness/2, awayFromText(info.underDir)*math.Floor(doubleOffsetFromThickness(thickness)), 0)
 	}
 }
 
@@ -7119,90 +7126,6 @@ func mirrorCoord(v, lo, hi float64) float64 {
 		t = 2*w - t
 	}
 	return lo + t
-}
-
-// drawWavyLinePhased is the LOU-149 Phase 4 phased variant of drawWavyLine.
-// phaseFromLogicalStart shifts the wave's logical origin so that adjacent
-// fragments of one decorating box continue the same cycle across the
-// fragment boundary. With phaseFromLogicalStart=0 its output matches
-// drawWavyLine byte-for-byte. (Dashed and dotted decorations restart their
-// pattern per fragment, as Blink's DrawLineAsStroke does.)
-
-func (r *Renderer) drawWavyLinePhased(x, y, width, thickness, phaseFromLogicalStart float64) {
-	if width <= 0 {
-		return
-	}
-	amplitude := thickness * 1.5
-	wavelength := thickness * 4
-	if wavelength < 4 {
-		wavelength = 4
-	}
-	halfWave := wavelength / 2
-
-	r.dc.SetLineWidth(thickness)
-
-	startPhase := wrapIntoPeriod(phaseFromLogicalStart, wavelength)
-	up := startPhase < halfWave
-	// First flip is at the next half-wave boundary in the cycle.
-	var nextFlip float64
-	if up {
-		nextFlip = halfWave - startPhase
-	} else {
-		nextFlip = wavelength - startPhase
-	}
-
-	r.dc.MoveTo(x, y)
-	cx := 0.0
-	for cx < width {
-		endX := cx + nextFlip
-		if endX > width {
-			endX = width
-		}
-		midX := (cx + endX) / 2
-		if up {
-			r.dc.QuadraticTo(x+midX, y-amplitude, x+endX, y)
-		} else {
-			r.dc.QuadraticTo(x+midX, y+amplitude, x+endX, y)
-		}
-		cx = endX
-		up = !up
-		nextFlip = halfWave
-	}
-	r.dc.Stroke()
-}
-
-// drawWavyLine draws a wavy (sinusoidal) decoration line using quadratic curves.
-func (r *Renderer) drawWavyLine(x, y, width, thickness float64) {
-	if width <= 0 {
-		return
-	}
-	amplitude := thickness * 1.5
-	wavelength := thickness * 4
-	if wavelength < 4 {
-		wavelength = 4
-	}
-	halfWave := wavelength / 2
-
-	r.dc.SetLineWidth(thickness)
-	r.dc.MoveTo(x, y)
-
-	cx := x
-	up := true
-	for cx < x+width {
-		endX := cx + halfWave
-		if endX > x+width {
-			endX = x + width
-		}
-		midX := (cx + endX) / 2
-		if up {
-			r.dc.QuadraticTo(midX, y-amplitude, endX, y)
-		} else {
-			r.dc.QuadraticTo(midX, y+amplitude, endX, y)
-		}
-		cx = endX
-		up = !up
-	}
-	r.dc.Stroke()
 }
 
 // SavePNG writes the rendered image to a PNG file.
