@@ -2663,8 +2663,8 @@ func (b *LayoutTreeBuilder) applyInitialLetter(flStyle, parentStyle *css.Style) 
 	paraFontPath := resolveFontPath(parentStyle, b.fontConfig)
 	paraAscent := text.FontAscentFromFont(paraFontSize, paraFontPath, nil)
 	paraDescent := text.FontDescentFromFont(paraFontSize, paraFontPath, nil)
-	leading := lineHeight - (paraAscent + paraDescent)
-	paraLineDescent := paraDescent + leading/2
+	_, descLeading := calculateLeadingSpace(lineHeight, paraAscent+paraDescent)
+	paraLineDescent := paraDescent + descLeading
 
 	// Block-start margin (horizontal text) = the drop offset, the letter's
 	// absolute block position for both drop and `raise`. For raise, inline layout
