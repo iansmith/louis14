@@ -1007,8 +1007,7 @@ func TestSelectorEscapesResolve(t *testing.T) {
 		{`*|b`, `<b id="t"></b>`, true},
 		{`[*|b]`, `<div id="t" b></div>`, true},
 	} {
-		src := `<style>` + tc.sel + ` { color: green }</style>` + tc.el
-		if got, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get("color"); (got == "green") != tc.green {
+		if got := cascadeColor(t, tc.sel, tc.el, "t"); (got == "green") != tc.green {
 			t.Errorf("%s on %s: color = %q, want green %v", tc.sel, tc.el, got, tc.green)
 		}
 	}
@@ -1031,5 +1030,56 @@ func TestAttributeSelectorBadStringMatchesNothing(t *testing.T) {
 	xnode := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"data-x": "x"}}
 	if MatchesSelector(xnode, ParseSelector("[data-x=\"x\n]")) {
 		t.Error(`[data-x="x<newline>] matched data-x="x"`)
+	}
+}
+
+// Selector scanners follow Blink's token stream: blocks stack
+// (CSSTokenizer::BlockStart / BlockEnd, core/css/parser/css_tokenizer.cc:
+// 66-87 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), strings and escapes
+// are skipped, and an escaped trailing space is part of its ident. A `]` or
+// `)` that closes nothing is a plain token: at the top level or in an
+// unforgiving argument it voids the selector, in a forgiving :is()/:where()
+// argument only that argument. Expected values derived from that source.
+func TestSelectorScannersFollowTokenStream(t *testing.T) {
+	for _, tc := range []struct {
+		css, el, id string
+		green       bool
+	}{
+		{`[title="a] b"]`, `<div id="t" title="a] b"></div>`, "t", true},
+		{`div:not([title=") x"])`, `<div id="t"></div>`, "t", true},
+		{`:is(.a]), #t`, `<div id="t"></div>`, "t", true},
+		{`:not(.a]), #t`, `<div id="t"></div>`, "t", false},
+		{`.a), #t`, `<div id="t"></div>`, "t", false},
+		{`#a\ `, `<div id="a "></div>`, "a ", true},
+		{`:is(#a\ ) b`, `<div id="a "><b id="t"></b></div>`, "t", true},
+	} {
+		if got := cascadeColor(t, tc.css, tc.el, tc.id); (got == "green") != tc.green {
+			t.Errorf("%s on %s: color = %q, want green %v", tc.css, tc.el, got, tc.green)
+		}
+	}
+}
+
+// cascadeColor is the color `sel { color: green }` gives the element whose
+// id is id in el.
+func cascadeColor(t *testing.T, sel, el, id string) string {
+	t.Helper()
+	got, _ := styleByID(t, cascadeHTML(t, `<style>`+sel+` { color: green }</style>`+el, nil), id).Get("color")
+	return got
+}
+
+// @supports selector() reads the compound escape-aware: `.a\:b` is one
+// class, so the selector is supported.
+func TestSupportsSelectorEscapedClass(t *testing.T) {
+	src := `<style>@supports selector(.a\:b) { #t { color: green } }</style><div id="t"></div>`
+	if got, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get("color"); got != "green" {
+		t.Errorf(`@supports selector(.a\:b): color = %q, want green`, got)
+	}
+}
+
+// An escaped `(` is ident text, no block: `::before` after `.a\(` is still
+// at the top level, so it is the selector's pseudo-element.
+func TestPseudoElementAfterEscapedParen(t *testing.T) {
+	if pe := ParseSelector(`.a\(::before`).PseudoElement; pe != "before" {
+		t.Errorf(`.a\(::before pseudo-element = %q, want before`, pe)
 	}
 }
