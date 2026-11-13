@@ -1,13 +1,6 @@
 package layout
 
-import (
-	"os"
-	"testing"
-
-	"louis14/pkg/css"
-	"louis14/pkg/html"
-	"louis14/pkg/text"
-)
+import "testing"
 
 // Under line-height: normal a text run's line box unites the primary
 // font's box with every font the run is drawn in, each with that font's
@@ -20,30 +13,11 @@ import (
 // Serif's own normal line, not Ahem's line spacing laid over Liberation
 // Serif's glyph box.
 func TestLineHeightNormal_UnitesUsedFontLeading(t *testing.T) {
-	ss, err := css.ParseStylesheet(`@font-face { font-family: SpaceOnly; src: url(Ahem.ttf); unicode-range: U+20 }`, css.NewParserContext(""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	fc := text.DefaultFontConfig().WithUserFontFaces(ss.FontFaces, func(url string) ([]byte, error) { return os.ReadFile("../../fonts/" + url) })
-	if fc.Registry.Lookup("SpaceOnly", false, false) == "" {
-		t.Fatal("SpaceOnly did not load")
-	}
-
-	doc, err := html.Parse(`<!doctype html><style>
+	tb, rb := layoutWithFontFace(t, `@font-face { font-family: SpaceOnly; src: url(Ahem.ttf); unicode-range: U+20 }`, "SpaceOnly", `<!doctype html><style>
 body { margin: 0 }
 #t { font: 20px SpaceOnly, "Liberation Serif"; line-height: normal }
 #r { font: 20px "Liberation Serif"; line-height: normal }
 </style><div id=t>XXX</div><div id=r>XXX</div>`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	le := NewLayoutEngine(400, 200)
-	le.SetFontConfig(fc)
-	root := le.Layout(doc)[0]
-	tb, rb := findBoxByID(root, "t"), findBoxByID(root, "r")
-	if tb == nil || rb == nil {
-		t.Fatal("boxes not found")
-	}
 	if tb.Height != rb.Height {
 		t.Errorf("line height %v, want Liberation Serif's normal line height %v", tb.Height, rb.Height)
 	}

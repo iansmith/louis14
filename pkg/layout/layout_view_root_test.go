@@ -12,9 +12,12 @@ package layout
 // iframe) on 2026-11-01.
 
 import (
+	"os"
 	"testing"
 
+	"louis14/pkg/css"
 	"louis14/pkg/html"
+	"louis14/pkg/text"
 )
 
 func layoutRootTestHTML(t *testing.T, src string) *Box {
@@ -24,6 +27,34 @@ func layoutRootTestHTML(t *testing.T, src string) *Box {
 		t.Fatalf("html.Parse: %v", err)
 	}
 	return NewLayoutEngine(800, 600).Layout(doc)[0]
+}
+
+// layoutWithFontFace lays out page with faceCSS's @font-face rule
+// registered (its url() read from the repo's fonts/ directory) and returns
+// the boxes #t and #r, failing t if the face named family does not load or
+// either box is missing.
+func layoutWithFontFace(t *testing.T, faceCSS, family, page string) (tb, rb *Box) {
+	t.Helper()
+	ss, err := css.ParseStylesheet(faceCSS, css.NewParserContext(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fc := text.DefaultFontConfig().WithUserFontFaces(ss.FontFaces, func(url string) ([]byte, error) { return os.ReadFile("../../fonts/" + url) })
+	if fc.Registry.Lookup(family, false, false) == "" {
+		t.Fatalf("@font-face %s did not load", family)
+	}
+	doc, err := html.Parse(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	le := NewLayoutEngine(400, 200)
+	le.SetFontConfig(fc)
+	root := le.Layout(doc)[0]
+	tb, rb = findBoxByID(root, "t"), findBoxByID(root, "r")
+	if tb == nil || rb == nil {
+		t.Fatal("#t or #r not found")
+	}
+	return tb, rb
 }
 
 // findBoxByID returns the first box under b whose DOM node has id.
