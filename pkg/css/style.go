@@ -512,9 +512,9 @@ func nextVarName(value string, off int) (raw string, next int, ok bool) {
 func varNameEnd(value string, j int) int {
 	k := j
 	for k < len(value) && value[k] != ',' && value[k] != ')' && !isCSSWhitespace(value[k]) {
-		if value[k] == '\\' && k+1 < len(value) && !isCSSNewline(value[k+1]) {
-			_, n := consumeEscape(value[k+1:])
+		if n := escapeLen(value, k); n > 0 {
 			k += n
+			continue
 		}
 		k++
 	}

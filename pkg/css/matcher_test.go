@@ -972,3 +972,64 @@ func TestDirHintPaddedValueInherits(t *testing.T) {
 		t.Errorf(`dir=" rtl " under dir=ltr: direction = %v, want ltr`, got)
 	}
 }
+
+// A selector's idents are names with their escapes resolved, as the token
+// stream hands them to the selector parser (CSSTokenizer::ConsumeName /
+// ConsumeEscape, core/css/parser/css_tokenizer.cc:594-691 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an escape never ends a
+// class, id, type or attribute name, a hex escape's trailing space is part
+// of it, not a combinator, an escaped `*` before `=` is part of the
+// attribute name, not the operator, and an attribute value is its string's
+// or ident's value. An escaped `|` is part of its ident too, not a
+// namespace bar (ConsumeName / ConsumeAttribute read the bar only as a
+// delimiter token, css_selector_parser.cc:1454-1497, 1530-1584 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and an escaped trailing space
+// survives trimming; unescaped `*|b` / `[*|b]` keep matching.
+func TestSelectorEscapesResolve(t *testing.T) {
+	for _, tc := range []struct {
+		sel, el string
+		green   bool
+	}{
+		{`.\61 b`, `<div id="t" class="ab"></div>`, true},
+		{`.a\:b`, `<div id="t" class="a:b"></div>`, true},
+		{`.a\.b`, `<div id="t" class="a.b"></div>`, true},
+		{`.a\]b`, `<div id="t" class="a]b"></div>`, true},
+		{`.a\,b`, `<div id="t" class="a,b"></div>`, true},
+		{`#\31 0 b`, `<div id="10"><b id="t"></b></div>`, true},
+		{`d\69 v#t`, `<div id="t"></div>`, true},
+		{`[d\61 ta-x]`, `<div id="t" data-x></div>`, true},
+		{`[data-x="a\"b"]`, `<div id="t" data-x='a"b'></div>`, true},
+		{`[data-x=a\ b]`, `<div id="t" data-x="a b"></div>`, true},
+		{`[a\*=b]`, `<div id="t" a*="b"></div>`, true},
+		{`[data-x=a\ ]`, `<div id="t" data-x="a "></div>`, true},
+		{`a\|b`, `<b id="t"></b>`, false},
+		{`[\|b]`, `<div id="t" b></div>`, false},
+		{`*|b`, `<b id="t"></b>`, true},
+		{`[*|b]`, `<div id="t" b></div>`, true},
+	} {
+		src := `<style>` + tc.sel + ` { color: green }</style>` + tc.el
+		if got, _ := styleByID(t, cascadeHTML(t, src, nil), "t").Get("color"); (got == "green") != tc.green {
+			t.Errorf("%s on %s: color = %q, want green %v", tc.sel, tc.el, got, tc.green)
+		}
+	}
+}
+
+// A bad string (a newline ends it) is no attribute value: ConsumeAttribute
+// rejects the selector (css_selector_parser.cc:1567-1571 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so it matches nothing, not
+// the empty value.
+func TestAttributeSelectorBadStringMatchesNothing(t *testing.T) {
+	node := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"data-x": ""}}
+	if !MatchesSelector(node, ParseSelector(`[data-x=""]`)) {
+		t.Fatal(`control: [data-x=""] did not match data-x=""`)
+	}
+	if MatchesSelector(node, ParseSelector("[data-x=\"a\nb\"]")) {
+		t.Error(`[data-x="a<newline>b"] matched data-x=""`)
+	}
+	// A newline right before `]` ends the string too, bad, even where
+	// trimming would leave `"x` closed by end of input.
+	xnode := &html.Node{Type: html.ElementNode, TagName: "div", Attributes: map[string]string{"data-x": "x"}}
+	if MatchesSelector(xnode, ParseSelector("[data-x=\"x\n]")) {
+		t.Error(`[data-x="x<newline>] matched data-x="x"`)
+	}
+}
