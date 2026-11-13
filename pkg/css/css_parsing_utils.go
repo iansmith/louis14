@@ -757,7 +757,7 @@ func functionArgs(tok, name string) ([]string, bool) {
 	if !isFunction(tok, name) || !strings.HasSuffix(tok, ")") {
 		return nil, false
 	}
-	args := splitCSSFunctionArgs(tok[len(name)+1 : len(tok)-1])
+	args := SplitTopLevelCommas(tok[len(name)+1 : len(tok)-1])
 	for i := range args {
 		args[i] = strings.TrimSpace(args[i])
 	}

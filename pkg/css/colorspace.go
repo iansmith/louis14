@@ -301,7 +301,7 @@ func parseColorMixInner(val string, currentColorPtr *Color) (Color, bool) {
 	}
 	inner := val[start:end]
 
-	args := splitColorMixArgs(inner)
+	args := SplitTopLevelCommas(inner)
 	if len(args) < 3 {
 		return Color{}, false
 	}
@@ -525,29 +525,6 @@ func hslToRGB(h, s, l float64) (float64, float64, float64) {
 	return r + m, g + m, b + m
 }
 
-// splitColorMixArgs splits a color-mix() inner string by commas, respecting
-// nested parentheses so that rgb(), hsl(), etc. inside are not split.
-func splitColorMixArgs(s string) []string {
-	var args []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-		case ',':
-			if depth == 0 {
-				args = append(args, s[start:i])
-				start = i + 1
-			}
-		}
-	}
-	args = append(args, s[start:])
-	return args
-}
-
 // resolveLightDark extracts and returns the operand from light-dark(a, b).
 // If dark is true, returns the second operand; otherwise the first.
 // Returns (operand, true) on success, ("", false) if value is not a light-dark form.
@@ -561,7 +538,7 @@ func resolveLightDark(value string, dark bool) (string, bool) {
 	inner := value[len("light-dark(") : len(value)-1]
 
 	// Split by commas respecting nested parentheses.
-	operands := splitColorMixArgs(inner)
+	operands := SplitTopLevelCommas(inner)
 	if len(operands) != 2 {
 		return "", false
 	}
