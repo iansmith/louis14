@@ -31,7 +31,6 @@ func baseFontAscentFromSubLine(
 	if line == nil {
 		return 0
 	}
-	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 	var maxAscent float64
 	for _, r := range line.Results {
 		if r.Item == nil || r.Item.Type != InlineItemText || r.Item.Style == nil {
@@ -49,18 +48,12 @@ func baseFontAscentFromSubLine(
 			continue
 		}
 		fontSize, _, _, _, _ := fontPropsFromStyle(r.Item.Style)
-		var asc float64
-		if centralBaseline {
-			asc = fontSize / 2
-		} else {
-			fontPath := resolveFontPath(r.Item.Style, fonts)
-			// CSS Fonts 4 §6.1: base font ascent for annotation placement uses the
-			// native (non-overridden) ascent. The override grows the line box's
-			// strut ascent (maxAscent), and annotationBlockTop is computed relative
-			// to that grown maxAscent. Using overridden baseFontAsc here would
-			// double-count the override delta and push the annotation into the base.
-			asc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
-		}
+		// CSS Fonts 4 §6.1: base font ascent for annotation placement uses the
+		// native (non-overridden) ascent. The override grows the line box's
+		// strut ascent (maxAscent), and annotationBlockTop is computed relative
+		// to that grown maxAscent. Using overridden baseFontAsc here would
+		// double-count the override delta and push the annotation into the base.
+		asc, _ := blockAscentDescent(fontSize, resolveFontPath(r.Item.Style, fonts), nil, wdm, centralBaseline)
 		if asc > maxAscent {
 			maxAscent = asc
 		}
@@ -71,7 +64,7 @@ func baseFontAscentFromSubLine(
 // annotationEmHeightFromSubLine returns the maximum font typo ascent and
 // descent across all text items in a ruby annotation sub-line, EXCLUDING
 // CSS line-height half-leading and EXCLUDING the integer rounding that
-// `computeLineMetricsEx` applies via `alignmentAscentFromFont`.
+// `computeLineMetricsEx` applies via `blockAscentDescent`.
 //
 // Mirrors Blink's `ComputeEmHeight(line_item)` at
 // `core/layout/inline/ruby_utils.cc:78-126 @
@@ -84,7 +77,7 @@ func baseFontAscentFromSubLine(
 //     to both ascent and descent for `line-height: normal`. Blink's
 //     annotation positioning uses font em-height only; the leading is
 //     a property of the OUTER line's block metrics.
-//  2. No integer rounding. computeLineMetricsEx → alignmentAscentFromFont
+//  2. No integer rounding. computeLineMetricsEx → blockAscentDescent
 //     → FontAscentFromFont applies `math.Round`. Blink's annotation
 //     positioning uses sub-pixel `FixedAscent`/`FixedDescent`; the
 //     rounding to integer ascent (`int_ascent_` via `lroundf`) happens
@@ -184,7 +177,6 @@ func emphasisMarkAscentFromLine(
 		return 0
 	}
 	isHorizontal := !wdm.IsVertical()
-	sidewaysVLR := needsSidewaysVLRBaselineSwap(wdm, centralBaseline)
 	var needed float64
 	for _, r := range line.Results {
 		if r.Item == nil || r.Item.Type != InlineItemText {
@@ -201,13 +193,10 @@ func emphasisMarkAscentFromLine(
 		}
 		fontSize, _, _, _, _ := fontPropsFromStyle(style)
 		markFontSize := EmphasisMarkFontSize(fontSize)
-		var baseAsc, markHeight float64
-		if centralBaseline {
-			baseAsc = fontSize / 2
-			markHeight = markFontSize
-		} else {
-			fontPath := resolveFontPath(style, fonts)
-			baseAsc = alignmentAscentFromFont(sidewaysVLR, fontSize, fontPath, nil)
+		fontPath := resolveFontPath(style, fonts)
+		baseAsc, _ := blockAscentDescent(fontSize, fontPath, nil, wdm, centralBaseline)
+		markHeight := markFontSize
+		if !centralBaseline {
 			markHeight = text.FontTypoAscentFromFont(markFontSize, fontPath, fonts.Registry) +
 				text.FontTypoDescentFromFont(markFontSize, fontPath, fonts.Registry)
 		}

@@ -5601,12 +5601,8 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		for i, ch := range []rune(text) {
 			charStr := string(ch)
 			charW := r.measureTextStr(charStr, fontID, layer.featureInputs())
-			// Center the glyph on the central baseline, Height() / 2 from the
-			// fragment's left edge (FontMetrics::IntAscentInternal,
-			// platform/fonts/font_metrics.cc:193-194 @
-			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the same rule
-			// layout.textFragmentMetrics places the fragment by.
-			xOffset := math.Floor(box.Width/2) - charW/2
+			// Center the glyph on the central baseline.
+			xOffset := layout.CentralBaselineUnderSide(box.Width) - charW/2
 			if xOffset < 0 {
 				xOffset = 0
 			}
