@@ -77,41 +77,19 @@ func (fg *FragmentGeometry) ClearBorderScrollbarPaddingBlockEnd() {
 	fg.Border.BlockEnd, fg.Scrollbar.BlockEnd, fg.Padding.BlockEnd = 0, 0, 0
 }
 
-// ComputeFragmentGeometry resolves border and padding from a CSS style
-// into logical edges for the given writing direction.
-// An optional percentageBase (containing block inline-size) can be passed
-// to resolve percentage padding values; an indefinite (negative) base
-// resolves them against 0, keeping a calc()'s length, as Blink's
-// ComputePadding clamps MarginPaddingPercentageResolutionSize
-// (length_utils.cc:1527-1541 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// Without one, a percentage or calc() with a percentage is dropped.
+// ComputeFragmentGeometry resolves border, padding (percentageBase as for
+// ComputePadding) and the style-only scrollbar reservation from a CSS style
+// into logical edges for the given writing direction, ignoring the node
+// (no collapsed-table branch; see NodeFragmentGeometry).
 func ComputeFragmentGeometry(style *css.Style, wdm WritingDirectionMode, percentageBase ...float64) FragmentGeometry {
 	if style == nil {
 		return FragmentGeometry{}
 	}
 
-	physBorder := style.GetBorderWidth()
-	var physPadding css.BoxEdge
-	if len(percentageBase) > 0 {
-		physPadding = style.GetPaddingForWidth(max(0, percentageBase[0]))
-	} else {
-		physPadding = style.GetPadding()
-	}
-
 	return FragmentGeometry{
-		Border: ToLogicalEdges(PhysicalEdges{
-			Top:    physBorder.Top,
-			Right:  physBorder.Right,
-			Bottom: physBorder.Bottom,
-			Left:   physBorder.Left,
-		}, wdm),
+		Border:    ComputeBorders(nil, style, wdm),
 		Scrollbar: ComputeScrollbarLogicalEdges(style, wdm),
-		Padding: ToLogicalEdges(PhysicalEdges{
-			Top:    physPadding.Top,
-			Right:  physPadding.Right,
-			Bottom: physPadding.Bottom,
-			Left:   physPadding.Left,
-		}, wdm),
+		Padding:   ComputePadding(nil, style, wdm, percentageBase...),
 	}
 }
 
@@ -137,30 +115,66 @@ func ComputeScrollbarLogicalEdges(style *css.Style, wdm WritingDirectionMode) Lo
 // overflow:scroll reservation — Blink's ComputeBorders / ComputePadding /
 // ComputeScrollbars of a node (length_utils.cc:1487-1549 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Use it wherever the node is
-// known.
-//
-// A border-collapse:collapse table's border is its half of the outer
-// collapsed edges, TableBorder(), and it has no padding (ComputeBorders' and
-// ComputePadding's table branches, length_utils.cc:1495-1497, :1522-1525 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// known. A border-collapse:collapse table's edges follow ComputeBorders and
+// ComputePadding's table branches.
 func NodeFragmentGeometry(node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode, percentageBase ...float64) FragmentGeometry {
-	geom := ComputeFragmentGeometry(style, wdm, percentageBase...)
-	geom.Scrollbar = computeScrollbarsForNode(node, style, wdm)
-	return withCollapsedTableBorder(geom, node, style, wdm)
+	return FragmentGeometry{
+		Border:    ComputeBorders(node, style, wdm),
+		Padding:   ComputePadding(node, style, wdm, percentageBase...),
+		Scrollbar: computeScrollbarsForNode(node, style, wdm),
+	}
 }
 
-// withCollapsedTableBorder returns geom with a border-collapse:collapse
-// table's own border, TableBorder(), and no padding: the table branches of
-// Blink's ComputeBorders and ComputePadding (length_utils.cc:1495-1497,
-// :1522-1525 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Other boxes'
-// geometry is returned unchanged. A stopgap for the style-only geometry
-// sites, which should use NodeFragmentGeometry (LOU-973).
-func withCollapsedTableBorder(geom FragmentGeometry, node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode) FragmentGeometry {
-	if border, ok := collapsedTableBorder(node, style); ok {
-		geom.Border = ToLogicalEdges(border, wdm)
-		geom.Padding = LogicalEdges{}
+// geometryWithStyleScrollbars is node's borders and padding with the
+// style-only scrollbar reservation (ComputeScrollbarLogicalEdges: only
+// overflow:scroll), for the sites whose scrollbar term does not yet follow
+// Blink: the grid item and orthogonal contribution edges, where Blink's
+// clamp floor counts no scrollbar (LOU-973 PR B), and a fragmented
+// containing block, where Blink subtracts borders only (a TODO,
+// out_of_flow_layout_part.cc:870-874 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) but a scroll container is
+// monolithic, so the term is never non-zero there. PR B moves the grid and
+// orthogonal sites off it; it is not a permanent API.
+func geometryWithStyleScrollbars(node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode) FragmentGeometry {
+	return FragmentGeometry{
+		Border:    ComputeBorders(node, style, wdm),
+		Padding:   ComputePadding(node, style, wdm),
+		Scrollbar: ComputeScrollbarLogicalEdges(style, wdm),
 	}
-	return geom
+}
+
+// ComputeBorders is node's border widths in wdm: a border-collapse:collapse
+// table's are its own half of the outer collapsed edges, TableBorder().
+// Mirrors ComputeBorders' table branch (length_utils.cc:1487-1499 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func ComputeBorders(node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode) LogicalEdges {
+	if border, ok := collapsedTableBorder(node, style); ok {
+		return ToLogicalEdges(border, wdm)
+	}
+	if style == nil {
+		return LogicalEdges{}
+	}
+	return ToLogicalEdges(physicalEdges(style.GetBorderWidth()), wdm)
+}
+
+// ComputePadding is node's padding in wdm; a border-collapse:collapse
+// table has none (length_utils.cc:1518-1541 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An optional percentageBase
+// (containing block inline-size) resolves percentage padding; an indefinite
+// (negative) base resolves it against 0, keeping a calc()'s length, as
+// Blink clamps MarginPaddingPercentageResolutionSize (:1527-1541). Without
+// one, a percentage or calc() with a percentage is dropped.
+func ComputePadding(node *LayoutInputNode, style *css.Style, wdm WritingDirectionMode, percentageBase ...float64) LogicalEdges {
+	if _, ok := collapsedTableBorder(node, style); ok || style == nil {
+		return LogicalEdges{}
+	}
+	var p css.BoxEdge
+	if len(percentageBase) > 0 {
+		p = style.GetPaddingForWidth(max(0, percentageBase[0]))
+	} else {
+		p = style.GetPadding()
+	}
+	return ToLogicalEdges(physicalEdges(p), wdm)
 }
 
 // computeScrollbarsForNode is node's scrollbars: the overflow:scroll ones,
@@ -372,14 +386,7 @@ func ResolveMargins(style *css.Style, wdm WritingDirectionMode, containingBlockI
 		return LogicalEdges{}
 	}
 
-	physMargin := style.GetAllMarginsForWidth(containingBlockInlineSize)
-
-	return ToLogicalEdges(PhysicalEdges{
-		Top:    physMargin.Top,
-		Right:  physMargin.Right,
-		Bottom: physMargin.Bottom,
-		Left:   physMargin.Left,
-	}, wdm)
+	return ToLogicalEdges(physicalEdges(style.GetAllMarginsForWidth(containingBlockInlineSize)), wdm)
 }
 
 // resolveInlineAutoMargins resolves a laid-out box's `auto` inline margins
