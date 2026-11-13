@@ -130,18 +130,23 @@ func TestDecorationLine_UprightVerticalDouble(t *testing.T) {
 // in Chrome 2026-11-13: a 40px Ahem column at x 100-140 with 6px lines and
 // a 10px offset has its underline at x 83-88 and its line-through at x
 // 116-121.
+//
+// Mixed orientation keeps the central baseline, so Chrome places a rotated
+// run's lines identically (TestDecorationLine_VerticalUnderlinePosition).
 func TestDecorationLine_UprightVerticalPlacement(t *testing.T) {
-	for _, wm := range []string{"vertical-rl", "vertical-lr"} {
-		for _, c := range []struct {
-			line   string
-			x0, x1 int
-		}{{"underline", 83, 88}, {"line-through", 116, 121}} {
-			img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
-				`<div style="position:absolute;left:100px;top:10px;writing-mode:`+wm+`;text-orientation:upright;font:40px/40px Ahem;color:white;`+
-				`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
-			first, last := darkColumnSpan(img, 60)
-			if first != c.x0 || last != c.x1 {
-				t.Errorf("%s %s: dark x %d-%d, want Chrome's %d-%d", wm, c.line, first, last, c.x0, c.x1)
+	for _, orientation := range []string{"upright", "mixed"} {
+		for _, wm := range []string{"vertical-rl", "vertical-lr"} {
+			for _, c := range []struct {
+				line   string
+				x0, x1 int
+			}{{"underline", 83, 88}, {"line-through", 116, 121}} {
+				img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+					`<div style="position:absolute;left:100px;top:10px;writing-mode:`+wm+`;text-orientation:`+orientation+`;font:40px/40px Ahem;color:white;`+
+					`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
+				first, last := darkColumnSpan(img, 60)
+				if first != c.x0 || last != c.x1 {
+					t.Errorf("%s %s %s: dark x %d-%d, want Chrome's %d-%d", orientation, wm, c.line, first, last, c.x0, c.x1)
+				}
 			}
 		}
 	}
@@ -263,10 +268,14 @@ func assertWaveInk(t *testing.T, img image.Image, x, y int, why string) {
 // the overline's geometry from the em box's top, keeping its
 // text-underline-offset, and the overline swaps to the under side without
 // one (flip_underline_and_overline_, :224-235; ComputeUnderlineLineData /
-// ComputeOverlineLineData, :335-377). Measured in Chrome 2026-11-13 on a
-// 40px Ahem column at x 100-140 with 6px lines and a 10px offset.
-func TestDecorationLine_UprightUnderlinePosition(t *testing.T) {
-	for _, c := range []struct {
+// ComputeOverlineLineData, :335-377). Mixed orientation, whose Latin runs
+// rotate, keeps the central baseline and paints the same line-relative
+// geometry under the same rotation (TextFragmentPainter::Paint,
+// core/paint/text_fragment_painter.cc:369-379), so Chrome draws every case
+// identically there. Measured in Chrome 2026-11-13 on a 40px Ahem column at
+// x 100-140 with 6px lines and a 10px offset.
+func TestDecorationLine_VerticalUnderlinePosition(t *testing.T) {
+	cases := []struct {
 		name, wm, lang, line, pos string
 		x0, x1                    int
 	}{
@@ -279,13 +288,16 @@ func TestDecorationLine_UprightUnderlinePosition(t *testing.T) {
 		{"zh stays under", "vertical-rl", "zh", "underline", "auto", 83, 88},
 		{"vertical-lr left stays under", "vertical-lr", "en", "underline", "left", 83, 88},
 		{"vertical-lr right goes over", "vertical-lr", "en", "underline", "right", 151, 156},
-	} {
-		img := render.RenderPage(t, `<!DOCTYPE html><html lang="`+c.lang+`"><body style="margin:0">`+
-			`<div style="position:absolute;left:100px;top:10px;writing-mode:`+c.wm+`;text-orientation:upright;font:40px/40px Ahem;color:white;`+
-			`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-underline-position:`+c.pos+`;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
-		first, last := darkColumnSpan(img, 60)
-		if first != c.x0 || last != c.x1 {
-			t.Errorf("%s: dark x %d-%d, want Chrome's %d-%d", c.name, first, last, c.x0, c.x1)
+	}
+	for _, orientation := range []string{"upright", "mixed"} {
+		for _, c := range cases {
+			img := render.RenderPage(t, `<!DOCTYPE html><html lang="`+c.lang+`"><body style="margin:0">`+
+				`<div style="position:absolute;left:100px;top:10px;writing-mode:`+c.wm+`;text-orientation:`+orientation+`;font:40px/40px Ahem;color:white;`+
+				`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-underline-position:`+c.pos+`;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
+			first, last := darkColumnSpan(img, 60)
+			if first != c.x0 || last != c.x1 {
+				t.Errorf("%s %s: dark x %d-%d, want Chrome's %d-%d", orientation, c.name, first, last, c.x0, c.x1)
+			}
 		}
 	}
 }
@@ -304,4 +316,29 @@ func TestDecorationLine_SkipInkDilatesByThickness(t *testing.T) {
 	if first != 56 || last != 83 {
 		t.Errorf("underline kept x %d-%d, want Chrome's 56-83", first, last)
 	}
+}
+
+// A mixed-orientation run's rotated glyphs skip ink, an upright run's don't:
+// Blink computes intercepts only for blobs that aren't upright
+// (InterceptsFromBlobs, platform/fonts/font.cc:161-162 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). With a -15px offset a 6px
+// underline crosses "X X"'s two 40px Ahem glyphs (y 10-50, 90-130), so on
+// the mixed run only the stretch beside the space paints. Measured in
+// Chrome 2026-11-13: x 109-114 from y 56 to 83 when mixed, unbroken when
+// upright.
+func TestDecorationLine_MixedVerticalSkipsInk(t *testing.T) {
+	page := func(orientation string) string {
+		return `<!DOCTYPE html><html lang="en"><body style="margin:0">` +
+			`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:` + orientation + `;font:40px/40px Ahem;color:transparent;` +
+			`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:-15px">X X</div></body></html>`
+	}
+	mixed := render.RenderPage(t, page("mixed"), 250, 160)
+	assertPixel(t, mixed, 111, 30, white, "mixed: skipped across the first glyph")
+	assertPixel(t, mixed, 111, 55, white, "mixed: the skip ends past y 55")
+	assertPixel(t, mixed, 111, 56, black, "mixed: the line beside the space starts at y 56")
+	assertPixel(t, mixed, 111, 83, black, "mixed: and runs to y 83")
+	assertPixel(t, mixed, 111, 84, white, "mixed: skipped again from y 84")
+	upright := render.RenderPage(t, page("upright"), 250, 160)
+	assertPixel(t, upright, 111, 30, black, "upright: no skip across the glyph")
+	assertPixel(t, upright, 111, 70, black, "upright: beside the space too")
 }
