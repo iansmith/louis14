@@ -33,21 +33,18 @@ func parseFontFeatureValuesRule(ruleStr string) *FontFeatureValuesRule {
 	}
 	// Strip the at-rule keyword.
 	body := strings.TrimSpace(trimmed[len("@font-feature-values"):])
-	// Split prelude (family list) from body block on the FIRST `{`.
-	braceIdx := strings.IndexByte(body, '{')
-	if braceIdx < 0 {
-		return nil
-	}
-	prelude := strings.TrimSpace(body[:braceIdx])
-	// Locate matching `}` for the outer block (handling nested at-rules).
-	inner := body[braceIdx+1:]
-	innerBody, ok := captureBalancedBlock(inner)
+	// Split the prelude (family list) from the block at the first `{`
+	// outside strings (blockBounds).
+	openPos, closePos, ok := blockBounds(body)
 	if !ok {
 		return nil
 	}
+	// Untrimmed: a trailing bad string's newline must survive.
+	prelude := body[:openPos]
+	innerBody := body[openPos+1 : closePos]
 
-	families := splitFamilyList(prelude)
-	if len(families) == 0 {
+	families, ok := splitFamilyList(prelude)
+	if !ok || len(families) == 0 {
 		return nil
 	}
 
@@ -142,8 +139,12 @@ func captureBalancedBlock(s string) (string, bool) {
 }
 
 // splitFamilyList parses the `<family-name>#` prelude of @font-feature-values
-// per CSS Fonts 4 §11.4. Comma-separated, may include quoted strings.
-func splitFamilyList(s string) []string {
+// per CSS Fonts 4 §11.4. Comma-separated; a quoted family is its string
+// token's unescaped value (ConsumeFamilyName,
+// core/css/properties/css_parsing_utils.cc:6406-6419 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A bad string is no family
+// name, so it invalidates the list (ok false).
+func splitFamilyList(s string) (families []string, ok bool) {
 	var out []string
 	var cur strings.Builder
 	i := 0
@@ -151,16 +152,12 @@ func splitFamilyList(s string) []string {
 		c := s[i]
 		switch c {
 		case '"', '\'':
-			// Quoted string — copy until matching quote.
-			quote := c
-			i++
-			for i < len(s) && s[i] != quote {
-				cur.WriteByte(s[i])
-				i++
+			value, n, closed := consumeStringToken(s[i+1:], c)
+			if !closed {
+				return nil, false
 			}
-			if i < len(s) {
-				i++ // skip closing quote
-			}
+			cur.WriteString(value)
+			i += 1 + n
 		case ',':
 			name := strings.TrimSpace(cur.String())
 			if name != "" {
@@ -176,7 +173,7 @@ func splitFamilyList(s string) []string {
 	if name := strings.TrimSpace(cur.String()); name != "" {
 		out = append(out, name)
 	}
-	return out
+	return out, true
 }
 
 // parseFeatureValueDeclarations parses the inner body of a feature-value

@@ -93,9 +93,12 @@ func (s *StyleSheetContents) bindDeclarations(sheet *Stylesheet) {
 		if i < 0 || i >= len(s.rules) || s.rules[i].decls != nil || strings.HasPrefix(sheet.RuleTexts[i], "@") {
 			continue
 		}
-		selectors, _, _ := strings.Cut(sheet.RuleTexts[i], "{")
+		openPos, _, ok := blockBounds(sheet.RuleTexts[i])
+		if !ok {
+			continue
+		}
 		flat := sheet.Rules[k].Selector
-		for _, sel := range splitSelectorGroup(strings.TrimSpace(selectors)) {
+		for _, sel := range splitSelectorGroup(strings.TrimSpace(sheet.RuleTexts[i][:openPos])) {
 			if own := ParseSelector(strings.TrimSpace(sel)); own.Raw == flat.Raw && own.PseudoElement == flat.PseudoElement {
 				s.rules[i].decls = sheet.Rules[k].DeclarationResult
 				break
@@ -215,11 +218,13 @@ func isValidTopLevelRule(text string) bool {
 		}
 		return true
 	}
-	selectors, _, ok := strings.Cut(text, "{")
-	if !ok || !strings.HasSuffix(text, "}") || strings.TrimSpace(selectors) == "" {
+	// The block opens at the first `{` outside strings and `(` / `[`
+	// blocks (blockBounds).
+	openPos, _, ok := blockBounds(text)
+	if !ok || !strings.HasSuffix(text, "}") || strings.TrimSpace(text[:openPos]) == "" {
 		return false
 	}
-	for _, sel := range splitSelectorGroup(strings.TrimSpace(selectors)) {
+	for _, sel := range splitSelectorGroup(strings.TrimSpace(text[:openPos])) {
 		if sel = strings.TrimSpace(sel); sel == "" || !isValidSelector(sel) {
 			return false
 		}
@@ -287,9 +292,10 @@ func (s *StyleSheetContents) currentRuleTexts() []string {
 		if !r.changed {
 			continue
 		}
-		if d := r.decls; d != nil && strings.Count(texts[i], "{") == 1 {
-			selector, _, _ := strings.Cut(texts[i], "{")
-			texts[i] = strings.TrimSpace(selector) + " { " + d.cssText() + " }"
+		// A rule with no nested block serializes from its declarations.
+		openPos, closePos, ok := blockBounds(texts[i])
+		if d := r.decls; d != nil && ok && indexTopLevelBrace(texts[i][openPos+1:closePos]) < 0 {
+			texts[i] = strings.TrimSpace(texts[i][:openPos]) + " { " + d.cssText() + " }"
 		}
 	}
 	return texts

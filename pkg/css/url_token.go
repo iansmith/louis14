@@ -113,6 +113,15 @@ func consumeURLToken(s string) (value string, n int, ok bool) {
 
 // stringEnd is how a string token ends (CSSTokenizer::ConsumeStringTokenUntil,
 // css_tokenizer.cc:393 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+//
+// End of input closes a string as a valid <string-token> (:411-419), but
+// the value validators (hasBalancedBrackets, isValidDeclarationValue,
+// isValidDeclarationValueTokens) reject stringEOF too. They see a
+// substring (a declaration value, a var() fallback, often trimmed) whose
+// end is not the input's, and a trailing bad string trimmed of its newline
+// would look closed (css-variables variable-reference-32). The paths that
+// reach them close a string at true end of input first
+// (closeUnmatchedTokens).
 type stringEnd uint8
 
 const (

@@ -2,6 +2,7 @@ package css
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -119,5 +120,43 @@ func TestLookupFontFeatureValues_FamilyMismatch(t *testing.T) {
 	merged := LookupFontFeatureValues(rules, "fwf")
 	if len(merged.Styleset) != 0 {
 		t.Errorf("styleset = %v, want empty", merged.Styleset)
+	}
+}
+
+// An @font-feature-values prelude is a family-name list (ConsumeFontFamily,
+// CSSParserImpl::ConsumeFontFeatureValuesRule, css_parser_impl.cc:1738-1750
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a quoted family is its
+// string token's unescaped value (ConsumeFamilyName,
+// core/css/properties/css_parsing_utils.cc:6406-6419), and a `{` inside it
+// does not open the rule's block.
+func TestFontFeatureValuesFamilyStrings(t *testing.T) {
+	for _, tc := range []struct {
+		name, css string
+		want      []string
+	}{
+		{"brace in string", `@font-feature-values "Foo{" { @swash { fancy: 1 } }`, []string{"Foo{"}},
+		{"close brace in string", `@font-feature-values "Foo}" { @swash { fancy: 1 } }`, []string{"Foo}"}},
+		{"escaped quote", `@font-feature-values "Fo\"o", Bar { @swash { fancy: 1 } }`, []string{`Fo"o`, "Bar"}},
+		{"escaped brace", `@font-feature-values "Foo\{" { @swash { fancy: 1 } }`, []string{"Foo{"}},
+		{"hex escape", `@font-feature-values "\66oo" { @swash { fancy: 1 } }`, []string{"foo"}},
+		{"comma in string", `@font-feature-values 'a,b', "c" { @swash { fancy: 1 } }`, []string{"a,b", "c"}},
+		// A bad string is no family name, so the rule is invalid.
+		{"bad string", "@font-feature-values \"Foo,Bar\n { @swash { fancy: 1 } }", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ss := mustParseSheet(t, tc.css, nil)
+			if tc.want == nil {
+				if len(ss.FontFeatureValues) != 0 {
+					t.Errorf("@font-feature-values rules = %+v, want none", ss.FontFeatureValues)
+				}
+				return
+			}
+			if len(ss.FontFeatureValues) != 1 {
+				t.Fatalf("%d @font-feature-values rules, want 1", len(ss.FontFeatureValues))
+			}
+			if got := ss.FontFeatureValues[0].Families; !slices.Equal(got, tc.want) {
+				t.Errorf("families = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
