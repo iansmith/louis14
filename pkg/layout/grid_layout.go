@@ -278,11 +278,9 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 
 	// The shared baselines from the items' final layout
 	// (CompleteFinalBaselineAlignment, grid_layout_algorithm.cc:1334-1340 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), read in the grid's font
-	// baseline (ComputedStyle::GetFontBaseline).
-	centralBaseline := wdm.UsesCentralBaselineWithStyle(gla.style)
-	colBaselines := computeGridItemBaselines(items, true, numCols, centralBaseline)
-	rowBaselines := computeGridItemBaselines(items, false, numRows, centralBaseline)
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	colBaselines := gla.computeGridItemBaselines(items, true, numCols)
+	rowBaselines := gla.computeGridItemBaselines(items, false, numRows)
 
 	for _, item := range items {
 		itemInline := gla.spannedSize(colSizes, item.colStart, item.colEnd, colGap)

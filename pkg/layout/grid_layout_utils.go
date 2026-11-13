@@ -98,19 +98,76 @@ func (f gridBaselineFragment) baseline(forColumns, isLast bool) (float64, bool) 
 func (f gridBaselineFragment) logicalBaseline(forColumns, centralBaseline, isLast bool) float64 {
 	b, ok := f.baseline(forColumns, isLast)
 	if !ok {
-		switch {
-		case centralBaseline:
-			b = f.blockSize() / 2
-		case f.wd.IsFlippedLines():
-			b = 0
-		default:
-			b = f.blockSize()
-		}
+		return f.synthesizedLogicalBaseline(f.blockSize(), centralBaseline, isLast)
 	}
 	if isLast {
 		return f.blockSize() - b
 	}
 	return b
+}
+
+// synthesizedLogicalBaseline is the baseline synthesized for a border box
+// blockSize long in the baseline writing direction: its block-end edge
+// (block-start in flipped lines) for an alphabetic font baseline, its
+// center for a central one, measured from the block-end edge for a last
+// baseline. Mirrors GetSynthesizedLogicalBaseline
+// (grid_layout_utils.cc:1088-1100) with LogicalBoxFragment::
+// SynthesizedBaseline (logical_box_fragment.h:33-40 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (f gridBaselineFragment) synthesizedLogicalBaseline(blockSize float64, centralBaseline, isLast bool) float64 {
+	b := blockSize
+	switch {
+	case centralBaseline:
+		b = blockSize / 2
+	case f.wd.IsFlippedLines():
+		b = 0
+	}
+	if isLast {
+		return blockSize - b
+	}
+	return b
+}
+
+// extraMarginForBaseline is the margin an item's baseline sits behind in
+// its baseline writing direction: its block-start margin, or block-end for
+// a last baseline. Mirrors GetExtraMarginForBaseline
+// (grid_layout_algorithm.cc:540-559 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14 has no subgrid extra
+// margins.
+func (item *gridItem) extraMarginForBaseline(forColumns bool) float64 {
+	margins := ToLogicalEdges(ToPhysicalEdges(item.margins, item.wdm), item.baselineFragment(forColumns).wd)
+	if item.axis(forColumns).alignment == AxisEdgeLastBaseline {
+		return margins.BlockEnd
+	}
+	return margins.BlockStart
+}
+
+// baselineShim is how far a baseline-aligned item with baseline itemBaseline sits
+// below its shared baseline, its baseline margin excluded: 0 when the
+// shared baseline is unset or the item is not baseline-aligned. Mirrors
+// CalculateBaselineShim (grid_layout_algorithm.cc:606-623 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *gridTrackBaselines) baselineShim(item *gridItem, forColumns bool, itemBaseline float64) float64 {
+	if b == nil || !item.axis(forColumns).isBaselineAligned() {
+		return 0
+	}
+	trackBaseline := b.trackBaseline(item, forColumns)
+	if math.IsInf(trackBaseline, -1) {
+		return 0
+	}
+	return trackBaseline - itemBaseline - item.extraMarginForBaseline(forColumns)
+}
+
+// central reports whether synthesized baselines use the central font
+// baseline; false (alphabetic) when the axis has no shared baselines.
+func (b *gridTrackBaselines) central() bool {
+	return b != nil && b.centralBaseline
+}
+
+// computeGridItemBaselines is the grid's shared baselines in one axis, in
+// its font baseline (ComputedStyle::GetFontBaseline).
+func (gla *GridLayoutAlgorithm) computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int) *gridTrackBaselines {
+	return computeGridItemBaselines(items, forColumns, trackCount, gla.space.WritingDirection.UsesCentralBaselineWithStyle(gla.style))
 }
 
 // computeGridItemBaselines is one axis's shared baselines from the items'
@@ -134,12 +191,7 @@ func computeGridItemBaselines(items []*gridItem, forColumns bool, trackCount int
 		}
 		f := item.baselineFragment(forColumns)
 		isLast := a.alignment == AxisEdgeLastBaseline
-		margins := ToLogicalEdges(ToPhysicalEdges(item.margins, item.wdm), f.wd)
-		extraMargin := margins.BlockStart
-		if isLast {
-			extraMargin = margins.BlockEnd
-		}
-		b.setTrackBaseline(item, forColumns, extraMargin+f.logicalBaseline(forColumns, centralBaseline, isLast))
+		b.setTrackBaseline(item, forColumns, item.extraMarginForBaseline(forColumns)+f.logicalBaseline(forColumns, centralBaseline, isLast))
 	}
 	return b
 }
