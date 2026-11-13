@@ -45,3 +45,26 @@ func TestLineBreakerAutoWrapPerStyle(t *testing.T) {
 		}
 	})
 }
+
+// A line that overflows the opportunity beside floats moves to the next
+// opportunity, below them, only when the container wraps
+// (InlineLayoutAlgorithm::Layout's check of Node().Style().ShouldWrapLine(),
+// inline/inline_layout_algorithm.cc:1330-1336 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a nowrap or pre line stays
+// beside them and overflows.
+func TestNoWrapLineStaysBesideFloats(t *testing.T) {
+	cases := []struct{ name, body string }{
+		// css-ui/text-overflow-006: a float leading the pre line.
+		{"leading float", `<div style="white-space:pre;width:10ch;font:10px/1 Ahem"><span style="float:right;width:4ch;height:2ch"></span><span id="n">PASS</span> FAIL</div>`},
+		// A float from before the block narrows the line.
+		{"earlier float", `<div style="float:left;width:4ch;height:2ch;font:10px/1 Ahem"></div><div style="white-space:nowrap;width:10ch;font:10px/1 Ahem"><span id="n">PASS</span> FAIL</div>`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			n := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+c.body)["n"]
+			if len(n) != 1 || n[0].y != 0 {
+				t.Errorf("#n %+v; want it on the first line, y 0", n)
+			}
+		})
+	}
+}
