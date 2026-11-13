@@ -2492,6 +2492,13 @@ func (r *Renderer) paintSelfDecorations(layer *PaintLayer) {
 		r.paintFieldsetBoxDecorationBackground(layer)
 	} else if !layer.EmptyCellHide {
 		rect := borderBoxRect(layer.Box)
+		// A table paints its background and border on its grid rect: the
+		// table box without its captions (TablePainter::
+		// PaintBoxDecorationBackground, table_painters.cc:421-435 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if g := layer.Box.TableGridRect; g != nil {
+			rect = rectXYWH(layer.Box.X+g.Offset.X, layer.Box.Y+g.Offset.Y, g.Size.Width, g.Size.Height)
+		}
 		clipped := r.clipTableCellBackground(layer, rect)
 		if len(layer.BoxShadows) > 0 {
 			r.drawOutsetBoxShadows(layer, rect)

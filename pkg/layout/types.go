@@ -165,6 +165,8 @@ type Box struct {
 
 	// HasCollapsedBorders is forwarded from PhysicalFragment.HasCollapsedBorders.
 	HasCollapsedBorders bool
+	// TableGridRect is forwarded from PhysicalFragment.TableGridRect.
+	TableGridRect *PhysicalRect
 
 	// TableCollapsedBorders / TableCollapsedBordersGeometry are a collapsed
 	// table's resolved borders and their grid lines, forwarded from

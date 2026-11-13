@@ -772,6 +772,15 @@ type PhysicalFragment struct {
 	// box_decoration_data.h:38-40 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	HasCollapsedBorders bool
 
+	// TableGridRect is set on a table's fragment: the rect, in the
+	// fragment's border-box coordinates, of the table box proper (its
+	// border, padding and grid, without its captions), where the table's
+	// background and border paint. Mirrors PhysicalBoxFragment::
+	// TableGridRect (table_layout_algorithm.cc:1657-1676; TablePainter::
+	// PaintBoxDecorationBackground, table_painters.cc:421-435 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	TableGridRect *PhysicalRect
+
 	// TableCollapsedBorders and TableCollapsedBordersGeometry are set on a
 	// border-collapse:collapse table's fragment: the resolved edge grid and
 	// the grid lines it paints along. Mirrors PhysicalBoxFragment::
