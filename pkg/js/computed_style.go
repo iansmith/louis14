@@ -134,6 +134,7 @@ var cssValueFromComputedStyle = map[string]func(*css.Style) string{
 // longhands in cssValueFromComputedStyle serialize the computed style;
 // everything else comes from the cascade Properties map.
 func (c *computedStyleAccessor) resolve(prop string) string {
+	prop = css.ResolveCSSPropertyID(prop) // CSSComputedStyleDeclaration::getPropertyValue's CssPropertyID
 	if _, isLayoutDep := layoutUsedValueProps[prop]; isLayoutDep {
 		if box := c.box(); box != nil {
 			return usedValueFromBox(box, prop)

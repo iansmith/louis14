@@ -3531,7 +3531,7 @@ func isSupportedCSSProperty(property string) bool {
 	if strings.HasPrefix(p, "--") {
 		return true
 	}
-	if _, ok := supportedCSSProperties[resolvePropertyAlias(p)]; ok {
+	if _, ok := supportedCSSProperties[ResolveCSSPropertyID(p)]; ok {
 		return true
 	}
 	return false
@@ -5093,7 +5093,7 @@ func (d *DeclarationResult) Set(property, value string, important bool) {
 // nothing, when value is not one valid value of property: a `;` in it would
 // start another declaration, so it rejects the value.
 func (d *DeclarationResult) SetDeclaration(property, value string) bool {
-	property = resolvePropertyAlias(property)
+	property = ResolveCSSPropertyID(property)
 	value = StripComments(value)
 	// One value: no `;` starting another declaration, and no priority
 	// (that comes only through setProperty's third argument).
@@ -5149,7 +5149,7 @@ func declarationKeys(property string) []string {
 // RemoveDeclaration drops what a declaration of property sets: property
 // itself (a var() shorthand stored whole), and its declarationKeys.
 func (d *DeclarationResult) RemoveDeclaration(property string) {
-	property = resolvePropertyAlias(property)
+	property = ResolveCSSPropertyID(property)
 	d.removeKeys(property, declarationKeys(property))
 }
 
@@ -5163,7 +5163,7 @@ func (d *DeclarationResult) removeKeys(property string, keys []string) {
 // longhand's under its storage key, or a shorthand's serialized from its
 // longhands (serializeShorthand).
 func (d *DeclarationResult) Value(property string) (string, bool) {
-	property = resolvePropertyAlias(property)
+	property = ResolveCSSPropertyID(property)
 	if v, ok := d.Declarations[storageKey(property)]; ok {
 		if _, _, pending := parsePendingSubstitution(v); pending {
 			// A pending-substitution value serializes as empty
@@ -5246,7 +5246,7 @@ func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult
 		// An alias is the property it is an alias for, resolved before the
 		// value is unescaped, so `-webkit-filter` keeps url() escapes as
 		// `filter` does.
-		property := resolvePropertyAlias(unescapeCSS(rawProperty))
+		property := ResolveCSSPropertyID(unescapeCSS(rawProperty))
 		// IMPORTANT: Don't unescape the quotes property value here, as it needs special handling
 		// in parseQuotes (layout.go) to preserve the quote string structure
 		var value string
