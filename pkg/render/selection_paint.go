@@ -631,7 +631,7 @@ func (r *Renderer) computeSelectionSegments(box *layout.Box, text string) []sele
 	if spans := targetTextOverlapsForTextNode(r.targetTextRanges, textNode, fragStart, fragEnd); len(spans) > 0 {
 		layers = append(layers, highlightLayer{id: highlightLayerName{kind: "target-text"}, spans: spans})
 	}
-	rtl := box.BidiLevel%2 == 1
+	rtl := layout.DirectionFromLevel(box.BidiLevel) == layout.DirectionRTL
 	breakSelected := false
 	if r.selectionRange != nil {
 		if selStart, selEnd, ok := selectionOverlapForTextNode(r.selectionRange, textNode, fragStart, fragEnd); ok {
@@ -785,7 +785,7 @@ func isBeforeSoftLineBreak(textBox, line *layout.Box) bool {
 			leaf = leaf.Children[len(leaf.Children)-1]
 		}
 	}
-	return leaf == textBox && lineRTL == (textBox.BidiLevel%2 == 1)
+	return leaf == textBox && lineRTL == (layout.DirectionFromLevel(textBox.BidiLevel) == layout.DirectionRTL)
 }
 
 // isLastLineInBlock reports whether no line box follows line among its

@@ -73,6 +73,9 @@ type SelectorPart struct {
 }
 
 // AttributeSelector represents an attribute selector like [type="text"]
+// AttributeSelector is one `[...]` of a compound. The zero value (no Name)
+// stands for an invalid one (a bad-string value, an unclosed `[`): no
+// element has an attribute with no name, so it matches nothing.
 type AttributeSelector struct {
 	Name     string // Attribute name
 	Operator string // =, ^=, $=, *=, ~=, |=
@@ -3052,7 +3055,9 @@ func indexTopLevel(s string, target byte) int {
 		}
 		switch c {
 		case '\\':
-			i++
+			if n := escapeLen(s, i); n > 0 {
+				i += n - 1
+			}
 		case '"', '\'':
 			i, _ = stringTokenEnd(s, i)
 		case '(', '[', '{':
@@ -4076,7 +4081,13 @@ func tokenizeSelector(s string) []string {
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
 
-		if ch == '(' {
+		if n := escapeLen(s, i); n > 0 {
+			// An escape is part of its ident: an escaped space, `>`, `+`
+			// or `~` is no combinator, and a hex escape's trailing space
+			// is the escape's own.
+			current += s[i : i+n]
+			i += n - 1
+		} else if ch == '(' {
 			parenDepth++
 			current += string(ch)
 		} else if ch == ')' {
@@ -4126,6 +4137,32 @@ func isCompoundDelimiter(c byte) bool {
 	return c == '.' || c == '#' || c == '[' || c == ':' || c == '&'
 }
 
+// escapeLen returns the length of the escape at s[i] (the backslash and
+// what it escapes), or 0 when s[i] starts none: a `\` before a newline or
+// at the end is no escape (TwoCharsAreValidEscape,
+// core/css/parser/css_tokenizer.cc:214-215 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func escapeLen(s string, i int) int {
+	if s[i] != '\\' || i+1 >= len(s) || isCSSNewline(s[i+1]) {
+		return 0
+	}
+	_, n := consumeEscape(s[i+1:])
+	return 1 + n
+}
+
+// selectorIdentEnd returns the end of the type, class or id name that
+// starts at s[i]: the next compound delimiter outside an escape.
+func selectorIdentEnd(s string, i int) int {
+	for i < len(s) && !isCompoundDelimiter(s[i]) {
+		if n := escapeLen(s, i); n > 0 {
+			i += n
+			continue
+		}
+		i++
+	}
+	return i
+}
+
 func parseSelectorPart(s string) SelectorPart {
 	part := SelectorPart{
 		Classes:       make([]string, 0),
@@ -4133,7 +4170,7 @@ func parseSelectorPart(s string) SelectorPart {
 		PseudoClasses: make([]string, 0),
 	}
 
-	s = strings.TrimSpace(s)
+	s = trimCSSSpace(s)
 	if s == "" {
 		return part
 	}
@@ -4144,11 +4181,9 @@ func parseSelectorPart(s string) SelectorPart {
 	// Check for element (must come first)
 	if !isCompoundDelimiter(s[i]) {
 		// Read element name until we hit a special character
-		j := i
-		for j < len(s) && !isCompoundDelimiter(s[j]) {
-			j++
-		}
-		part.Element = strings.ToLower(s[i:j])
+		j := selectorIdentEnd(s, i)
+		raw := s[i:j]
+		local := raw
 		// Namespace-prefixed type selectors (CSS Selectors 4 §6.1). An
 		// unprefixed type selector takes the sheet's default namespace,
 		// applied after parsing by Selector.resolveNamespaces; recording
@@ -4158,15 +4193,18 @@ func parseSelectorPart(s string) SelectorPart {
 		// (louis14 keeps no @namespace prefix map) all match `tag` in any
 		// namespace, and `*|*` matches any element (LOU-437 decisions
 		// L4/L5).
-		if idx := strings.Index(part.Element, "|"); idx >= 0 {
+		// The bar is a namespace bar only unescaped (a delimiter token,
+		// CSSSelectorParser::ConsumeName, css_selector_parser.cc:1454-1497
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): `a\|b` is the type
+		// `a|b`.
+		if bar := indexTopLevel(raw, '|'); bar >= 0 {
 			part.hasNamespacePrefix = true
-			local := part.Element[idx+1:]
-			if local == "" || local == "*" {
-				part.Element = "*"
-			} else {
-				part.Element = local
-			}
+			local = raw[bar+1:]
 		}
+		if local == "" {
+			local = "*"
+		}
+		part.Element = strings.ToLower(unescapeName(local))
 		i = j
 	}
 
@@ -4184,20 +4222,14 @@ func parseSelectorPart(s string) SelectorPart {
 		} else if s[i] == '.' {
 			// Class
 			i++
-			j := i
-			for j < len(s) && !isCompoundDelimiter(s[j]) {
-				j++
-			}
-			part.Classes = append(part.Classes, s[i:j])
+			j := selectorIdentEnd(s, i)
+			part.Classes = append(part.Classes, unescapeName(s[i:j]))
 			i = j
 		} else if s[i] == '#' {
 			// ID
 			i++
-			j := i
-			for j < len(s) && !isCompoundDelimiter(s[j]) {
-				j++
-			}
-			part.ID = s[i:j]
+			j := selectorIdentEnd(s, i)
+			part.ID = unescapeName(s[i:j])
 			i = j
 		} else if s[i] == ':' {
 			// Pseudo-class (skip :: pseudo-elements, handled separately)
@@ -4209,6 +4241,10 @@ func parseSelectorPart(s string) SelectorPart {
 			j := i
 			depth := 0
 			for j < len(s) {
+				if n := escapeLen(s, j); n > 0 {
+					j += n
+					continue
+				}
 				if s[j] == '(' {
 					depth++
 				} else if s[j] == ')' {
@@ -4227,19 +4263,16 @@ func parseSelectorPart(s string) SelectorPart {
 			}
 			i = j
 		} else if s[i] == '[' {
-			// Attribute
-			j := i + 1
-			for j < len(s) && s[j] != ']' {
-				j++
-			}
-			if j < len(s) {
-				attrStr := s[i+1 : j]
-				attr := parseAttributeSelector(attrStr)
-				part.Attributes = append(part.Attributes, attr)
-				i = j + 1
-			} else {
+			// Attribute: its `]` is the first outside strings and escapes.
+			n := indexTopLevel(s[i+1:], ']')
+			if n < 0 {
+				// An unclosed `[` makes the selector invalid: it matches
+				// nothing (an attribute with no name matches no element).
+				part.Attributes = append(part.Attributes, AttributeSelector{})
 				break
 			}
+			part.Attributes = append(part.Attributes, parseAttributeSelector(s[i+1:i+1+n]))
+			i += n + 2
 		} else {
 			i++
 		}
@@ -4254,8 +4287,9 @@ func parseSelectorPart(s string) SelectorPart {
 // prefixed with a namespace: `ns|attr` selects attributes in namespace `ns`,
 // `*|attr` selects any namespace, and `|attr` selects the no-namespace form
 // (equivalent to a bare `attr` in HTML, where all author-supplied attributes
-// are in no namespace by default). Mirrors Blink core/css/parser/
-// css_selector_parser.cc::ConsumeAttrName @ 4883d11fef4a.
+// are in no namespace by default). Mirrors Blink's
+// CSSSelectorParser::ConsumeAttribute (core/css/parser/
+// css_selector_parser.cc:1530-1584 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 //
 // Whitespace IS permitted around the operator and between brackets and the
 // attribute name (CSS Selectors 4 §6.1), but NOT inside the namespace prefix
@@ -4263,34 +4297,92 @@ func parseSelectorPart(s string) SelectorPart {
 // whitespace; this function handles operator-adjacent whitespace via
 // strings.TrimSpace.
 func parseAttributeSelector(s string) AttributeSelector {
-	// `|=` is a value-match operator (lang-hyphen). Distinguish it from the
-	// namespace prefix `|attr` by requiring the `|` to be followed by `=`.
-	// Look for ` |=` or `=` first; otherwise `|` at the start of the name
-	// is the no-namespace prefix.
-	operators := []string{"^=", "$=", "*=", "~=", "|=", "="}
-
-	for _, op := range operators {
-		if idx := strings.Index(s, op); idx != -1 {
-			name := strings.TrimSpace(s[:idx])
-			value := strings.TrimSpace(s[idx+len(op):])
-			// Remove quotes from value
-			value = strings.Trim(value, `"'`)
-			// Handle CSS escape sequences (e.g., second\ two → second two)
-			value = strings.ReplaceAll(value, `\ `, " ")
-			return AttributeSelector{
-				Name:     normalizeAttrName(name),
-				Operator: op,
-				Value:    value,
-			}
+	// The operator ends at the first `=` outside strings and escapes; a
+	// `^ $ * ~ |` right before it is part of it (`|=` is lang-hyphen, a
+	// `|` elsewhere is the namespace bar).
+	eq := indexTopLevel(s, '=')
+	if eq < 0 {
+		// No operator, just attribute name (existence check)
+		return AttributeSelector{
+			Name:     normalizeAttrName(trimCSSSpace(s)),
+			Operator: "",
+			Value:    "",
 		}
 	}
-
-	// No operator, just attribute name (existence check)
-	return AttributeSelector{
-		Name:     normalizeAttrName(strings.TrimSpace(s)),
-		Operator: "",
-		Value:    "",
+	op, nameEnd := "=", eq
+	if eq > 0 && !escapeEndsAt(s, eq) && strings.IndexByte("^$*~|", s[eq-1]) >= 0 {
+		op, nameEnd = s[eq-1:eq+1], eq-1
 	}
+	value, ok := attributeSelectorValue(s[eq+1:])
+	if !ok {
+		// A bad string is no value: ConsumeAttribute rejects the selector
+		// (css_selector_parser.cc:1567-1571 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An attribute with no
+		// name matches no element.
+		return AttributeSelector{}
+	}
+	return AttributeSelector{
+		Name:     normalizeAttrName(trimCSSSpace(s[:nameEnd])),
+		Operator: op,
+		Value:    value,
+	}
+}
+
+// trimCSSSpace trims CSS whitespace from both ends of s, keeping a
+// trailing space that an escape covers (`a\ ` is the ident `a `).
+func trimCSSSpace(s string) string {
+	start := 0
+	for start < len(s) && isCSSWhitespace(s[start]) {
+		start++
+	}
+	end := start
+	for i := start; i < len(s); {
+		if n := escapeLen(s, i); n > 0 {
+			i += n
+			end = i
+			continue
+		}
+		if !isCSSWhitespace(s[i]) {
+			end = i + 1
+		}
+		i++
+	}
+	return s[start:end]
+}
+
+// escapeEndsAt reports whether an escape in s ends right before s[end], so
+// the byte before end is escaped, not syntax.
+func escapeEndsAt(s string, end int) bool {
+	for k := 0; k < end; {
+		if n := escapeLen(s, k); n > 0 {
+			if k+n == end {
+				return true
+			}
+			k += n
+			continue
+		}
+		k++
+	}
+	return false
+}
+
+// attributeSelectorValue is the value an attribute selector's value token
+// spells: a string token's value or an ident's name, escapes resolved;
+// false for a bad string
+// (CSSSelectorParser::ConsumeAttribute takes the kStringToken or
+// kIdentToken value, core/css/parser/css_selector_parser.cc:1530-1584 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func attributeSelectorValue(v string) (string, bool) {
+	for v != "" && isCSSWhitespace(v[0]) {
+		v = v[1:]
+	}
+	if v != "" && (v[0] == '"' || v[0] == '\'') {
+		// The string token is read untrimmed: a newline before `]`
+		// still makes it bad.
+		value, _, ok := consumeStringToken(v[1:], v[0])
+		return value, ok
+	}
+	return unescapeName(trimCSSSpace(v)), true
 }
 
 // normalizeAttrName handles the namespace prefix on attribute selectors.
@@ -4307,28 +4399,29 @@ func parseAttributeSelector(s string) AttributeSelector {
 // to `|` and return the name unchanged so it won't match anything (the
 // invalid selector is silently skipped, mirroring Blink's parser-reject).
 //
-// Mirrors Blink core/css/parser/css_selector_parser.cc::ConsumeAttrName
-// @ 4883d11fef4a.
+// Mirrors Blink's CSSSelectorParser::ConsumeAttribute (core/css/parser/
+// css_selector_parser.cc:1530-1584 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func normalizeAttrName(name string) string {
-	idx := strings.Index(name, "|")
+	// The bar is a namespace bar only unescaped: `[\|b]` names `|b`.
+	idx := indexTopLevel(name, '|')
 	if idx < 0 {
-		return name
+		return unescapeName(name)
 	}
 	// Whitespace adjacent to the bar makes the selector invalid.
 	if idx > 0 && name[idx-1] == ' ' {
-		return name
+		return unescapeName(name)
 	}
 	if idx+1 < len(name) && name[idx+1] == ' ' {
-		return name
+		return unescapeName(name)
 	}
 	prefix := name[:idx]
 	local := name[idx+1:]
 	switch prefix {
 	case "", "*":
 		// `|attr` and `*|attr` — match the bare attribute name in HTML.
-		return local
+		return unescapeName(local)
 	}
-	// Named-namespace prefix: keep as-is. With no @namespace prefix map
+	// Named-namespace prefix: keep as written. With no @namespace prefix map
 	// (only the default namespace is recorded, Stylesheet.DefaultNamespace)
 	// the selector matches nothing, which is the correct behavior for an
 	// unregistered prefix per CSS Namespaces 3 §6.2.
@@ -5038,14 +5131,15 @@ func unescapeName(s string) string {
 	}
 	var b strings.Builder
 	for i := 0; i < len(s); {
-		if s[i] != '\\' || i+1 >= len(s) {
+		n := escapeLen(s, i)
+		if n == 0 {
 			b.WriteByte(s[i])
 			i++
 			continue
 		}
-		r, n := consumeEscape(s[i+1:])
+		r, _ := consumeEscape(s[i+1:])
 		b.WriteRune(r)
-		i += 1 + n
+		i += n
 	}
 	return b.String()
 }

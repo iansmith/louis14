@@ -27,6 +27,7 @@ import (
 // fragments (LOU-311).
 func surfaceRubyColumnOOFCandidates(
 	column *InlineItemResultRubyColumn,
+	lineWDM WritingDirectionMode,
 	inlineOrigin, blockOffset float64,
 	positionedInlineMap map[*InlineItem]*html.Node,
 	add func(OutOfFlowCandidate),
@@ -34,14 +35,15 @@ func surfaceRubyColumnOOFCandidates(
 	if column == nil {
 		return
 	}
-	surfaceSubLineOOFCandidates(column.BaseLine, inlineOrigin, blockOffset, positionedInlineMap, add)
+	surfaceSubLineOOFCandidates(column.BaseLine, lineWDM, inlineOrigin, blockOffset, positionedInlineMap, add)
 	for _, anno := range column.AnnotationLines {
-		surfaceSubLineOOFCandidates(anno, inlineOrigin, blockOffset, positionedInlineMap, add)
+		surfaceSubLineOOFCandidates(anno, lineWDM, inlineOrigin, blockOffset, positionedInlineMap, add)
 	}
 }
 
 func surfaceSubLineOOFCandidates(
 	line *LineInfo,
+	lineWDM WritingDirectionMode,
 	inlineOrigin, blockOffset float64,
 	positionedInlineMap map[*InlineItem]*html.Node,
 	add func(OutOfFlowCandidate),
@@ -55,7 +57,7 @@ func surfaceSubLineOOFCandidates(
 			continue
 		}
 		if r.RubyColumn != nil {
-			surfaceRubyColumnOOFCandidates(r.RubyColumn, inlineOrigin, blockOffset, positionedInlineMap, add)
+			surfaceRubyColumnOOFCandidates(r.RubyColumn, lineWDM, inlineOrigin, blockOffset, positionedInlineMap, add)
 			continue
 		}
 		if r.Item.Type != InlineItemOutOfFlow || r.Item.LayoutNode == nil {
@@ -65,11 +67,7 @@ func surfaceSubLineOOFCandidates(
 		// (inlineOrigin); we do not advance per item within the sub-line. The
 		// static position only matters for OOFs auto-positioned on the inline
 		// axis (no left/right) — the abs-in-ruby cases resolve via insets.
-		add(inlineOOFCandidate(
-			r.Item.LayoutNode, inlineOrigin, blockOffset,
-			r.Item.Style != nil && r.Item.Style.GetPosition() == css.PositionFixed,
-			positionedInlineMap[r.Item],
-		))
+		add(inlineOOFCandidate(r.Item, lineWDM, inlineOrigin, blockOffset, positionedInlineMap[r.Item]))
 	}
 }
 

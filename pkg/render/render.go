@@ -4822,7 +4822,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 // of LTR text and its start for RTL text.
 func (r *Renderer) widenForSoftLineBreak(box *layout.Box, fontID int32, origin, extent float64) (float64, float64) {
 	space := r.dc.MeasureText(" ", fontID)
-	if box.BidiLevel%2 == 1 {
+	if layout.DirectionFromLevel(box.BidiLevel) == layout.DirectionRTL {
 		origin -= space
 	}
 	return origin, extent + space
