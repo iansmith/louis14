@@ -252,8 +252,8 @@ func (t textDecorationInfo) computeLineThroughLineY(thickness float64) float64 {
 // text-underline-offset) + 1 (core/layout/text_decoration_offset.cc:52-89),
 // where the central ascent is half the font's height and the em box's
 // bottom is half the em below the central baseline. Not ported: the
-// Japanese/Korean-script and `right` cases that resolve to over. Every
-// upright path builds its info with blockUnderLeft.
+// Japanese/Korean-script and `right` cases that resolve to over (LOU-1032).
+// Every upright path builds its info with blockUnderLeft.
 func (t textDecorationInfo) computeUnderlinePerpX(td css.AppliedTextDecoration) float64 {
 	offset := math.Floor((t.ascent+t.descent)/2+t.fontSize/2+td.UnderlineOffset) + 1
 	return t.box.X + t.box.Width - offset
