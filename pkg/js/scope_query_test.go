@@ -24,6 +24,11 @@ func TestScopeIsTheQueriedNode(t *testing.T) {
 		check("closest(:scope) is the element closest was called on", id(p.closest(":scope")), "p");
 		check("closest(.box:not(:scope))", id(b.closest(".box:not(:scope)")), "a");
 		check("document.querySelector(:scope) is the document element", document.querySelector(":scope"), document.documentElement);
+		// Guards (green before LOU-1004): a fragment scope matches nothing.
+		var frag = document.createDocumentFragment(), f = document.createElement("p");
+		frag.appendChild(f);
+		check("fragment.querySelector(:scope) matches nothing", frag.querySelector(":scope"), null);
+		check("fragment.querySelector(:scope > p) matches nothing", frag.querySelector(":scope > p"), null);
 	`)
 	if err := engine.Execute(doc); err != nil {
 		t.Fatal(err)
