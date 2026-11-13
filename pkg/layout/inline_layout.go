@@ -80,10 +80,10 @@ func isAtomicBaselineDisplay(d css.DisplayType) bool {
 }
 
 // atomicInlineBaseline returns the baseline (distance from the border-box
-// block-start) a non-replaced atomic inline exports to its line box, or 0
-// when it has none (the caller then synthesizes one). The line-box ascent
-// computation and the atomic inline's placement both read it, so the two
-// always agree.
+// block-start) a non-replaced atomic inline exports to its line box, and
+// whether it has one (if not, the caller synthesizes one). A baseline of 0
+// is a real one. The line-box ascent computation and the atomic inline's
+// placement both read it, so the two always agree.
 //
 // Mirrors LogicalBoxFragment::BaselineMetrics (logical_box_fragment.cc:
 // 14-36 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for baseline-source
@@ -91,20 +91,55 @@ func isAtomicBaselineDisplay(d css.DisplayType) bool {
 // block laid out as an inline-block) exports it, any other its first; one
 // of the former that is a block-axis scroll container synthesizes from the
 // block-end margin edge (ForceInlineBaselineSynthesis,
-// physical_box_fragment.h:167-173). An orthogonal fragment has no baseline
-// in the line's writing mode.
-func atomicInlineBaseline(r *InlineItemResult, blockSize float64, wdm WritingDirectionMode) float64 {
+// physical_box_fragment.h:167-173). A fragment whose writing mode is not
+// the line's has no baseline in it (FirstBaseline / LastBaseline are
+// nullopt unless IsWritingModeEqual, logical_box_fragment.h:28-31, :42-70).
+func atomicInlineBaseline(r *InlineItemResult, wdm WritingDirectionMode) (float64, bool) {
 	res := r.LayoutResult
-	if r.Item.Style != nil && NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm) {
-		return synthesizedInlineBaseline(r, blockSize, wdm, false)
+	if r.Item.Style != nil && NewWritingDirectionMode(r.Item.Style).WM != wdm.WM {
+		return 0, false
 	}
 	if !res.UseLastBaselineForInlineBaseline {
-		return res.Baseline
+		return res.Baseline, res.HasBaseline
 	}
 	if r.Item.Style != nil && forceInlineBaselineSynthesis(r.Item.Style, r.Item.Node) {
-		return synthesizedInlineBaseline(r, blockSize, wdm, false)
+		return 0, false
 	}
-	return res.LastBaseline
+	// louis14 tracks no last-baseline presence, so a last baseline of 0
+	// still reads as none (LOU-1018).
+	return res.LastBaseline, res.LastBaseline > 0
+}
+
+// atomicInlineAscent returns the distance from an inline-level box's
+// border-box block-start to the line's baseline, and whether it is
+// baseline-aligned (its block margins then count toward the line's
+// extent). An atomic inline or replaced element sits on its own baseline
+// (replaced elements export none), else on one synthesized from the edge
+// its style names; with a central baseline one with no baseline is centred
+// on it instead (CSS Writing Modes 3 §4.3). Anything else sits on its
+// block-end edge. The line's metrics and the box's placement both read it,
+// so the two agree. Mirrors LogicalBoxFragment::BaselineMetrics
+// (logical_box_fragment.cc:14-83 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func atomicInlineAscent(r *InlineItemResult, blockSize float64, wdm WritingDirectionMode, central bool) (float64, bool) {
+	display := css.DisplayBlock
+	if r.Item.Style != nil {
+		display = r.Item.Style.GetDisplay()
+	}
+	isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
+	if isAtomicBaselineDisplay(display) || isReplaced {
+		if !isReplaced {
+			if b, ok := atomicInlineBaseline(r, wdm); ok {
+				return b, true
+			}
+		}
+		if !central {
+			return synthesizedInlineBaseline(r, blockSize, wdm, false), true
+		}
+	}
+	if central {
+		return synthesizedInlineBaseline(r, blockSize, wdm, true), false
+	}
+	return blockSize, false
 }
 
 // synthesizedInlineBaseline is the baseline, measured from the border-box
@@ -116,13 +151,24 @@ func atomicInlineBaseline(r *InlineItemResult, blockSize float64, wdm WritingDir
 // (InlineBlockBaselineEdge, set by HTMLButtonElement::AdjustStyle). The
 // content box is the fragment's resolved border, scrollbar and padding in.
 // With a central baseline the box is centred instead; louis14 centres the
-// border box for the margin-box edge (Blink centres the margin box).
-// louis14's line layout measures ascent from the block-start, with no
-// line-over/under (LineBoxStrut) model for flipped lines.
+// border box for the margin-box edge (Blink centres the margin box). An
+// alphabetic synthesized baseline puts the box on the line-over side
+// (SynthesizeMetrics' FontHeight(size, 0)), which in flipped lines is the
+// block-end, so the baseline is on the edge's block-start side there.
 func synthesizedInlineBaseline(r *InlineItemResult, blockSize float64, wdm WritingDirectionMode, central bool) float64 {
 	edge := "margin-box"
 	if r.Item.Style != nil {
 		edge = r.Item.Style.InlineBlockBaselineEdge()
+	}
+	if !central && wdm.IsFlippedLines() {
+		switch edge {
+		case "content-box":
+			start, _ := contentBoxBlockInsets(r, wdm)
+			return start
+		case "border-box":
+			return 0
+		}
+		return -r.Margins.BlockStart
 	}
 	switch edge {
 	case "content-box":
@@ -3057,40 +3103,10 @@ func createLineBoxEx(
 					marginBoxSize := blockSize + r.Margins.BlockStart + r.Margins.BlockEnd
 					blockPos = (lineHeight-marginBoxSize)/2 + r.Margins.BlockStart
 				default:
-					// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
-					// align inline-block so its baseline sits at the line's maxAscent.
-					// Also handle inline-tables, replaced elements, and other atomic
-					// inlines with baselines.
-					display := css.DisplayBlock
-					if r.Item.Style != nil {
-						display = r.Item.Style.GetDisplay()
-					}
-					isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
-					isAtomicForBaseline := isAtomicBaselineDisplay(display) || isReplaced
-					// Replaced elements export no content baseline; see atomicInlineBaseline.
-					var atomicBaseline float64
-					if !isReplaced {
-						atomicBaseline = atomicInlineBaseline(r, blockSize, wdm)
-					}
-					if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {
-						var ibAscent float64
-						if atomicBaseline > 0 {
-							ibAscent = atomicBaseline
-						} else {
-							ibAscent = synthesizedInlineBaseline(r, blockSize, wdm, false)
-						}
-						blockPos = maxAscent - ibAscent
-					} else if centralBaseline {
-						// CSS Writing Modes 3 §4.3: In vertical modes with central
-						// baseline, replaced elements and atomic inlines without
-						// explicit baselines are centered on the central baseline.
-						// For tables/inline-tables, center on the content area
-						// (excluding padding), not the padded box.
-						blockPos = maxAscent - synthesizedInlineBaseline(r, blockSize, wdm, true)
-					} else {
-						// Default: bottom-align to baseline.
-						blockPos = maxAscent - blockSize
-					}
+					// CSS 2.1 §10.8.1: the atomic inline's baseline sits at the
+					// line's maxAscent.
+					ascent, _ := atomicInlineAscent(r, blockSize, wdm, centralBaseline)
+					blockPos = maxAscent - ascent
 				}
 				// CSS 2.1 §10.8.1: vertical-align: <length> shifts the atomic
 				// inline up (positive) or down (negative) by its own offset
@@ -3477,63 +3493,21 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 					continue
 				}
 
-				// CSS 2.1 §10.8.1: For display:inline-block with overflow:visible,
-				// the baseline is the baseline of the last line box.
-				// Also handle inline-tables and other atomic inlines with baselines.
-				// Inline replaced elements (img, canvas, video, etc.) are also
-				// atomic inlines whose baseline is their bottom margin edge.
-				display := css.DisplayBlock
-				if r.Item.Style != nil {
-					display = r.Item.Style.GetDisplay()
-				}
-				isReplaced := r.Item.Node != nil && IsReplacedElement(r.Item.Node)
-				isAtomicForBaseline := isAtomicBaselineDisplay(display) || isReplaced
-				// Replaced elements export no content baseline; see atomicInlineBaseline.
-				var atomicBaseline float64
-				if !isReplaced {
-					atomicBaseline = atomicInlineBaseline(r, blockSize, wdm)
-				}
-				if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {
-					var ibAscent float64
-					if atomicBaseline > 0 {
-						// Use the propagated baseline from the atomic inline's
-						// layout result. This is the distance from the border-box
-						// block-start to the baseline.
-						ibAscent = atomicBaseline
-					} else {
-						ibAscent = synthesizedInlineBaseline(r, blockSize, wdm, false)
-					}
+				ascent, aligned := atomicInlineAscent(r, blockSize, wdm, centralBaseline)
+				switch {
+				case aligned:
 					// CSS 2.1 §10.8.1: block-direction margins contribute to
 					// the line box height. margin-block-start adds to the ascent
 					// (above the baseline) and margin-block-end adds to the descent.
-					totalAscent := r.Margins.BlockStart + ibAscent
-					ibDescent := blockSize - ibAscent + r.Margins.BlockEnd
-					if ibDescent < 0 {
-						ibDescent = 0
-					}
-					if totalAscent > maxAscent {
-						maxAscent = totalAscent
-					}
-					if ibDescent > maxDescent {
-						maxDescent = ibDescent
-					}
-				} else if centralBaseline {
-					// CSS Writing Modes 3 §4.3: In vertical modes with central
-					// baseline, replaced elements are centered on the central
-					// baseline (a <button> on its content box).
-					ascent := synthesizedInlineBaseline(r, blockSize, wdm, true)
-					descent := blockSize - ascent
-					if ascent > maxAscent {
-						maxAscent = ascent
-					}
-					if descent > maxDescent {
-						maxDescent = descent
-					}
-				} else {
-					// Default: treat full height as above baseline (bottom-aligned).
-					if blockSize > maxAscent {
-						maxAscent = blockSize
-					}
+					totalAscent := r.Margins.BlockStart + ascent
+					descent := math.Max(0, blockSize-ascent+r.Margins.BlockEnd)
+					maxAscent = math.Max(maxAscent, totalAscent)
+					maxDescent = math.Max(maxDescent, descent)
+				case centralBaseline:
+					maxAscent = math.Max(maxAscent, ascent)
+					maxDescent = math.Max(maxDescent, blockSize-ascent)
+				default:
+					maxAscent = math.Max(maxAscent, ascent)
 				}
 			}
 		}
