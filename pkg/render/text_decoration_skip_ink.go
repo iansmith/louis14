@@ -107,29 +107,6 @@ func skipInkSegments(start, end, thickness float64, glyphs []glyphExtent) []inkS
 	return out
 }
 
-// buildGlyphExtentsVertical returns the inline-axis (Y) extents of each
-// non-whitespace glyph in `text` stacked vertically starting at `startY`,
-// using fontSize as the cell height and adding `letterSpacing` between
-// cells. Mirrors buildGlyphExtentsHorizontal but for the upright-vertical
-// (Strategy B) paint path where the inline axis runs along Y.
-func buildGlyphExtentsVertical(text string, fontSize, startY, letterSpacing float64) []glyphExtent {
-	if text == "" {
-		return nil
-	}
-	out := make([]glyphExtent, 0, len(text))
-	y := startY
-	for _, ch := range text {
-		if !unicode.IsSpace(ch) {
-			out = append(out, glyphExtent{Start: y, End: y + fontSize})
-		}
-		y += fontSize
-		if letterSpacing != 0 {
-			y += letterSpacing
-		}
-	}
-	return out
-}
-
 // buildGlyphExtentsHorizontal returns the inline-axis (X) extents of each
 // non-whitespace glyph in `text` rendered at `startX`, using the given
 // font + features + letter/word spacing. Whitespace runs are excluded so

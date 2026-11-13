@@ -1,6 +1,7 @@
 package render_test
 
 import (
+	"image"
 	"testing"
 
 	"louis14/pkg/render"
@@ -44,4 +45,87 @@ func TestDecorationLine_DottedFitsDots(t *testing.T) {
 	assertPixel(t, img, 19, 29, white, "gap between the dots at x 3 and 14.74")
 	assertPixel(t, img, 106, 29, black, "last dot, centre x 96.92")
 	assertPixel(t, img, 111, 29, white, "past the last dot, which ends at x 99.92")
+}
+
+// Upright vertical text paints its decorations line-relative under the
+// writing-mode rotation, through the same DrawLineAsStroke as horizontal
+// text (TextFragmentPainter::Paint, core/paint/text_fragment_painter.cc:
+// 369-379, :686-692 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a 3px
+// dashed underline down a 100px upright run from y 10 has the horizontal
+// case's fitted dashes along y: 6px dashes, 3.4px gaps, the last ending at
+// the run's end. The underline is offset 6px to the left of the glyph
+// column (x 40-60), so the first dark column left of x 40 is the line's.
+func TestDecorationLine_UprightVerticalDashed(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+		`<div style="position:absolute;left:40px;top:10px;writing-mode:vertical-rl;text-orientation:upright;font:20px/20px Ahem;`+
+		`text-decoration:underline dashed black;text-decoration-thickness:3px;text-underline-offset:6px;text-decoration-skip-ink:none">XXXXX</div></body></html>`, 70, 130)
+	col := -1
+	for x := 39; x >= 0 && col < 0; x-- {
+		for y := 10; y < 110; y++ {
+			if r, _, _, _ := img.At(x, y).RGBA(); r>>8 < 64 {
+				col = x
+				break
+			}
+		}
+	}
+	if col < 0 {
+		t.Fatal("no underline found left of the glyph column")
+	}
+	assertPixel(t, img, col, 13, black, "first dash, y 10-16")
+	assertPixel(t, img, col, 17, white, "first gap, y 16-19.4")
+	assertPixel(t, img, col, 22, black, "second dash, y 19.4-25.4")
+	assertPixel(t, img, col, 107, black, "last dash, y 104-110")
+}
+
+// A double decoration is two lines of the decoration's thickness, the
+// second double_offset = thickness + 1 further from the text (underline:
+// line-under) — TextDecorationInfo::ComputeLineData and
+// DecorationLinePainter::Paint's kDoubleStroke (core/paint/
+// text_decoration_info.cc:255-282, decoration_line_painter.cc:464-473 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), verified in Chrome
+// 2026-11-13: a 6px upright vertical-rl double underline is the solid
+// underline's 6px column plus a 6px column 1px further left. Measured
+// against the solid underline's own column, so this pins the shape, not
+// where the line sits.
+func TestDecorationLine_UprightVerticalDouble(t *testing.T) {
+	page := func(style string) string {
+		return `<!DOCTYPE html><html><body style="margin:0">` +
+			`<div style="position:absolute;left:100px;top:10px;writing-mode:vertical-rl;text-orientation:upright;font:40px/40px Ahem;` +
+			`text-decoration:underline ` + style + ` black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`
+	}
+	dark := func(img *image.RGBA, x int) bool {
+		r, _, _, _ := img.At(x, 60).RGBA()
+		return r>>8 < 64
+	}
+	solid := render.RenderPage(t, page("solid"), 160, 140)
+	right := -1
+	for x := 99; x >= 0 && right < 0; x-- {
+		if dark(solid, x) {
+			right = x
+		}
+	}
+	if right < 0 {
+		t.Fatal("no solid underline left of the glyph column")
+	}
+	left := right - 5 // the 6px solid column is [left, right]
+	if dark(solid, left-1) {
+		t.Fatalf("x %d: the solid underline is wider than 6px", left-1)
+	}
+	double := render.RenderPage(t, page("double"), 160, 140)
+	for x := left; x <= right; x++ {
+		if !dark(double, x) {
+			t.Errorf("x %d: the first line, on the solid underline's column, is clear", x)
+		}
+	}
+	if dark(double, left-1) {
+		t.Errorf("x %d: want the 1px gap between the lines", left-1)
+	}
+	for x := left - 7; x <= left-2; x++ {
+		if !dark(double, x) {
+			t.Errorf("x %d: the second 6px line, 7px further from the text, is clear", x)
+		}
+	}
+	if dark(double, left-8) {
+		t.Errorf("x %d: past the second line, want clear", left-8)
+	}
 }
