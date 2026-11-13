@@ -123,3 +123,51 @@ func AlignBlockContent(style *css.Style, node *LayoutInputNode, breakToken *Bloc
 		builder.MoveChildrenInBlockDirection(freeSpace)
 	}
 }
+
+// InlineStaticPositionEdge is the edge of a block-level out-of-flow box's
+// static-position line its justify-self aligns it to: auto takes
+// justifyItemsStyle's justify-items, normal is start, left and right are
+// start and end, and self-start / self-end are the box's own edges mapped
+// onto the parent's writing direction. Mirrors InlineStaticPositionEdge
+// (block_layout_algorithm_utils.cc:236-284 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) without its
+// should_swap_inline_axis, which only its flex and grid callers set.
+func InlineStaticPositionEdge(oofStyle, justifyItemsStyle *css.Style, oofWDM, parentWDM WritingDirectionMode) StaticPositionEdge {
+	position, _ := resolvedSelfAlignment(true, justifyItemsStyle, oofStyle)
+	switch position {
+	case "end", "flex-end", "last baseline", "right":
+		return StaticEdgeEnd
+	case "center", "anchor-center":
+		return StaticEdgeCenter
+	case "self-start", "self-end":
+		return staticEdgeOfAxisEdge(selfAxisEdge(true, position == "self-end", oofWDM, parentWDM))
+	}
+	return StaticEdgeStart
+}
+
+// BlockStaticPositionEdge is InlineStaticPositionEdge's block-axis
+// counterpart, from align-self (auto takes alignItemsStyle's align-items, a
+// nil one leaving it normal). Mirrors BlockStaticPositionEdge
+// (block_layout_algorithm_utils.cc:286-327 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func BlockStaticPositionEdge(oofStyle, alignItemsStyle *css.Style, oofWDM, parentWDM WritingDirectionMode) StaticPositionEdge {
+	position, _ := resolvedSelfAlignment(false, alignItemsStyle, oofStyle)
+	switch position {
+	case "end", "flex-end", "last baseline":
+		return StaticEdgeEnd
+	case "center", "anchor-center":
+		return StaticEdgeCenter
+	case "self-start", "self-end":
+		return staticEdgeOfAxisEdge(selfAxisEdge(false, position == "self-end", oofWDM, parentWDM))
+	}
+	return StaticEdgeStart
+}
+
+// staticEdgeOfAxisEdge maps self-start / self-end's resolved edge (start or
+// end only) onto a static-position edge.
+func staticEdgeOfAxisEdge(edge AxisEdge) StaticPositionEdge {
+	if edge == AxisEdgeEnd {
+		return StaticEdgeEnd
+	}
+	return StaticEdgeStart
+}

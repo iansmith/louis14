@@ -130,8 +130,9 @@ type InsetModifiedContainingBlock struct {
 
 	// InlineHasDefaultAlignmentOverflow and BlockHasDefaultAlignmentOverflow
 	// track the "default alignment is non-normal and box overflows" flag
-	// used by Blink's ComputeInsets. Not yet read by us; preserved for
-	// parity so a future caller can wire it in.
+	// Blink's ComputeInsets reads (absolute_utils.cc:385 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); so do the OOF layout and
+	// positioned-root callers of ComputeInsets.
 	InlineHasDefaultAlignmentOverflow bool
 	BlockHasDefaultAlignmentOverflow  bool
 }
@@ -331,12 +332,6 @@ func ComputeUnclampedIMCBInOneAxis(
 			}
 			imcbStart = staticPositionOffset - half
 			imcbEnd = availableSize - staticPositionOffset - half
-			// Mirrors Blink: when the static edge is kCenter and the box
-			// overflows the center-clipped IMCB, snap to the start edge
-			// instead of splitting negative free space equally. The caller
-			// consults hasDefaultAlignmentOverflow on the IMCB struct to
-			// arm this fallback; we surface the default bias here.
-			defaultOut, hasDefaultOut = BiasStart, true
 		case BiasEnd:
 			// |<------------*|
 			imcbStart = 0
@@ -432,20 +427,12 @@ func ComputeUnclampedIMCB(
 	blockAlignBias, blockHasOverflow, blockDef, blockHasDef, blockSafe, blockHasSafe :=
 		GetAlignmentInsetBias(alignment.BlockAlignment, containerWDM, selfWDM, false)
 
-	// Static-position center (both-auto branch) also arms overflow fallback —
-	// ComputeUnclampedIMCBInOneAxis surfaces a default bias in that case but
-	// the overflow-armed flag lives on the IMCB struct and is OR'd in here.
-	inlineStaticCenter := !insets.HasInlineStart && !insets.HasInlineEnd &&
-		staticInlineBias == BiasEqual
-	blockStaticCenter := !insets.HasBlockStart && !insets.HasBlockEnd &&
-		staticBlockBias == BiasEqual
-
 	imcb := InsetModifiedContainingBlock{
 		AvailableSize:                     availableSize,
 		HasAutoInlineInset:                !insets.HasInlineStart || !insets.HasInlineEnd,
 		HasAutoBlockInset:                 !insets.HasBlockStart || !insets.HasBlockEnd,
-		InlineHasDefaultAlignmentOverflow: inlineHasOverflow || inlineStaticCenter,
-		BlockHasDefaultAlignmentOverflow:  blockHasOverflow || blockStaticCenter,
+		InlineHasDefaultAlignmentOverflow: inlineHasOverflow,
+		BlockHasDefaultAlignmentOverflow:  blockHasOverflow,
 	}
 
 	imcb.InlineStart, imcb.InlineEnd,

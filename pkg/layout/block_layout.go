@@ -883,7 +883,8 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				// containing block (AdjustFragmentainerDescendant).
 				staticBlockOffset := blockCursor + prevMarginStrut.Resolve()
 
-				// Static inline offset: block-level abspos gets inline-start (0).
+				// Static inline offset: block-level abspos starts at inline-start
+				// (0), before the justify-self shift below.
 				// Inline-level abspos (display:inline/inline-*) in a block FC would
 				// have established an anonymous inline line box — its hypothetical
 				// inline cursor is where that line box would begin, which is past
@@ -904,12 +905,33 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}
 				}
 
+				// A block-level one sits on a zero-thickness line across the
+				// content box, aligned by its justify-self (auto: this box's
+				// justify-items) and align-self (align-items does not apply
+				// in block layout); a center or end edge moves the static
+				// point to the line's middle or end
+				// (BlockLayoutAlgorithm::HandleOutOfFlowPositioned,
+				// block_layout_algorithm.cc:1688-1716 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				inlineEdge, blockEdge := StaticEdgeStart, StaticEdgeStart
+				if !childStyle.IsOriginalDisplayInlineType() {
+					childWDM := NewWritingDirectionMode(childStyle)
+					inlineEdge = InlineStaticPositionEdge(childStyle, bla.style, childWDM, wdm)
+					blockEdge = BlockStaticPositionEdge(childStyle, nil, childWDM, wdm)
+					switch inlineEdge {
+					case StaticEdgeCenter:
+						staticInlineOffset += contentInlineSize / 2
+					case StaticEdgeEnd:
+						staticInlineOffset += contentInlineSize
+					}
+				}
+
 				bla.containerBuilder.AddOutOfFlowCandidate(OutOfFlowCandidate{
 					Node: child,
 					StaticPosition: LogicalStaticPosition{
 						Offset:     LogicalOffset{InlineOffset: staticInlineOffset, BlockOffset: staticBlockOffset},
-						InlineEdge: StaticEdgeStart,
-						BlockEdge:  StaticEdgeStart,
+						InlineEdge: inlineEdge,
+						BlockEdge:  blockEdge,
 					},
 					IsFixedPosition: childPos == css.PositionFixed,
 				})
