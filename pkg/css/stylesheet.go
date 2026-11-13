@@ -5802,22 +5802,10 @@ func normalizeFontFamilyEntry(entry string) (string, bool) {
 	// nothing trailing (`"foo" bar` is the canonical invalid form per test
 	// font-family-name-021).
 	if entry[0] == '"' || entry[0] == '\'' {
-		quote := entry[0]
-		// Walk the string body; the closing quote must terminate the entry.
-		i := 1
-		for i < len(entry) {
-			c := entry[i]
-			if c == '\\' && i+1 < len(entry) {
-				// Skip escaped character.
-				i += 2
-				continue
-			}
-			if c == quote {
-				break
-			}
-			i++
-		}
-		if i >= len(entry) || entry[i] != quote {
+		// The string token must be closed (no bad string) and end the
+		// entry but for whitespace.
+		i, how := stringTokenEnd(entry, 0)
+		if how != stringClosed {
 			return "", false
 		}
 		// Everything after the closing quote must be whitespace.
@@ -6692,8 +6680,8 @@ func parseFontFaceRule(ruleStr string) *FontFaceRule {
 
 		switch prop {
 		case "font-family":
-			// Strip quotes
-			ff.Family = strings.Trim(val, `"'`)
+			// A quoted family is its string's value (ConsumeFamilyName).
+			ff.Family = CSSStringValue(val)
 		case "src":
 			// Parse url(...) format(...). The url() inner has already
 			// been resolved by ctx.RewriteURLs at the top of
@@ -6894,9 +6882,9 @@ func parseCounterStyleRule(ruleStr string) CounterStyleRule {
 		case "additive-symbols":
 			rule.AdditiveSymbols = parseAdditiveSymbols(val)
 		case "suffix":
-			rule.Suffix = unquoteCSSString(strings.TrimSpace(val))
+			rule.Suffix = CSSStringValue(strings.TrimSpace(val))
 		case "prefix":
-			rule.Prefix = unquoteCSSString(strings.TrimSpace(val))
+			rule.Prefix = CSSStringValue(strings.TrimSpace(val))
 		case "fallback":
 			rule.Fallback = strings.TrimSpace(val)
 		}
@@ -6987,7 +6975,7 @@ func consumeCounterStyleSymbol(s *componentStream) (string, bool) {
 	switch {
 	case isQuotedStringValue(tok):
 		s.consume()
-		return unquoteCSSString(strings.TrimSpace(tok)), true
+		return CSSStringValue(strings.TrimSpace(tok)), true
 	case isIdentToken(tok):
 		s.consume()
 		return tok, true
@@ -7015,7 +7003,7 @@ func parseFontFaceSrc(src string) []FontFaceSrcValue {
 			continue
 		}
 		url := strings.TrimSpace(urlContent[:urlEnd])
-		url = strings.Trim(url, `"'`)
+		url = CSSStringValue(url)
 
 		// Extract format(...) if present
 		format := ""
@@ -7024,7 +7012,7 @@ func parseFontFaceSrc(src string) []FontFaceSrcValue {
 			fmtContent := source[fmtStart+7:]
 			fmtEnd := strings.Index(fmtContent, ")")
 			if fmtEnd >= 0 {
-				format = strings.Trim(strings.TrimSpace(fmtContent[:fmtEnd]), `"'`)
+				format = CSSStringValue(strings.TrimSpace(fmtContent[:fmtEnd]))
 			}
 		}
 

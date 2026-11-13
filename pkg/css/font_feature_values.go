@@ -222,7 +222,7 @@ func isCSSWhitespace(c byte) bool {
 // computed font-family list, quoted or not (a quoted family is unquoted
 // here, its escapes resolved).
 func LookupFontFeatureValues(rules []FontFeatureValuesRule, family string) FontFeatureValuesRule {
-	target := strings.ToLower(unquoteCSSString(strings.TrimSpace(family)))
+	target := strings.ToLower(CSSStringValue(strings.TrimSpace(family)))
 	merged := FontFeatureValuesRule{}
 	for i := range rules {
 		match := false

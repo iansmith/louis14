@@ -2155,15 +2155,11 @@ func splitCommaArgs(s string) []string {
 	return out
 }
 
-// firstFontFamily returns the first comma-separated entry from a CSS
-// font-family value, unquoted.
+// firstFontFamily returns the first family of a CSS font-family value,
+// unquoted (text.ParseFontFamilyList).
 func firstFontFamily(family string) string {
-	for _, f := range strings.Split(family, ",") {
-		f = strings.TrimSpace(f)
-		f = strings.Trim(f, `"'`)
-		if f != "" {
-			return f
-		}
+	if families := text.ParseFontFamilyList(family); len(families) > 0 {
+		return families[0]
 	}
 	return ""
 }
