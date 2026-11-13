@@ -4319,67 +4319,6 @@ func (r *Renderer) fillOutlineSides(outerX, outerY, outerW, outerH, width float6
 	r.dc.SetFillRule(textshape.FillRuleWinding)
 }
 
-// drawDashedLine draws a dashed line from (x1,y1) to (x2,y2) with the given width.
-// Dash length and gap are both 3× the border width per CSS spec.
-func (r *Renderer) drawDashedLine(x1, y1, x2, y2, width float64) {
-	dx := x2 - x1
-	dy := y2 - y1
-	length := math.Sqrt(dx*dx + dy*dy)
-	if length == 0 {
-		return
-	}
-
-	dashLen := width * 3
-	gapLen := width * 3
-	ux, uy := dx/length, dy/length
-	nx, ny := -uy, ux // perpendicular
-	hw := width / 2
-
-	along := 0.0
-	for along < length {
-		segEnd := along + dashLen
-		if segEnd > length {
-			segEnd = length
-		}
-
-		sx, sy := x1+ux*along, y1+uy*along
-		ex, ey := x1+ux*segEnd, y1+uy*segEnd
-
-		r.dc.MoveTo(sx+nx*hw, sy+ny*hw)
-		r.dc.LineTo(ex+nx*hw, ey+ny*hw)
-		r.dc.LineTo(ex-nx*hw, ey-ny*hw)
-		r.dc.LineTo(sx-nx*hw, sy-ny*hw)
-		r.dc.ClosePath()
-		r.dc.Fill()
-
-		along = segEnd + gapLen
-	}
-}
-
-// drawDottedLine draws a dotted line from (x1,y1) to (x2,y2) with the given width.
-// Dot diameter equals the border width; gap equals the border width.
-func (r *Renderer) drawDottedLine(x1, y1, x2, y2, width float64) {
-	dx := x2 - x1
-	dy := y2 - y1
-	length := math.Sqrt(dx*dx + dy*dy)
-	if length == 0 {
-		return
-	}
-
-	dotRadius := width / 2
-	spacing := width * 2 // dot diameter + gap
-	ux, uy := dx/length, dy/length
-
-	along := dotRadius
-	for along < length {
-		cx := x1 + ux*along
-		cy := y1 + uy*along
-		r.dc.DrawCircle(cx, cy, dotRadius)
-		r.dc.Fill()
-		along += spacing
-	}
-}
-
 // drawDoubleLine draws two parallel lines from (x1,y1) to (x2,y2).
 // Each line is width/3 thick with a width/3 gap between them.
 // Falls back to solid for borders thinner than 3px.
@@ -6639,11 +6578,11 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	if legacyXEnd <= legacyXStart {
 		return
 	}
+	if st, ok := decorationStrokeStyle(layer.TextDecorationStyle); ok {
+		r.drawLineAsStroke(legacyXStart, rectTop, legacyXEnd-legacyXStart, thickness, st, nil)
+		return
+	}
 	switch layer.TextDecorationStyle {
-	case "dashed":
-		r.drawDashedLine(legacyXStart, centerY, legacyXEnd, centerY, thickness)
-	case "dotted":
-		r.drawDottedLine(legacyXStart, centerY, legacyXEnd, centerY, thickness)
 	case "double":
 		r.drawDoubleLine(legacyXStart, centerY, legacyXEnd, centerY, thickness)
 	case "wavy":
@@ -6776,14 +6715,14 @@ func clampDecorationBounds(logicalStart, logicalEnd float64, td css.AppliedTextD
 
 // drawLineThroughStroke paints a line-through in the style given by styleVal
 // ("solid", "dashed", "dotted", "double", "wavy"). lineY is the stroke
-// center, thickness the stroke width. phaseFromLogicalStart keeps dashed/
-// dotted/wavy patterns phase-continuous across adjacent fragments.
+// center, thickness the stroke width. phaseFromLogicalStart keeps a wavy
+// line phase-continuous across adjacent fragments.
 func (r *Renderer) drawLineThroughStroke(xStart, xEnd, lineY, thickness, phaseFromLogicalStart float64, styleVal string) {
+	if st, ok := decorationStrokeStyle(styleVal); ok {
+		r.drawLineAsStroke(xStart, lineY-thickness/2, xEnd-xStart, thickness, st, nil)
+		return
+	}
 	switch styleVal {
-	case "dashed":
-		r.drawDashedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
-	case "dotted":
-		r.drawDottedLinePhased(xStart, lineY, xEnd, lineY, thickness, phaseFromLogicalStart)
 	case "double":
 		r.drawDoubleLine(xStart, lineY, xEnd, lineY, thickness)
 	case "wavy":
@@ -6915,16 +6854,23 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		lineTop := rectTop
 		lineBottom := rectTop + thickness
 		linePerpOverlapsGlyph := lineBottom > glyphYTop && lineTop < glyphYBottom
-		if skipInk && len(glyphs) > 0 && linePerpOverlapsGlyph {
+		skipped := skipInk && len(glyphs) > 0 && linePerpOverlapsGlyph
+		if skipped {
 			segments = skipInkSegments(xStart, xEnd, thickness, glyphs)
+		}
+		if st, ok := decorationStrokeStyle(td.Style); ok {
+			// The fragment's whole line, its dashes starting at its own
+			// start; skip-ink clips (drawLineAsStroke).
+			var keep []inkSegment
+			if skipped {
+				keep = segments
+			}
+			r.drawLineAsStroke(xStart, rectTop, xEnd-xStart, thickness, st, keep)
+			return
 		}
 		for _, seg := range segments {
 			segPhase := phaseFromLogicalStart + (seg.Start - xStart)
 			switch td.Style {
-			case "dashed":
-				r.drawDashedLinePhased(seg.Start, centerY, seg.End, centerY, thickness, segPhase)
-			case "dotted":
-				r.drawDottedLinePhased(seg.Start, centerY, seg.End, centerY, thickness, segPhase)
 			case "double":
 				r.drawDoubleLine(seg.Start, centerY, seg.End, centerY, thickness)
 			case "wavy":
@@ -7155,75 +7101,12 @@ func mirrorCoord(v, lo, hi float64) float64 {
 	return lo + t
 }
 
-// drawDottedLinePhased, drawDashedLinePhased, and drawWavyLinePhased are the
-// LOU-149 Phase 4 phased variants of the existing line-style draw funcs.
-// phaseFromLogicalStart shifts the pattern's logical origin so that adjacent
-// fragments of one decorating box continue the same dot/dash/wave cycle
-// across the fragment boundary. With phaseFromLogicalStart=0 each one's
-// output matches its unphased counterpart byte-for-byte.
-
-func (r *Renderer) drawDottedLinePhased(x1, y1, x2, y2, width, phaseFromLogicalStart float64) {
-	dx := x2 - x1
-	dy := y2 - y1
-	length := math.Sqrt(dx*dx + dy*dy)
-	if length == 0 {
-		return
-	}
-
-	dotRadius := width / 2
-	spacing := width * 2
-	ux, uy := dx/length, dy/length
-
-	along := wrapIntoPeriod(dotRadius-phaseFromLogicalStart, spacing)
-	for along < length {
-		cx := x1 + ux*along
-		cy := y1 + uy*along
-		r.dc.DrawCircle(cx, cy, dotRadius)
-		r.dc.Fill()
-		along += spacing
-	}
-}
-
-func (r *Renderer) drawDashedLinePhased(x1, y1, x2, y2, width, phaseFromLogicalStart float64) {
-	dx := x2 - x1
-	dy := y2 - y1
-	length := math.Sqrt(dx*dx + dy*dy)
-	if length == 0 {
-		return
-	}
-
-	dashLen := width * 3
-	gapLen := width * 3
-	period := dashLen + gapLen
-	ux, uy := dx/length, dy/length
-	nx, ny := -uy, ux
-	hw := width / 2
-
-	// Start one period to the left of the slice so the loop's first
-	// iteration can paint a partial dash that bleeds in from x1.
-	along := wrapIntoPeriod(-phaseFromLogicalStart, period) - period
-	for along < length {
-		segStart := along
-		segEnd := along + dashLen
-		if segStart < 0 {
-			segStart = 0
-		}
-		if segEnd > length {
-			segEnd = length
-		}
-		if segEnd > segStart {
-			sx, sy := x1+ux*segStart, y1+uy*segStart
-			ex, ey := x1+ux*segEnd, y1+uy*segEnd
-			r.dc.MoveTo(sx+nx*hw, sy+ny*hw)
-			r.dc.LineTo(ex+nx*hw, ey+ny*hw)
-			r.dc.LineTo(ex-nx*hw, ey-ny*hw)
-			r.dc.LineTo(sx-nx*hw, sy-ny*hw)
-			r.dc.ClosePath()
-			r.dc.Fill()
-		}
-		along += period
-	}
-}
+// drawWavyLinePhased is the LOU-149 Phase 4 phased variant of drawWavyLine.
+// phaseFromLogicalStart shifts the wave's logical origin so that adjacent
+// fragments of one decorating box continue the same cycle across the
+// fragment boundary. With phaseFromLogicalStart=0 its output matches
+// drawWavyLine byte-for-byte. (Dashed and dotted decorations restart their
+// pattern per fragment, as Blink's DrawLineAsStroke does.)
 
 func (r *Renderer) drawWavyLinePhased(x, y, width, thickness, phaseFromLogicalStart float64) {
 	if width <= 0 {
