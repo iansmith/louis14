@@ -1783,6 +1783,19 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 			// sizing is skipped.
 			cellMin, cellMax, hasCellSize := 0.0, 0.0, true
 			pct, hasPct := cellPercentageInlineSize(cell.style, tla.space.WritingDirection)
+			childWDM := tla.space.WritingDirection
+			if cell.style != nil {
+				childWDM = NewWritingDirectionMode(cell.style)
+			}
+			isOrthogonal := tla.space.WritingDirection.IsVertical() != childWDM.IsVertical()
+			childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+				SetOrthogonalFallbackInlineSize(
+					orthogonalFallbackSize(childWDM, tla.ctx)).
+				SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
+				SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
+				SetPercentageResolutionInlineSize(tla.space.PercentageResolutionInlineSize).
+				Build()
 			if hasExplicit {
 				// explicitW is a content-box width; column sizing uses border-box.
 				// If the cell has box-sizing:border-box the value already includes BP;
@@ -1792,7 +1805,24 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 					cellGeom := ComputeFragmentGeometry(cell.style, tla.space.WritingDirection)
 					explicitBB += cellGeom.InlineBorderPadding()
 				}
-				cellMin, cellMax = explicitBB, explicitBB
+				// The specified width is only the max guess: the minimum
+				// stays the cell's content minimum, raised by its
+				// min-width, and the max never goes below it
+				// (CreateCellInlineConstraint, table/
+				// table_layout_algorithm_types.cc:172-199 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The content
+				// sizes skip the width, which ComputeMinMaxSizes would
+				// return as the cell's contribution. An orthogonal cell
+				// keeps min = max = its width. A fixed-layout cell
+				// measures no content, so its max is its width (its min is
+				// zeroed below).
+				if isOrthogonal || isFixedLayout {
+					cellMin, cellMax = explicitBB, explicitBB
+				} else {
+					content := computeContentMinMaxSizes(tla.ctx, cell.node, childSpace)
+					cellMin = content.MinContent + ComputeFragmentGeometry(cell.style, childWDM).InlineBorderPadding()
+					cellMax = max(cellMin, explicitBB)
+				}
 				// (colConstrained for this column was set in the pre-pass above.)
 			} else {
 				// Compute intrinsic size.
@@ -1814,22 +1844,9 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 				// sizing rather than let it override the constraint. colConstrained is
 				// fully populated before this loop, so the decision does not depend on
 				// the order cells/rows are visited.
-				childWDM := tla.space.WritingDirection
-				if cell.style != nil {
-					childWDM = NewWritingDirectionMode(cell.style)
-				}
-				isOrthogonal := tla.space.WritingDirection.IsVertical() != childWDM.IsVertical()
 				skipIntrinsic := isOrthogonal && cell.colSpan == 1 && colConstrained[colIdx]
 				hasCellSize = !skipIntrinsic
 				if !skipIntrinsic {
-					childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
-						SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-						SetOrthogonalFallbackInlineSize(
-							orthogonalFallbackSize(childWDM, tla.ctx)).
-						SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
-						SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
-						SetPercentageResolutionInlineSize(tla.space.PercentageResolutionInlineSize).
-						Build()
 					if isOrthogonal {
 						res := layoutElement(tla.ctx, cell.node, childSpace)
 						cellMin = NewLogicalFragment(tla.space.WritingDirection, res.Fragment).InlineSize()
