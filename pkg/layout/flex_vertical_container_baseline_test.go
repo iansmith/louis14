@@ -9,8 +9,7 @@ import "testing"
 // constructed with Style().GetFontBaseline()) and
 // LogicalBoxFragment::SynthesizedBaseline (logical_box_fragment.h:33-40 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). want is #c's offset from the
-// line's left edge, from Chrome headless. The flipped-lines case (a synthesized baseline of 0) is
-// LOU-1015: the line layout takes an atomic inline's baseline of 0 for none.
+// line's left edge, from Chrome headless.
 func TestFlexVerticalContainerSynthesizedBaseline(t *testing.T) {
 	cases := []struct {
 		name, mode string
@@ -19,6 +18,7 @@ func TestFlexVerticalContainerSynthesizedBaseline(t *testing.T) {
 		{"vertical-rl central", "writing-mode:vertical-rl", 0},
 		{"vertical-rl alphabetic", "writing-mode:vertical-rl;text-orientation:sideways", 0},
 		{"vertical-lr central", "writing-mode:vertical-lr", 4.5},
+		{"vertical-lr alphabetic, flipped lines", "writing-mode:vertical-lr;text-orientation:sideways", 2},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
