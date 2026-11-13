@@ -6,6 +6,7 @@ import (
 	textpkg "louis14/pkg/text"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // InlineItemType identifies the kind of inline content.
@@ -212,6 +213,13 @@ type InlineItemsData struct {
 	// For plaintext mode, different paragraphs separated by forced breaks
 	// may have different base levels.
 	ParagraphLevels []int
+
+	// opaqueToCollapsing holds, in ascending order, the TextContent byte
+	// offsets of the bidi controls injectBidiControlChars wrote while the
+	// items were collected: Blink's kOpaqueToCollapsing AppendOpaque items,
+	// which whitespace collapsing looks past (lastCollapsibleSpace). Valid
+	// only during collection; StripBidiControls removes the controls.
+	opaqueToCollapsing []int
 }
 
 // CollectInlines performs a depth-first scan of the layout subtree rooted at
@@ -222,6 +230,7 @@ func CollectInlines(node *LayoutInputNode) *InlineItemsData {
 	data := &InlineItemsData{ContainerStyle: node.Style()}
 	var b strings.Builder
 	collectInlinesRecursive(node, data, &b, true, nil)
+	data.opaqueToCollapsing = nil // collection-only
 	data.TextContent = b.String()
 	annotatePaintGroups(data)
 	return data
@@ -424,7 +433,7 @@ func collectInlinesRecursive(
 		// in InlineItemsBuilder::InsertBidiOverride/InsertBidiIsolate:
 		// control chars are inserted into TextContent so the UAX#9 algorithm
 		// (run by ResolveBidiLevels) handles embedding/isolation correctly.
-		injectBidiControlChars(childStyle, text, true /* isOpen */)
+		injectBidiControlChars(childStyle, data, text, true /* isOpen */)
 
 		// CSS Ruby — when entering a `<rt>` inside an enclosing
 		// `<ruby>`, emit an annotation sub-line placeholder BEFORE the
@@ -548,7 +557,7 @@ func collectInlinesRecursive(
 		}
 
 		// Inject closing bidi control characters.
-		injectBidiControlChars(childStyle, text, false /* isOpen */)
+		injectBidiControlChars(childStyle, data, text, false /* isOpen */)
 
 		continue
 	}
@@ -557,12 +566,8 @@ func collectInlinesRecursive(
 // lastNonEmptyItemIsBlockInInline reports whether the last item with text
 // content is a block-in-inline.
 func lastNonEmptyItemIsBlockInInline(data *InlineItemsData) bool {
-	for i := len(data.Items) - 1; i >= 0; i-- {
-		if item := data.Items[i]; item.StartOffset != item.EndOffset {
-			return item.Type == InlineItemBlockInInline
-		}
-	}
-	return false
+	item := lastNonEmptyItem(data)
+	return item != nil && item.Type == InlineItemBlockInInline
 }
 
 // appendBlockInInline appends the block-in-inline item for wrapper. Before
@@ -585,37 +590,79 @@ func appendBlockInInline(wrapper *LayoutInputNode, data *InlineItemsData, text *
 	})
 }
 
+// appendOpaque writes a bidi control the builder injects and records it as
+// opaque to whitespace collapsing, like Blink's AppendOpaque kBidiControl
+// items (core/layout/inline/inline_items_builder.cc:1356-1370 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (data *InlineItemsData) appendOpaque(text *strings.Builder, r rune) {
+	data.opaqueToCollapsing = append(data.opaqueToCollapsing, text.Len())
+	text.WriteRune(r)
+}
+
+// lastNonEmptyItem returns the last item with text content, or nil.
+func lastNonEmptyItem(data *InlineItemsData) *InlineItem {
+	for i := len(data.Items) - 1; i >= 0; i-- {
+		if item := data.Items[i]; item.StartOffset != item.EndOffset {
+			return item
+		}
+	}
+	return nil
+}
+
+// lastCollapsibleSpace returns the byte offset of a collapsible space that
+// ends text's content, looking past the bidi controls injected after it
+// (data.opaqueToCollapsing): the last item with content is a text item whose
+// white-space collapses and which ends in a space. Mirrors InlineItemsBuilder's
+// LastItemToCollapseWith, which skips kOpaqueToCollapsing items, and that
+// item's end collapse type (core/layout/inline/inline_items_builder.cc:216-226
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a preserved space's item keeps
+// the default kNotCollapsible (inline_item.h:307 @ same SHA).
+func lastCollapsibleSpace(data *InlineItemsData, text string) (int, bool) {
+	end := len(text)
+	for k := len(data.opaqueToCollapsing) - 1; k >= 0 && end > 0; k-- {
+		_, size := utf8.DecodeLastRuneInString(text[:end])
+		if data.opaqueToCollapsing[k] != end-size {
+			break
+		}
+		end -= size
+	}
+	item := lastNonEmptyItem(data)
+	if end == 0 || text[end-1] != ' ' || item == nil || item.EndOffset != end || item.Type != InlineItemText {
+		return 0, false
+	}
+	if item.Style != nil && whiteSpacePreservesWhitespace(item.Style.GetWhiteSpace()) {
+		return 0, false
+	}
+	return end - 1, true
+}
+
 // removeTrailingCollapsibleSpace drops a collapsible space that ends the
-// last text item (InlineItemsBuilder::RemoveTrailingCollapsibleSpace,
-// inline/inline_items_builder.cc:1395-1425 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Only a space ending the text
-// content can qualify: items with zero length (tags, floats, out-of-flow)
-// between it and here do not stop the search, others do.
+// text content, past any injected bidi controls, shifting the offsets
+// after it (InlineItemsBuilder::RemoveTrailingCollapsibleSpaceIfExists and
+// RemoveTrailingCollapsibleSpace,
+// core/layout/inline/inline_items_builder.cc:1382-1425 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func removeTrailingCollapsibleSpace(data *InlineItemsData, text *strings.Builder) {
 	s := text.String()
-	if len(s) == 0 || s[len(s)-1] != ' ' {
+	at, ok := lastCollapsibleSpace(data, s)
+	if !ok {
 		return
 	}
-	for i := len(data.Items) - 1; i >= 0; i-- {
-		item := data.Items[i]
-		if item.EndOffset != len(s) || item.Type != InlineItemText {
-			if item.StartOffset == item.EndOffset {
-				continue
-			}
-			return
+	text.Reset()
+	text.WriteString(s[:at])
+	text.WriteString(s[at+1:])
+	for _, item := range data.Items {
+		if item.StartOffset > at {
+			item.StartOffset--
 		}
-		if item.Style != nil && whiteSpacePreservesWhitespace(item.Style.GetWhiteSpace()) {
-			return
+		if item.EndOffset > at {
+			item.EndOffset--
 		}
-		text.Reset()
-		text.WriteString(s[:len(s)-1])
-		item.EndOffset--
-		// Later zero-length items sat at the removed offset.
-		for _, later := range data.Items[i+1:] {
-			later.StartOffset--
-			later.EndOffset--
+	}
+	for k, off := range data.opaqueToCollapsing {
+		if off > at {
+			data.opaqueToCollapsing[k] = off - 1
 		}
-		return
 	}
 }
 
@@ -801,13 +848,9 @@ func collectTextNode(
 		// item's end collapse type to collapsible,
 		// inline/inline_items_builder.cc:1314-1316 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		// Bidi controls are opaque to collapsing (InlineItemsBuilder's
-		// LastItemToCollapseWith skips kOpaqueToCollapsing items,
-		// inline/inline_items_builder.cc:216-226 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): skip trailing injected ones.
 		if text.Len() > 0 {
-			s := strings.TrimRightFunc(text.String(), isBidiControlChar)
-			prevSpace = (s != "" && s[len(s)-1] == ' ') || lastNonEmptyItemIsBlockInInline(data)
+			_, prevSpace = lastCollapsibleSpace(data, text.String())
+			prevSpace = prevSpace || lastNonEmptyItemIsBlockInInline(data)
 		}
 
 		for _, r := range content {
@@ -884,7 +927,7 @@ func collectTextNode(
 //	isolate-override ltr       LRI + LRO       PDF + PDI
 //	isolate-override rtl       RLI + RLO       PDF + PDI
 //	plaintext        —         FSI (U+2068)    PDI (U+2069)
-func injectBidiControlChars(style *css.Style, text *strings.Builder, isOpen bool) {
+func injectBidiControlChars(style *css.Style, data *InlineItemsData, text *strings.Builder, isOpen bool) {
 	if style == nil {
 		return
 	}
@@ -900,45 +943,45 @@ func injectBidiControlChars(style *css.Style, text *strings.Builder, isOpen bool
 		switch bidiVal {
 		case "embed":
 			if isRTL {
-				text.WriteRune('\u202B') // RLE
+				data.appendOpaque(text, '\u202B') // RLE
 			} else {
-				text.WriteRune('\u202A') // LRE
+				data.appendOpaque(text, '\u202A') // LRE
 			}
 		case "isolate":
 			if isRTL {
-				text.WriteRune('\u2067') // RLI
+				data.appendOpaque(text, '\u2067') // RLI
 			} else {
-				text.WriteRune('\u2066') // LRI
+				data.appendOpaque(text, '\u2066') // LRI
 			}
 		case "bidi-override":
 			if isRTL {
-				text.WriteRune('\u202E') // RLO
+				data.appendOpaque(text, '\u202E') // RLO
 			} else {
-				text.WriteRune('\u202D') // LRO
+				data.appendOpaque(text, '\u202D') // LRO
 			}
 		case "isolate-override":
 			if isRTL {
-				text.WriteRune('\u2067') // RLI
-				text.WriteRune('\u202E') // RLO
+				data.appendOpaque(text, '\u2067') // RLI
+				data.appendOpaque(text, '\u202E') // RLO
 			} else {
-				text.WriteRune('\u2066') // LRI
-				text.WriteRune('\u202D') // LRO
+				data.appendOpaque(text, '\u2066') // LRI
+				data.appendOpaque(text, '\u202D') // LRO
 			}
 		case "plaintext":
-			text.WriteRune('\u2068') // FSI
+			data.appendOpaque(text, '\u2068') // FSI
 		}
 	} else {
 		// Close tag: emit terminator(s).
 		switch bidiVal {
 		case "embed", "bidi-override":
-			text.WriteRune('\u202C') // PDF
+			data.appendOpaque(text, '\u202C') // PDF
 		case "isolate":
-			text.WriteRune('\u2069') // PDI
+			data.appendOpaque(text, '\u2069') // PDI
 		case "isolate-override":
-			text.WriteRune('\u202C') // PDF
-			text.WriteRune('\u2069') // PDI
+			data.appendOpaque(text, '\u202C') // PDF
+			data.appendOpaque(text, '\u2069') // PDI
 		case "plaintext":
-			text.WriteRune('\u2069') // PDI
+			data.appendOpaque(text, '\u2069') // PDI
 		}
 	}
 }

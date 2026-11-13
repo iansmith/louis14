@@ -88,11 +88,11 @@ func openRubyColumn(
 	// direction (mirrors `inline_items_builder.cc:1556-1559,1583-1586`).
 	switch {
 	case rubyStyle != nil && rubyStyle.GetDirection() == css.DirectionRTL:
-		text.WriteRune('⁧') // RLI
+		data.appendOpaque(text, '⁧') // RLI
 	case rubyStyle != nil && rubyStyle.GetDirection() == css.DirectionLTR:
-		text.WriteRune('⁦') // LRI
+		data.appendOpaque(text, '⁦') // LRI
 	default:
-		text.WriteRune('⁨') // FSI
+		data.appendOpaque(text, '⁨') // FSI
 	}
 	offset := text.Len()
 	data.Items = append(data.Items, &InlineItem{
@@ -149,6 +149,9 @@ func closeOrStripRubyColumn(
 		buf := text.String()
 		text.Reset()
 		text.WriteString(buf[:cp.textLen])
+		for len(data.opaqueToCollapsing) > 0 && data.opaqueToCollapsing[len(data.opaqueToCollapsing)-1] >= cp.textLen {
+			data.opaqueToCollapsing = data.opaqueToCollapsing[:len(data.opaqueToCollapsing)-1]
+		}
 		return true
 	}
 	offset := text.Len()
@@ -161,7 +164,7 @@ func closeOrStripRubyColumn(
 	})
 	// PDI to pop the column's isolate (mirrors the matching pop at
 	// `inline_items_builder.cc:1628,1682-1690`).
-	text.WriteRune('⁩') // PDI
+	data.appendOpaque(text, '⁩') // PDI
 	return false
 }
 
