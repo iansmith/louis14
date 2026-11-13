@@ -50,12 +50,12 @@ func TestSkipInkSegments(t *testing.T) {
 			want:   []inkSegment{{Start: 0, End: 70}},
 		},
 		{
-			name:      "adjacent glyphs collapse under thickness inflation",
+			name:      "adjacent glyphs collapse under thickness dilation",
 			start:     0,
 			end:       100,
-			thickness: 4, // inflate = 2; glyphs at [40,50] and [52,60] expand to [38,52] and [50,62], merging to [38,62]
+			thickness: 4, // dilation = min(4, 13) (TextPainter::ClipDecorationLine); glyphs at [40,50] and [52,60] expand to [36,54] and [48,64], merging to [36,64]
 			glyphs:    []glyphExtent{{Start: 40, End: 50}, {Start: 52, End: 60}},
-			want:      []inkSegment{{Start: 0, End: 38}, {Start: 62, End: 100}},
+			want:      []inkSegment{{Start: 0, End: 36}, {Start: 64, End: 100}},
 		},
 		{
 			name:   "out-of-range glyph ignored",
@@ -106,5 +106,27 @@ func TestSkipInkSegments(t *testing.T) {
 					c.start, c.end, c.thickness, c.glyphs, got, c.want)
 			}
 		})
+	}
+}
+
+// TextPainter::ClipDecorationLine looks for glyph intercepts in the line's
+// bounds inset 0.5px across the line (core/paint/text_painter.cc:588-593 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a line that overlaps the
+// glyphs by less than half a pixel skips no ink.
+func TestDecorationBandCrossesGlyphs_IgnoresUnderHalfPixel(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		top, bottom float64
+		want        bool
+	}{
+		{"0.4px into the glyphs", 49.6, 55.6, false},
+		{"0.6px into the glyphs", 49.4, 55.4, true},
+		{"touching the glyphs", 50, 56, false},
+		{"inside the glyphs", 20, 26, true},
+		{"0.4px above the glyphs' top", 4.4, 10.4, false},
+	} {
+		if got := decorationBandCrossesGlyphs(c.top, c.bottom, 10, 50); got != c.want {
+			t.Errorf("%s: band %v-%v over glyphs 10-50 = %v, want %v", c.name, c.top, c.bottom, got, c.want)
+		}
 	}
 }

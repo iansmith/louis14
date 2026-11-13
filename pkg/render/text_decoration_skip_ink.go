@@ -22,24 +22,45 @@ type inkSegment struct {
 	End   float64
 }
 
+// decorationBandCrossesGlyphs reports whether a decoration line whose
+// bounds run from boundsTop to boundsBottom across the line crosses glyph
+// ink running from glyphTop to glyphBottom there, so skip-ink applies.
+// TextPainter::ClipDecorationLine looks for intercepts in the bounds inset
+// decorationClipInset across the line, ignoring intersections thinner than
+// that.
+func decorationBandCrossesGlyphs(boundsTop, boundsBottom, glyphTop, glyphBottom float64) bool {
+	return boundsBottom-decorationClipInset > glyphTop && boundsTop+decorationClipInset < glyphBottom
+}
+
+// decorationClipInset is how far ClipDecorationLine insets a decoration
+// line's bounds across the line before finding intercepts
+// (core/paint/text_painter.cc:589-590 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+const decorationClipInset = 0.5
+
+// decorationClipMaxDilation is kDecorationClipMaxDilation, the cap on
+// skip-ink's dilation of a glyph intercept (core/paint/text_painter.cc:46 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+const decorationClipMaxDilation = 13
+
 // skipInkSegments returns the sub-segments of the decoration line that
 // REMAIN after skip-ink removes the glyph extents.
 //
 // Inputs:
 //   - start, end:  the decoration line's inline-axis range (start < end).
-//   - thickness:   the decoration line's stroke thickness; used as the
-//     safety inflation on each side of each glyph extent so
-//     the gap matches the spec's "ink intersection" intent.
-//     Pass 0 for no inflation.
+//   - thickness:   the decoration line's stroke thickness; each glyph extent
+//     is dilated by it, at most decorationClipMaxDilation, on
+//     both sides. Pass 0 for no dilation.
 //   - glyphs:      glyph extents on the same inline axis. May be empty or
 //     in any order.
 //
 // Returns the list of [start, end) sub-segments in increasing order.
 //
-// Mirrors the algorithm in Blink's `decoration_line_painter.cc` at
-// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f: each glyph extent is
-// inflated by half-thickness on both sides, the inflated intervals are
-// merged, and the decoration line is partitioned into the complement.
+// Mirrors TextPainter::ClipDecorationLine (core/paint/text_painter.cc:
+// 574-622 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): each glyph intercept
+// is dilated by min(thickness, decorationClipMaxDilation) on both sides
+// and clipped out, so the line keeps the complement of the merged
+// intervals.
 func skipInkSegments(start, end, thickness float64, glyphs []glyphExtent) []inkSegment {
 	if end <= start {
 		return nil
@@ -48,9 +69,9 @@ func skipInkSegments(start, end, thickness float64, glyphs []glyphExtent) []inkS
 		return []inkSegment{{Start: start, End: end}}
 	}
 
-	// Inflate each glyph extent by thickness/2 on both sides, clamp to
-	// the decoration line's range, drop empty or out-of-range intervals.
-	inflate := thickness / 2
+	// Dilate each glyph extent on both sides, clamp to the decoration
+	// line's range, drop empty or out-of-range intervals.
+	inflate := min(thickness, decorationClipMaxDilation)
 	intervals := make([]inkSegment, 0, len(glyphs))
 	for _, g := range glyphs {
 		s := g.Start - inflate

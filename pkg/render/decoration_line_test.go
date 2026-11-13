@@ -289,3 +289,19 @@ func TestDecorationLine_UprightUnderlinePosition(t *testing.T) {
 		}
 	}
 }
+
+// Skip-ink clips each glyph intercept out dilated by the line's thickness,
+// at most 13px (TextPainter::ClipDecorationLine,
+// core/paint/text_painter.cc:46, :606-622 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A 6px underline crossing "X
+// X"'s 40px Ahem glyphs (x 10-50, 90-130) keeps x 56-83 in Chrome
+// 2026-11-13.
+func TestDecorationLine_SkipInkDilatesByThickness(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html lang="en"><body style="margin:0">`+
+		`<div style="position:absolute;left:10px;top:10px;font:40px/40px Ahem;color:transparent;`+
+		`text-decoration:underline solid black;text-decoration-thickness:6px;text-underline-offset:-15px">X X</div></body></html>`, 200, 80)
+	first, last := darkColumnSpan(img, 30)
+	if first != 56 || last != 83 {
+		t.Errorf("underline kept x %d-%d, want Chrome's 56-83", first, last)
+	}
+}
