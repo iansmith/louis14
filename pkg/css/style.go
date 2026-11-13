@@ -457,58 +457,68 @@ func isResolvedColorValue(value string) bool {
 }
 
 // varReferenceNames returns the custom property name of every var() in value,
-// fallbacks included, in order.
+// fallbacks included, in order, each with its escapes resolved
+// (unescapeName).
 func varReferenceNames(value string) []string {
 	var names []string
 	for off := 0; ; {
-		i := indexVarFunction(value[off:])
-		if i < 0 {
+		raw, next, ok := nextVarName(value, off)
+		if !ok {
 			return names
 		}
-		j := off + i + len("var(")
-		for j < len(value) && isCSSWhitespace(value[j]) {
-			j++
+		if raw != "" {
+			names = append(names, unescapeName(raw))
 		}
-		k := j
-		for k < len(value) && value[k] != ',' && value[k] != ')' && !isCSSWhitespace(value[k]) {
-			k++
-		}
-		if k > j {
-			names = append(names, value[j:k])
-		}
-		off = j
+		off = next
 	}
 }
 
-// containsVarReferenceTo reports whether value contains a `var(<name>` token
-// (case-sensitive, name matched as a whole word). Used by resolveVarReferences
-// to detect a single-property self-cycle before recursing into the value.
-func containsVarReferenceTo(value, name string) bool {
-	idx := 0
-	for {
-		i := strings.Index(value[idx:], "var(")
-		if i < 0 {
+// varReferencesName reports whether a var() in value names name (escapes
+// resolved): a self-reference cycle check that returns at the first match.
+func varReferencesName(value, name string) bool {
+	for off := 0; ; {
+		raw, next, ok := nextVarName(value, off)
+		if !ok {
 			return false
 		}
-		j := idx + i + 4
-		// Skip whitespace.
-		for j < len(value) && (value[j] == ' ' || value[j] == '\t' || value[j] == '\n' || value[j] == '\r' || value[j] == '\f') {
-			j++
+		if raw != "" && unescapeName(raw) == name {
+			return true
 		}
-		end := j + len(name)
-		if end <= len(value) && value[j:end] == name {
-			// Check that the next byte is not an ident-continuation char,
-			// so we don't match `var(--ab)` for name="--a".
-			if end == len(value) {
-				return true
-			}
-			next := value[end]
-			if !isIdentContinue(next) {
-				return true
-			}
-		}
-		idx = idx + i + 4
+		off = next
 	}
+}
+
+// nextVarName finds the first var() in value at or after off and returns
+// its name as written (escapes unresolved) and the offset to search on
+// from, inside its arguments so a var() in its fallback is found next; ok
+// is false when no var() remains.
+func nextVarName(value string, off int) (raw string, next int, ok bool) {
+	i := indexVarFunction(value[off:])
+	if i < 0 {
+		return "", 0, false
+	}
+	j := off + i + len("var(")
+	for j < len(value) && isCSSWhitespace(value[j]) {
+		j++
+	}
+	return value[j:varNameEnd(value, j)], j, true
+}
+
+// varNameEnd returns the end of the var() name that starts at value[j]:
+// before the first comma, `)` or whitespace that no escape covers. A `\`
+// before a newline is no escape (TwoCharsAreValidEscape,
+// core/css/parser/css_tokenizer.cc:214-215 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func varNameEnd(value string, j int) int {
+	k := j
+	for k < len(value) && value[k] != ',' && value[k] != ')' && !isCSSWhitespace(value[k]) {
+		if value[k] == '\\' && k+1 < len(value) && !isCSSNewline(value[k+1]) {
+			_, n := consumeEscape(value[k+1:])
+			k += n
+		}
+		k++
+	}
+	return k
 }
 
 // asciiToLower lowercases A-Z to a-z but leaves all other bytes (including
@@ -576,33 +586,22 @@ func (s *Style) resolveVarsWithStatus(value string) (string, bool) {
 			break
 		}
 
-		// Find the matching closing paren
-		parenDepth := 0
-		end := -1
-		for i := idx + 3; i < len(value); i++ {
-			if value[i] == '(' {
-				parenDepth++
-			} else if value[i] == ')' {
-				parenDepth--
-				if parenDepth == 0 {
-					end = i
-					break
-				}
-			}
-		}
-		if end == -1 {
+		// var()'s `)` is the first one outside every block, string and
+		// escape in its arguments (indexTopLevel).
+		n := indexTopLevel(value[idx+4:], ')')
+		if n < 0 {
 			break // Malformed var() — no closing paren
 		}
+		end := idx + 4 + n
 
-		// Extract the content between var( and )
-		content := strings.TrimSpace(value[idx+4 : end])
-
-		// Split on first comma (separating property name from fallback)
-		varName := content
+		// The name runs to its own end (varNameEnd, so an escaped trailing
+		// space stays in it); the fallback follows the first top-level comma.
+		content := value[idx+4 : end]
+		nameStart := len(content) - len(strings.TrimLeft(content, " \t\n\r\f"))
+		varName := unescapeName(content[nameStart:varNameEnd(content, nameStart)])
 		fallback := ""
 		hasFallback := false
-		if commaIdx := findTopLevelComma(content); commaIdx >= 0 {
-			varName = strings.TrimSpace(content[:commaIdx])
+		if commaIdx := indexTopLevel(content, ','); commaIdx >= 0 {
 			fallback = strings.TrimSpace(content[commaIdx+1:])
 			hasFallback = true
 		}
@@ -639,7 +638,7 @@ func (s *Style) resolveVarsWithStatus(value string) (string, bool) {
 		//       (variable-reference-02, variable-declaration-43/46).
 		resolved := ""
 		propVal, propOK := s.Properties[varName]
-		propCyclic := propOK && containsVarReferenceTo(propVal, varName)
+		propCyclic := propOK && varReferencesName(propVal, varName)
 		propUsable := propOK && propVal != "" && !propCyclic
 		switch {
 		case propUsable:
@@ -743,8 +742,8 @@ func resolveEnvValue(val string) string {
 
 		inner := strings.TrimSpace(val[start+4 : end])
 
-		// Split on the first comma (outside parens) to get variable name and optional fallback
-		commaIdx := findTopLevelComma(inner)
+		// Split on the first top-level comma to get variable name and optional fallback
+		commaIdx := indexTopLevel(inner, ',')
 		varName := strings.ToLower(strings.TrimSpace(inner))
 		fallback := "0px"
 		if commaIdx >= 0 {
@@ -8782,7 +8781,7 @@ func ParseContentValues(raw string) []ContentValue {
 func parseAttrNameAndFallback(arg string) (name, fallback string) {
 	arg = strings.TrimSpace(arg)
 	// Split at the first top-level comma (separates name[+type] from fallback).
-	commaIdx := findTopLevelComma(arg)
+	commaIdx := indexTopLevel(arg, ',')
 	rawName := arg
 	rawFallback := ""
 	hasFallback := false
@@ -8821,7 +8820,7 @@ func parseAttrNameAndFallback(arg string) (name, fallback string) {
 // For counter() (two parts) name and style. For counters() (two or
 // three parts) call splitCountersSepAndStyle on `rest` afterward.
 func splitCounterArgs(arg string) (name, rest, style string) {
-	first := findTopLevelComma(arg)
+	first := indexTopLevel(arg, ',')
 	if first < 0 {
 		return strings.TrimSpace(arg), "", ""
 	}
@@ -9005,7 +9004,7 @@ func expandRepeatTracks(parts []string) []string {
 		if strings.HasPrefix(part, "repeat(") && strings.HasSuffix(part, ")") {
 			inner := strings.TrimSpace(part[7 : len(part)-1]) // strip "repeat(" and ")"
 			// Find the first comma at depth 0
-			commaIdx := findTopLevelComma(inner)
+			commaIdx := indexTopLevel(inner, ',')
 			if commaIdx < 0 {
 				// Malformed repeat(), pass through as-is
 				result = append(result, part)
@@ -12705,32 +12704,20 @@ func (s *Style) WillChangeEstablishesInlineContainingBlock() bool {
 	return false
 }
 
-// SplitTopLevelCommas splits s on commas outside parentheses and string
-// tokens (stringTokenEnd), each part trimmed: a comma-separated CSS list
-// value (background layers, shadows, transitions, font-family, @font-face
-// src, function arguments).
+// SplitTopLevelCommas splits s at its top-level commas (indexTopLevel:
+// outside every block, string and escape), each part trimmed: a
+// comma-separated CSS list value (background layers, shadows, transitions,
+// font-family, @font-face src, function arguments).
 func SplitTopLevelCommas(s string) []string {
 	var parts []string
-	depth := 0
-	start := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '"' || c == '\'':
-			i, _ = stringTokenEnd(s, i)
-		case c == '(':
-			depth++
-		case c == ')':
-			if depth > 0 {
-				depth--
-			}
-		case c == ',' && depth == 0:
-			parts = append(parts, strings.TrimSpace(s[start:i]))
-			start = i + 1
+	for {
+		i := indexTopLevel(s, ',')
+		if i < 0 {
+			return append(parts, strings.TrimSpace(s))
 		}
+		parts = append(parts, strings.TrimSpace(s[:i]))
+		s = s[i+1:]
 	}
-	parts = append(parts, strings.TrimSpace(s[start:]))
-	return parts
 }
 
 // splitTopLevelFields splits s on whitespace runs that are not nested inside

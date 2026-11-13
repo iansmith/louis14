@@ -540,10 +540,10 @@ func expandNestingParts(css string, parentSelector string, parts *[]expandedPart
 			continue
 		}
 
-		// Use the paren-aware brace finder — `@supports not unknown(!@#% {
+		// Use the block-aware brace finder — `@supports not unknown(!@#% {
 		// ... } ...)` has braces inside the prelude that are part of
-		// <general-enclosed>, not the body. indexTopLevelBrace tracks
-		// parens/strings to skip them.
+		// <general-enclosed>, not the body. indexTopLevel tracks
+		// blocks and strings to skip them.
 		bracePos, closePos, ok := blockBounds(part)
 		if !ok {
 			// No block — pass through (e.g., @layer statement)
@@ -3043,14 +3043,14 @@ func lastCloseBrace(s string) int {
 }
 
 // blockBounds is where rule's block lies: openPos is its `{`, the first
-// outside a string and a `(` block (indexTopLevelBrace), and closePos its `}`,
+// outside a string and a block (indexTopLevel), and closePos its `}`,
 // the last outside a string and a comment (lastCloseBrace), or len(rule)
 // when end of input closes the block, as Blink consumes a qualified rule's
 // or an at-rule's block (CSSParserImpl::ConsumeQualifiedRule,
 // ConsumeAtRuleContents @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). ok is
 // false when rule has no block.
 func blockBounds(rule string) (openPos, closePos int, ok bool) {
-	openPos = indexTopLevelBrace(rule)
+	openPos = indexTopLevel(rule, '{')
 	if openPos < 0 {
 		return -1, -1, false
 	}
@@ -3061,28 +3061,30 @@ func blockBounds(rule string) (openPos, closePos int, ok bool) {
 	return openPos, closePos, true
 }
 
-// indexTopLevelBrace returns the byte index of the first `{` in s that lies
-// outside any `(` or `[` block and outside strings, or -1 if none: the start
-// of a rule's block, past braces that are component values inside its
-// prelude (e.g. `@supports not unknown(!@#% { ... })`). Blocks stack as
-// splitRulesAt stacks them: a closer that does not match the innermost
-// block is a plain token.
-func indexTopLevelBrace(s string) int {
+// indexTopLevel returns the byte index of the first target byte in s that
+// lies outside every (), [] and {} block, string and escape, or -1 if none.
+// Blocks stack as Blink's tokenizer stacks them (CSSTokenizer::BlockStart /
+// BlockEnd, core/css/parser/css_tokenizer.cc:66-87 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b, and splitRulesAt): a closer
+// that does not match the innermost block is a plain token. With target
+// `{` it finds the start of a rule's block, past braces that are component
+// values inside its prelude (e.g. `@supports not unknown(!@#% { ... })`);
+// with `,` the end of a comma-separated list item.
+func indexTopLevel(s string, target byte) int {
 	var buf [16]byte
 	blocks := buf[:0]
 	for i := 0; i < len(s); i++ {
-		switch c := s[i]; c {
+		c := s[i]
+		if c == target && len(blocks) == 0 {
+			return i
+		}
+		switch c {
 		case '\\':
 			i++
 		case '"', '\'':
 			i, _ = stringTokenEnd(s, i)
-		case '(', '[':
+		case '(', '[', '{':
 			blocks = append(blocks, blockCloser(c))
-		case '{':
-			if len(blocks) == 0 {
-				return i
-			}
-			blocks = append(blocks, '}')
 		case ')', ']', '}':
 			if len(blocks) > 0 && blocks[len(blocks)-1] == c {
 				blocks = blocks[:len(blocks)-1]
@@ -4983,9 +4985,11 @@ func splitDeclarationParts(declStr string) []string {
 // unescapeCSS decodes CSS escape sequences outside string tokens per CSS 2.1
 // §4.1.3; a string token is stored as serializeString writes it, its escapes
 // resolved inside it (see unescapeCSSKeepingURLs)
-// - \X where X is not a hex digit → literal character X (e.g., \r → r)
-// - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
-// - Trailing whitespace after hex escape is consumed
+//   - \X where X is not a hex digit → literal character X (e.g., \r → r);
+//     an escaped code point that is no name code point stays escaped
+//     (writeIdentCodePoint), so it remains part of its ident
+//   - \HHHHHH (1-6 hex digits) → Unicode code point (e.g., \45 → E since 0x45 = 69 = 'E')
+//   - Trailing whitespace after hex escape is consumed
 func unescapeCSS(s string) string { return unescapeCSSKeepingURLs(s, false, false) }
 
 // unescapeCSSKeepingURLs is unescapeCSS that, when keepURLs is set, copies
@@ -5027,10 +5031,51 @@ func unescapeCSSKeepingURLs(s string, keepURLs, keepStrings bool) string {
 			continue
 		}
 		r, n := consumeEscape(s[i+1:])
-		result.WriteRune(r)
+		writeIdentCodePoint(&result, r)
 		i += 1 + n
 	}
 	return result.String()
+}
+
+// writeIdentCodePoint writes r, an escaped code point of an ident, so the
+// text still tokenizes as that one ident: a name code point as itself,
+// anything else escaped again, as SerializeIdentifier writes it
+// (core/css/css_markup.cc:160-174 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An escaped `,` or `)` stays
+// part of the ident instead of becoming syntax.
+func writeIdentCodePoint(b *strings.Builder, r rune) {
+	switch {
+	case r >= 0x80 || isIdentContinue(byte(r)):
+		b.WriteRune(r)
+	case r <= 0x1f || r == 0x7f:
+		fmt.Fprintf(b, "\\%x ", r)
+	default:
+		b.WriteByte('\\')
+		b.WriteRune(r)
+	}
+}
+
+// unescapeName returns the name s spells, every escape resolved to its code
+// point (blink::ConsumeName via CSSTokenizer::ConsumeName,
+// core/css/parser/css_tokenizer.cc:594-691 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a property or custom
+// property name, as declared or inside var().
+func unescapeName(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '\\' || i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		r, n := consumeEscape(s[i+1:])
+		b.WriteRune(r)
+		i += 1 + n
+	}
+	return b.String()
 }
 
 // isHexDigit returns true if c is a hexadecimal digit
@@ -5230,7 +5275,7 @@ func parseDeclarations(declStr string, dropImportant ...bool) *DeclarationResult
 		// An alias is the property it is an alias for, resolved before the
 		// value is unescaped, so `-webkit-filter` keeps url() escapes as
 		// `filter` does.
-		property := ResolveCSSPropertyID(unescapeCSS(rawProperty))
+		property := ResolveCSSPropertyID(unescapeName(rawProperty))
 		// IMPORTANT: Don't unescape the quotes property value here, as it needs special handling
 		// in parseQuotes (layout.go) to preserve the quote string structure
 		var value string
@@ -6240,14 +6285,15 @@ func hasInvalidVarReference(value string) bool {
 			continue
 		}
 		if ch == '(' && isVarFunctionAt(value, i) {
-			end := matchClosingParen(value, i)
-			if end < 0 {
+			n := indexTopLevel(value[i+1:], ')')
+			if n < 0 {
 				// Unmatched var() paren — value is invalid regardless.
 				return true
 			}
+			end := i + 1 + n
 			inner := value[i+1 : end]
 			name := inner
-			if commaIdx := findTopLevelComma(inner); commaIdx >= 0 {
+			if commaIdx := indexTopLevel(inner, ','); commaIdx >= 0 {
 				name = inner[:commaIdx]
 			}
 			name = strings.TrimSpace(name)
@@ -6258,7 +6304,7 @@ func hasInvalidVarReference(value string) bool {
 			// and top-level bare `!` are illegal (CSS Variables §3). The
 			// existing custom-property token walker enforces these rules and
 			// recurses into nested var() fallbacks for free.
-			if commaIdx := findTopLevelComma(inner); commaIdx >= 0 {
+			if commaIdx := indexTopLevel(inner, ','); commaIdx >= 0 {
 				fallback := strings.TrimSpace(inner[commaIdx+1:])
 				if fallback != "" && !isValidDeclarationValueTokens(fallback, true) {
 					return true
@@ -6337,7 +6383,7 @@ func isValidDeclarationValueTokens(s string, topLevel bool) bool {
 				// Split on first top-level comma — fallback is everything
 				// after it. Per CSS Variables §3 the fallback is itself a
 				// declaration value, so apply the same rules to it.
-				if commaIdx := findTopLevelComma(inner); commaIdx >= 0 {
+				if commaIdx := indexTopLevel(inner, ','); commaIdx >= 0 {
 					fallback := strings.TrimSpace(inner[commaIdx+1:])
 					if fallback != "" && !isValidDeclarationValueTokens(fallback, true) {
 						return false
@@ -6572,44 +6618,6 @@ func matchClosingParen(s string, openIdx int) int {
 		case ')':
 			depth--
 			if depth == 0 {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-// findTopLevelComma finds the index of the first comma at paren/bracket/brace
-// depth 0 (and outside strings). Returns -1 if none.
-func findTopLevelComma(s string) int {
-	parenDepth := 0
-	bracketDepth := 0
-	braceDepth := 0
-	for i := 0; i < len(s); i++ {
-		ch := s[i]
-		switch ch {
-		case '"', '\'':
-			i, _ = stringTokenEnd(s, i)
-		case '(':
-			parenDepth++
-		case ')':
-			if parenDepth > 0 {
-				parenDepth--
-			}
-		case '[':
-			bracketDepth++
-		case ']':
-			if bracketDepth > 0 {
-				bracketDepth--
-			}
-		case '{':
-			braceDepth++
-		case '}':
-			if braceDepth > 0 {
-				braceDepth--
-			}
-		case ',':
-			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
 				return i
 			}
 		}

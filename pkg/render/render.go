@@ -6830,8 +6830,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 			top, height := wavyPaintRect(rectTop, thickness, wavyOffset)
 			lineTop, lineBottom = top, top+height
 		}
-		linePerpOverlapsGlyph := lineBottom > glyphYTop && lineTop < glyphYBottom
-		skipped := skipInk && len(glyphs) > 0 && linePerpOverlapsGlyph
+		skipped := skipInk && len(glyphs) > 0 && decorationBandCrossesGlyphs(lineTop, lineBottom, glyphYTop, glyphYBottom)
 		if skipped {
 			segments = skipInkSegments(xStart, xEnd, thickness, glyphs)
 		}
@@ -6864,7 +6863,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// (= rect TOP for solid). Round to integer pixels so the underline
 		// aligns with the rounded baseline used by drawTextStr (math.Round),
 		// preventing a sub-pixel gap that exposes the underline below the glyph.
-		lineY := math.Round(info.computeUnderlineLineY(td))
+		lineY := info.underlineRectTop(td)
 		paintLine(lineY, lineY, doubleOffsetFromThickness(thickness), true)
 	}
 	if !onlyLineThrough && td.Lines.Has(css.TextDecorationLineOverline) {
@@ -6874,8 +6873,8 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 		// [TextTop - thickness, TextTop], so for the SOLID path the rect
 		// TOP is `TextTop - thickness` (overline grows UPWARD from
 		// text-top — see text-decoration-thickness-overline-001).
-		centerY := info.computeOverlineLineY()
-		paintLine(centerY-thickness, centerY, -doubleOffsetFromThickness(thickness), true)
+		top := info.overlineRectTop(thickness)
+		paintLine(top, top+thickness, -doubleOffsetFromThickness(thickness), true)
 	}
 	if onlyLineThrough && td.Lines.Has(css.TextDecorationLineLineThrough) {
 		// Line-through stays stroke-centered for all styles. Blink centers
