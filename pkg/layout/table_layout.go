@@ -1788,10 +1788,12 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 			if eff > colMax[ci] {
 				colMax[ci] = eff
 			}
-			// Set colConstrained only when the column has an effective constraint:
-			// a width (0 included) OR hasMin (a min-raised column is constrained).
-			// A column with hasMax only and no width stays unconstrained (max-width alone is inert).
-			if cws.hasWidth || cws.hasMin {
+			// Only a width (0 included) constrains the column: CreateColumn
+			// sets is_constrained from inline_size alone; min-width only
+			// clamps the width, when there is one (table/
+			// table_layout_algorithm_types.cc:86-115 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+			if cws.hasWidth {
 				colConstrained[ci] = true
 				colConstrainedByCol[ci] = true
 			}
