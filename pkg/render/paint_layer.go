@@ -2,6 +2,7 @@ package render
 
 import (
 	"louis14/pkg/graphics/filters"
+	"math"
 	"sort"
 	"strings"
 
@@ -1090,7 +1091,7 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 		} else if isGradientValue(biSrc) {
 			layer.BorderImageGenerated = biSrc
 		}
-		if layer.BorderImageSource != nil || layer.BorderImageGenerated != "" {
+		if layer.hasBorderImage() {
 			layer.BorderImage = s.GetBorderImage()
 		}
 	}
@@ -2266,21 +2267,34 @@ func (layer *PaintLayer) forEachChild(f func(c *PaintLayer, selfPainting bool)) 
 	}
 }
 
-// selfPaintingDescendantBoxes returns the boxes of layer's self-painting
-// descendant layers at any depth: the boxes visualOverflowRect leaves out.
-func (layer *PaintLayer) selfPaintingDescendantBoxes() map[*layout.Box]bool {
-	boxes := map[*layout.Box]bool{}
+// overflowScope is what visualOverflowRect needs to know of a layer's
+// subtree: the boxes painted by self-painting descendant layers, which it
+// leaves out, and the layer of every other box under it, which carries the
+// box's paint-time style (its shadows, border-image and outline).
+type overflowScope struct {
+	selfPainting map[*layout.Box]bool
+	layers       map[*layout.Box]*PaintLayer
+}
+
+// overflowScope returns layer's overflowScope: the boxes of its
+// self-painting descendant layers at any depth, and the layers of the rest.
+func (layer *PaintLayer) overflowScope() overflowScope {
+	scope := overflowScope{selfPainting: map[*layout.Box]bool{}, layers: map[*layout.Box]*PaintLayer{}}
 	var walk func(l *PaintLayer)
 	walk = func(l *PaintLayer) {
 		l.forEachChild(func(c *PaintLayer, selfPainting bool) {
-			if selfPainting && c.Box != nil {
-				boxes[c.Box] = true
+			if c.Box != nil {
+				if selfPainting {
+					scope.selfPainting[c.Box] = true
+				} else if _, ok := scope.layers[c.Box]; !ok {
+					scope.layers[c.Box] = c
+				}
 			}
 			walk(c)
 		})
 	}
 	walk(layer)
-	return boxes
+	return scope
 }
 
 // localBoundingBox mirrors PaintLayer::LocalBoundingBox (paint_layer.cc:
@@ -2292,17 +2306,70 @@ func (layer *PaintLayer) selfPaintingDescendantBoxes() map[*layout.Box]bool {
 // (layout_inline.cc:675-708 @ a9f50e52): the inline's fragments and their
 // contents. In louis14 those hang under the inline's layer as its
 // non-self-painting children.
-func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
+func (layer *PaintLayer) localBoundingBox(scope overflowScope) geometry.PhysicalRect {
+	// scope holds the layer's descendants only, so its own ink overflow
+	// is added here.
 	if !layer.isLayoutInline() {
-		return visualOverflowRect(layer.Box, selfPainting).Unite(layer.outlineInkOverflowRect())
+		return visualOverflowRect(layer.Box, scope).Unite(layer.selfInkOverflowRect())
 	}
 	rect := layer.linesBoundingBox
 	layer.forEachChild(func(c *PaintLayer, childSelfPainting bool) {
 		if !childSelfPainting && c.Box != nil {
-			rect = rect.Unite(visualOverflowRect(c.Box, selfPainting))
+			rect = rect.Unite(visualOverflowRect(c.Box, scope))
 		}
 	})
-	return rect.Unite(layer.outlineInkOverflowRect())
+	return rect.Unite(layer.selfInkOverflowRect())
+}
+
+// selfInkOverflowRect mirrors PhysicalBoxFragment::ComputeSelfInkOverflow
+// (core/layout/physical_box_fragment.cc:1109-1180 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) less the border box: the border
+// box grown by its BoxDecorationOutsets, united with the outline's ink
+// overflow. Empty when the layer has neither.
+func (layer *PaintLayer) selfInkOverflowRect() geometry.PhysicalRect {
+	ink := layer.outlineInkOverflowRect()
+	if o := layer.boxDecorationOutsets(); !o.IsZero() && layer.Box != nil {
+		ink = ink.Unite(fragmentRect(layer.Box).ExpandEdges(o.Top, o.Right, o.Bottom, o.Left))
+	}
+	return ink
+}
+
+// hasBorderImage is BorderImage().HasImage(): a url() or generated
+// border-image-source.
+func (layer *PaintLayer) hasBorderImage() bool {
+	return layer.BorderImageSource != nil || layer.BorderImageGenerated != ""
+}
+
+// boxDecorationOutsets mirrors ComputedStyle::BoxDecorationOutsets
+// (core/style/computed_style.cc:2700-2718 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the outer box-shadows'
+// outsets, each ceil(3 sigma) + spread around its offset (ShadowData::
+// RectOutsets, core/style/shadow_data.cc:32-43, sigma = blur / 2,
+// shadow_data.h:75-81; ShadowList::RectOutsetsIncludingOriginal,
+// shadow_list.cc:39-48) enclosed in whole LayoutUnits, united with the
+// border-image's outsets when it has an image (HasBorderImageOutsets,
+// computed_style.h:1412-1417). louis14 has no mask-box-image.
+func (layer *PaintLayer) boxDecorationOutsets() geometry.PhysicalBoxStrut {
+	var top, right, bottom, left float64
+	for _, sh := range layer.BoxShadows {
+		if sh.Inset {
+			continue
+		}
+		blurAndSpread := math.Ceil(3*sh.Blur/2) + sh.Spread
+		top = max(top, blurAndSpread-sh.OffsetY)
+		right = max(right, blurAndSpread+sh.OffsetX)
+		bottom = max(bottom, blurAndSpread+sh.OffsetY)
+		left = max(left, blurAndSpread-sh.OffsetX)
+	}
+	if layer.Box != nil && layer.hasBorderImage() {
+		b := layer.Box.Border
+		o := layer.BorderImage.ImageOutsets([4]float64{b.Top, b.Right, b.Bottom, b.Left})
+		top, right, bottom, left = max(top, o[0]), max(right, o[1]), max(bottom, o[2]), max(left, o[3])
+	}
+	return geometry.PhysicalBoxStrut{
+		Top: layoutunit.FromFloat64Ceil(top), Right: layoutunit.FromFloat64Ceil(right),
+		Bottom: layoutunit.FromFloat64Ceil(bottom), Left: layoutunit.FromFloat64Ceil(left),
+	}
 }
 
 // outlineInkOverflowRect is the ink overflow the layer's own outline adds to
@@ -2339,33 +2406,49 @@ func (layer *PaintLayer) hasOutline() bool {
 // its own is left out, as Blink leaves it out of its ancestors' visual
 // overflow; ExpandRectForSelfPaintingDescendants adds it.
 //
+// Each box's own ink overflow (selfInkOverflowRect) comes from its layer in
+// scope; the overflow clip never cuts it.
+//
 // no Blink analog: louis14 keeps no visual overflow, so this is built from
-// border boxes alone, without ink overflow (shadows, outlines, glyph overflow).
-func visualOverflowRect(box *layout.Box, selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
+// border boxes and their layers' self ink overflow, without glyph ink
+// overflow.
+func visualOverflowRect(box *layout.Box, scope overflowScope) geometry.PhysicalRect {
 	border := fragmentRect(box)
+	self := border
+	if l := scope.layers[box]; l != nil {
+		self = self.Unite(l.selfInkOverflowRect())
+	}
 	var contents geometry.PhysicalRect
 	for _, child := range box.Children {
-		if !selfPainting[child] {
-			contents = contents.Unite(visualOverflowRect(child, selfPainting))
+		if !scope.selfPainting[child] {
+			contents = contents.Unite(visualOverflowRect(child, scope))
 		}
 	}
+	// An overflow clip cuts the contents' overflow back, never the box's
+	// own ink overflow (LayoutBox::VisualOverflowRect clips only
+	// ContentsVisualOverflowRect).
 	if outsets, ok := borderOutsetsForClipping(box); ok {
 		if contents.IsEmpty() {
-			return border
+			return self
 		}
 		clip := geometry.PhysicalRectEnclosingRect(geometry.NewRectF(
 			box.X-outsets[3], box.Y-outsets[0],
 			box.Width+outsets[1]+outsets[3], box.Height+outsets[0]+outsets[2]))
-		return clip.Intersect(contents).Unite(border)
+		return clip.Intersect(contents).Unite(self)
 	}
-	result := border.Unite(contents)
+	if contents.IsEmpty() {
+		return self
+	}
+	// ApplyOverflowClip: on each clipped axis, the contents keep only the
+	// border box's extent.
+	clip := contents
 	if box.OverflowClipAxes&layout.OverflowClipX != 0 {
-		result.Offset.Left, result.Size.Width = border.Offset.Left, border.Size.Width
+		clip.Offset.Left, clip.Size.Width = border.Offset.Left, border.Size.Width
 	}
 	if box.OverflowClipAxes&layout.OverflowClipY != 0 {
-		result.Offset.Top, result.Size.Height = border.Offset.Top, border.Size.Height
+		clip.Offset.Top, clip.Size.Height = border.Offset.Top, border.Size.Height
 	}
-	return result
+	return self.Unite(contents.Intersect(clip))
 }
 
 // borderOutsetsForClipping mirrors LayoutBox::BorderOutsetsForClipping
@@ -2448,15 +2531,15 @@ func containingBlockWithin(oof, clipper *layout.Box) bool {
 // PaintLayer::LocalBoundingBoxIncludingSelfPaintingDescendants
 // (paint_layer.cc:2244-2249 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (r *Renderer) localBoundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer) geometry.PhysicalRect {
-	return r.boundingBoxIncludingSelfPaintingDescendants(layer, layer.selfPaintingDescendantBoxes())
+	return r.boundingBoxIncludingSelfPaintingDescendants(layer, layer.overflowScope())
 }
 
 // boundingBoxIncludingSelfPaintingDescendants is
-// localBoundingBoxIncludingSelfPaintingDescendants with the self-painting box
-// set of an ancestor, which serves every layer under it.
-func (r *Renderer) boundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer, selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
-	result := layer.localBoundingBox(selfPainting)
-	r.expandRectForSelfPaintingDescendants(layer, &result, selfPainting)
+// localBoundingBoxIncludingSelfPaintingDescendants with the overflowScope of
+// an ancestor, which serves every layer under it.
+func (r *Renderer) boundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer, scope overflowScope) geometry.PhysicalRect {
+	result := layer.localBoundingBox(scope)
+	r.expandRectForSelfPaintingDescendants(layer, &result, scope)
 	return result
 }
 
@@ -2471,16 +2554,16 @@ func (r *Renderer) boundingBoxIncludingSelfPaintingDescendants(layer *PaintLayer
 // louis14 they hang under that child (floats, atomic inlines). The child
 // contributes them through its own expansion. In Blink such a layer has no
 // self-painting descendants of its own to drop.
-func (r *Renderer) expandRectForSelfPaintingDescendants(layer *PaintLayer, result *geometry.PhysicalRect, selfPainting map[*layout.Box]bool) {
+func (r *Renderer) expandRectForSelfPaintingDescendants(layer *PaintLayer, result *geometry.PhysicalRect, scope overflowScope) {
 	if layer.knownToClipSubtreeToPaddingBox() {
 		return
 	}
 	layer.forEachChild(func(child *PaintLayer, childSelfPainting bool) {
 		if !childSelfPainting || child.Box == nil {
-			r.expandRectForSelfPaintingDescendants(child, result, selfPainting)
+			r.expandRectForSelfPaintingDescendants(child, result, scope)
 			return
 		}
-		added := r.boundingBoxIncludingSelfPaintingDescendants(child, selfPainting)
+		added := r.boundingBoxIncludingSelfPaintingDescendants(child, scope)
 		if child.paintsWithFilters() {
 			added = r.mapRectForFilter(child, added)
 		}
