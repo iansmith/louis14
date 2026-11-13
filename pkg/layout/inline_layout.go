@@ -821,14 +821,18 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// (inline_layout_algorithm.cc:835-917).
 		inlinePos := 0.0
 		floatsPlacedOnLine := false
-		// committedBefore tracks the inline size of non-float content committed to
-		// this line before the current float, used to decide whether a float should
-		// be deferred to the next line.
+		// committedBeforeFloat tracks the inline size of non-float content
+		// committed to this line before the current float, used to decide
+		// whether the float is pushed after the line.
 		committedBeforeFloat := 0.0
-		// trackAvail mirrors lineAvailableInline and is decremented per placed float
-		// so that subsequent float-deferral checks use the updated available space.
-		trackAvail := lineAvailableInline
-		lineResultsTruncateAt := -1
+		// trackAvail is the line opportunity's inline size, which nowrap does
+		// not widen (Blink's AvailableFloatInlineSize), decremented per placed
+		// float so that subsequent push-after-line checks use the updated
+		// available space.
+		trackAvail := lineVisualInline
+		// floatsAfterLine are the floats pushed after this line, positioned
+		// at its block-end once its height is known.
+		var floatsAfterLine []*pendingFloat
 		// Block-level abspos children that appear AFTER in-flow content on this
 		// line capture static position at the block-end of the line box (as if
 		// they started a new block-flow line below this one). Their emission is
@@ -844,7 +848,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			inlineContainer *html.Node
 		}
 		hasInflowOnLine := false
-		for i, r := range line.Results {
+		for _, r := range line.Results {
 			// CSS Ruby: an OOF descendant of a ruby element is collected into the
 			// column's base/annotation sub-LineInfo, not the outer line.Results, so
 			// surface it here (with its inline CB from positionedInlineMap) before
@@ -880,14 +884,21 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					floatInlineSize := pf.marginBoxInlineSize
 					// Push the float after this line when it does not fit
 					// beside the content committed before it, or clearance
-					// would move it down. Mirrors Blink's LineBreaker::
-					// ShouldPushFloatAfterLine (inline/line_breaker.cc:
-					// 3673-3712 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+					// would move it down, or an earlier float on the line
+					// was pushed. Mirrors Blink's LineBreaker::
+					// ShouldPushFloatAfterLine and HandleFloat's
+					// HasUnpositionedFloats check (inline/line_breaker.cc:
+					// 3673-3712, :3800-3806 @
+					// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 					// Not ported: the retry without the trailing collapsible
 					// space, and the block-start edge alignment test
 					// (louis14's exclusion space keeps no LastFloatBlockStart).
 					// With nothing before it the float is at the line start,
 					// where pushing it after the line would not move it.
+					if len(floatsAfterLine) > 0 {
+						floatsAfterLine = append(floatsAfterLine, pf)
+						continue
+					}
 					if committedBeforeFloat > 0 {
 						lineTopBFC := bfcBlockOrigin + blockOffset
 						canFitFloat := committedBeforeFloat+floatInlineSize <= trackAvail
@@ -895,14 +906,8 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 						isMovedByClearance := clearType != css.ClearNone &&
 							exclusionSpace.ClearanceOffset(clearType, layoutunit.FromFloat64Round(lineTopBFC), wdm).Float64() > lineTopBFC
 						if !canFitFloat || isMovedByClearance {
-							// Defer this float and everything after it to the next line.
-							lineResultsTruncateAt = i
-							lb.currentItemIndex = r.ItemIndex
-							lb.done = false
-							if lb.currentItemIndex < len(itemsData.Items) {
-								lb.currentTextOffset = itemsData.Items[lb.currentItemIndex].StartOffset
-							}
-							break
+							floatsAfterLine = append(floatsAfterLine, pf)
+							continue
 						}
 					}
 					exclusionSpace, _ = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
@@ -922,20 +927,6 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			}
 			inlinePos += r.InlineSize
 		}
-		// If a float was deferred, truncate the line results and update line width
-		// to reflect only the content that will be placed on this line.
-		if lineResultsTruncateAt >= 0 {
-			newWidth := 0.0
-			for j := 0; j < lineResultsTruncateAt; j++ {
-				rj := line.Results[j]
-				if rj.Item.Type != InlineItemFloat && rj.Item.Type != InlineItemOutOfFlow {
-					newWidth += rj.InlineSize
-				}
-			}
-			line.Results = line.Results[:lineResultsTruncateAt]
-			line.Width = newWidth
-		}
-
 		// After placing inline floats, re-query the exclusion space so text on
 		// the same line is positioned beside the float rather than at inline=0.
 		// Mirrors Blink's InlineLayoutAlgorithm::PlaceFloatingObjects which
@@ -1275,6 +1266,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// ComputeInflowPosition (block_layout_algorithm.cc:2955-2980 @
 		// a9f50e522efa); louis14 folds annotation overflow into lineHeight,
 		// so there is no AnnotationOverflow to take the max with.
+		// Floats pushed after the line start at its block-end
+		// (InlineLayoutAlgorithm::PlaceFloatingObjects,
+		// inline/inline_layout_algorithm.cc:864-886 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		for _, pf := range floatsAfterLine {
+			exclusionSpace, _ = placeFloat(pf, bfcBlockOrigin+blockOffset+lineHeight, exclusionSpace)
+			delete(pendingFloats, pf.item)
+		}
+
 		blockOffset += lineHeight + clearanceAfterLine
 		lineStartBlockOffset = blockOffset
 	}
@@ -2215,11 +2215,11 @@ func createLineBoxEx(
 	// @ 4883d11fef.
 	//
 	// Recompute the surviving columns from line.Results rather than
-	// reading line.RubyColumns directly: float deferral can truncate
-	// line.Results (see `lineResultsTruncateAt` block earlier in
-	// layoutInlineChildren) without trimming line.RubyColumns, so
-	// any column that's been moved to the next line would otherwise
-	// still inflate maxAscent/maxDescent on this one.
+	// reading line.RubyColumns directly: the line breaker's rewinds
+	// (LineBreaker.rewind, retractTrailingOpenPunct) shorten
+	// line.Results without trimming line.RubyColumns, so any column
+	// that's been moved to the next line would otherwise still
+	// inflate maxAscent/maxDescent on this one.
 	var rbpc RubyBlockPositionCalculator
 	if len(line.RubyColumns) > 0 {
 		var activeRubyColumns []*InlineItemResultRubyColumn
