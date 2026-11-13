@@ -254,20 +254,13 @@ type PaintLayer struct {
 	// for "left"/"right"/"under".
 	TextUnderlinePosition string
 
-	// TextLangIsCJK is set when this layer's inherited HTML `lang` attribute
-	// resolves to a CJK locale (zh, ja, ko, mn). Per CSS Text Decor 3 §3.5
-	// CJK convention flips the default underline direction in vertical
-	// writing modes — the "auto" underline default moves to the over-side
-	// and `flip_underline_and_overline_` swaps the bits so a `text-decoration:
-	// underline` paints on the over-side and `text-decoration: overline`
-	// paints on the under-side. Computed from html.Node.InheritedLanguage()
-	// at PaintLayer construction (DOM tree inheritance, not CSS cascade —
-	// `lang` is NOT a cascaded inherited property in louis14). Mirrors how
-	// Blink's `ResolveUnderlinePosition` consults ComputedStyle::Locale()
-	// derived from Element::ComputeInheritedLanguage() at
-	// third_party/blink/renderer/core/paint/text_decoration_info.cc:23-52 @
-	// SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
-	TextLangIsCJK bool
+	// TextScriptIsKanaOrHangul is set when this layer's inherited HTML `lang`
+	// gives the Japanese or Korean script (isKanaOrHangulLocale), which
+	// flips a vertical run's underline to the over side
+	// (shouldFlipUnderlineAndOverline). Computed from
+	// html.Node.InheritedLanguage() at PaintLayer construction, as Blink's
+	// FontDescription::GetScript derives from the content language.
+	TextScriptIsKanaOrHangul bool
 
 	// AppliedTextDecorations is the accumulated CSS Text Decor 3 vector for
 	// this element (mirrors Blink's `AppliedTextDecorationVector` on
@@ -1202,15 +1195,15 @@ func newPaintLayer(box *layout.Box) *PaintLayer {
 	if tup, ok := s.Get("text-underline-position"); ok {
 		layer.TextUnderlinePosition = tup
 	}
-	// CJK language hint for CSS Text Decor 3 §3.5's default-flip rule:
+	// Japanese/Korean script for ResolveUnderlinePosition's default flip:
 	// resolve the inherited `lang` attribute via DOM-tree walk (not cascade —
-	// `lang` is HTML attribute inheritance) and classify the locale prefix.
+	// `lang` is HTML attribute inheritance) and classify its primary subtag.
 	// Mirrors Blink's ComputeInheritedLanguage() → ComputedStyle::Locale()
 	// chain consumed by ResolveUnderlinePosition. Box.Node may be the text
 	// fragment's parent element; either way the walk terminates at the first
 	// ancestor that declares `lang` (typically <body lang="ja"> or <html>).
 	if box.Node != nil {
-		layer.TextLangIsCJK = isCJKLocale(box.Node.InheritedLanguage())
+		layer.TextScriptIsKanaOrHangul = isKanaOrHangulLocale(box.Node.InheritedLanguage())
 	}
 	layer.TextShadows = s.GetTextShadow()
 	layer.FontVariantCaps = s.GetFontVariantCaps()

@@ -139,19 +139,7 @@ func TestDecorationLine_UprightVerticalPlacement(t *testing.T) {
 			img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
 				`<div style="position:absolute;left:100px;top:10px;writing-mode:`+wm+`;text-orientation:upright;font:40px/40px Ahem;color:white;`+
 				`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
-			first, last := -1, -1
-			for x := 0; x < 250; x++ {
-				// A pixel at least half covered counts as the line, as in the
-				// probe of Chrome's screenshot: the line-through's
-				// 115.67-121.67 rect covers a third of pixel 115 (left out)
-				// and two thirds of pixel 121 (counted).
-				if r, _, _, _ := img.At(x, 60).RGBA(); r>>8 < 128 {
-					if first < 0 {
-						first = x
-					}
-					last = x
-				}
-			}
+			first, last := darkColumnSpan(img, 60)
 			if first != c.x0 || last != c.x1 {
 				t.Errorf("%s %s: dark x %d-%d, want Chrome's %d-%d", wm, c.line, first, last, c.x0, c.x1)
 			}
@@ -220,6 +208,24 @@ func TestDecorationLine_UprightVerticalWavy(t *testing.T) {
 	assertWaveInk(t, img, left-6, 28, "second trough, one 15px wavelength on")
 }
 
+// darkColumnSpan returns the first and last columns of row y at least half
+// covered by black (red below 128), or -1, -1. Half coverage is how the
+// Chrome screenshots were probed: a line-through rect at 115.67-121.67
+// covers a third of pixel 115 (left out) and two thirds of pixel 121
+// (counted).
+func darkColumnSpan(img image.Image, y int) (first, last int) {
+	first, last = -1, -1
+	for x := img.Bounds().Min.X; x < img.Bounds().Max.X; x++ {
+		if r, _, _, _ := img.At(x, y).RGBA(); r>>8 < 128 {
+			if first < 0 {
+				first = x
+			}
+			last = x
+		}
+	}
+	return first, last
+}
+
 // firstDarkColumn scans row y from column from towards to (exclusive)
 // and returns the first column darker than 64, or -1.
 func firstDarkColumn(img image.Image, from, to, y int) int {
@@ -245,5 +251,41 @@ func assertWaveInk(t *testing.T, img image.Image, x, y int, why string) {
 	t.Helper()
 	if r, _, _, _ := img.At(x, y).RGBA(); r>>8 > 16 {
 		t.Errorf("pixel (%d,%d) = %d, want ink (≤ 16): %s", x, y, r>>8, why)
+	}
+}
+
+// Upright vertical text resolves text-underline-position by script first
+// (ResolveUnderlinePosition, core/paint/text_decoration_info.cc:23-53 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): Japanese (Katakana/Hiragana)
+// or Korean text puts the underline over unless the position has left;
+// any other text puts it over only for right. Han (zh) is neither, and
+// left never flips, in vertical-lr either. An over underline paints with
+// the overline's geometry from the em box's top, keeping its
+// text-underline-offset, and the overline swaps to the under side without
+// one (flip_underline_and_overline_, :224-235; ComputeUnderlineLineData /
+// ComputeOverlineLineData, :335-377). Measured in Chrome 2026-11-13 on a
+// 40px Ahem column at x 100-140 with 6px lines and a 10px offset.
+func TestDecorationLine_UprightUnderlinePosition(t *testing.T) {
+	for _, c := range []struct {
+		name, wm, lang, line, pos string
+		x0, x1                    int
+	}{
+		{"en underline", "vertical-rl", "en", "underline", "auto", 83, 88},
+		{"en overline", "vertical-rl", "en", "overline", "auto", 140, 145},
+		{"ja underline goes over", "vertical-rl", "ja", "underline", "auto", 151, 156},
+		{"en right goes over", "vertical-rl", "en", "underline", "right", 151, 156},
+		{"ja overline goes under", "vertical-rl", "ja", "overline", "auto", 93, 98},
+		{"ja left stays under", "vertical-rl", "ja", "underline", "left", 83, 88},
+		{"zh stays under", "vertical-rl", "zh", "underline", "auto", 83, 88},
+		{"vertical-lr left stays under", "vertical-lr", "en", "underline", "left", 83, 88},
+		{"vertical-lr right goes over", "vertical-lr", "en", "underline", "right", 151, 156},
+	} {
+		img := render.RenderPage(t, `<!DOCTYPE html><html lang="`+c.lang+`"><body style="margin:0">`+
+			`<div style="position:absolute;left:100px;top:10px;writing-mode:`+c.wm+`;text-orientation:upright;font:40px/40px Ahem;color:white;`+
+			`text-decoration:`+c.line+` solid black;text-decoration-thickness:6px;text-underline-offset:10px;text-underline-position:`+c.pos+`;text-decoration-skip-ink:none">XXX</div></body></html>`, 250, 160)
+		first, last := darkColumnSpan(img, 60)
+		if first != c.x0 || last != c.x1 {
+			t.Errorf("%s: dark x %d-%d, want Chrome's %d-%d", c.name, first, last, c.x0, c.x1)
+		}
 	}
 }

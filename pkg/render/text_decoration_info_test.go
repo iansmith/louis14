@@ -150,12 +150,14 @@ func TestOverlineRectCoversBoxAboveAfterRelativeTopShift(t *testing.T) {
 	}
 }
 
-// isCJKLocale mirrors Blink's CJK detection in ResolveUnderlinePosition() at
-// text_decoration_info.cc:42 @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f,
-// promoted to a locale-prefix check (louis14 doesn't yet derive script from
-// font Unicode coverage). Locks in case-insensitivity and BCP47-subtag
-// tolerance behavior.
-func TestIsCJKLocale(t *testing.T) {
+// isKanaOrHangulLocale mirrors the script check in Blink's
+// ResolveUnderlinePosition (core/paint/text_decoration_info.cc:41-47 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): only the Katakana/Hiragana
+// (ja) and Hangul (ko) scripts flip, not Han (zh) or Mongolian (mn), as
+// Chrome keeps a lang=zh upright underline on the under side
+// (TestDecorationLine_UprightUnderlinePosition). Locks in
+// case-insensitivity and BCP47-subtag tolerance.
+func TestIsKanaOrHangulLocale(t *testing.T) {
 	cases := []struct {
 		lang string
 		want bool
@@ -166,17 +168,18 @@ func TestIsCJKLocale(t *testing.T) {
 		{"ja", true},
 		{"JA", true},
 		{"ja-JP", true},
-		{"zh", true},
-		{"zh-Hant", true},
+		{"zh", false},
+		{"zh-Hant", false},
 		{"ko", true},
-		{"mn", true},
-		{"mn-Mong", true},
+		{"ko-KR", true},
+		{"mn", false},
+		{"mn-Mong", false},
 		{"de", false},
 		{"jp", false}, // ISO-639 for Japanese is "ja", not "jp"
 	}
 	for _, c := range cases {
-		if got := isCJKLocale(c.lang); got != c.want {
-			t.Errorf("isCJKLocale(%q) = %v, want %v", c.lang, got, c.want)
+		if got := isKanaOrHangulLocale(c.lang); got != c.want {
+			t.Errorf("isKanaOrHangulLocale(%q) = %v, want %v", c.lang, got, c.want)
 		}
 	}
 }
