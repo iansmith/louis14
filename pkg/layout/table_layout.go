@@ -141,12 +141,6 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 
 	borderCollapse := tla.style.GetBorderCollapse() == css.BorderCollapseCollapse
 
-	// In border-collapse mode, the table's own border is folded into the
-	// cell borders. Zero it out in geom so it doesn't affect sizing.
-	if borderCollapse {
-		geom.Border = LogicalEdges{}
-	}
-
 	// Resolve available inline size from the centralized border-box size.
 	availableInline := geom.BorderBoxSize.InlineSize - geom.InlineBorderPadding()
 	if availableInline < 0 {
@@ -1040,7 +1034,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// incorrectly shift the inline-block's baseline.
 	}
 
-	physBorder := ToPhysicalEdges(geom.Border, wdm) // already zeroed for border-collapse
+	physBorder := ToPhysicalEdges(geom.Border, wdm)
 	physPadding := ToPhysicalEdges(geom.Padding, wdm)
 	physScrollbar := ToPhysicalEdges(geom.Scrollbar, wdm)
 	physMargin := ToPhysicalEdges(ResolveMargins(tla.style, wdm, tla.space.AvailableSize.InlineSize.Float64()), wdm)
@@ -1086,7 +1080,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 func resolveCollapsedCellBorders(rows []tableRow, colStyleSpecs []tableColStyle, tableStyle *css.Style, wdm WritingDirectionMode, numCols int) *TableBorders {
 	restoreCollapsedCellSourceStyles(rows)
 	tableBorders := ComputeTableBorders(rows, colStyleSpecs, tableStyle, wdm, numCols)
-	applyCollapsedCellBorders(rows, tableBorders, numCols, wdm)
+	applyCollapsedCellBorders(rows, tableBorders, wdm)
 	return tableBorders
 }
 
@@ -1118,19 +1112,10 @@ func (tla *TableLayoutAlgorithm) ComputeMinMaxSizes() MinMaxSizes {
 	isFixedLayout := tla.isFixedTableLayout()
 	columns := tla.computeColumnConstraints(rows, numCols, Indefinite, inlineSpacing, colWidthSpecs, isFixedLayout)
 	minMax := ComputeGridInlineMinMax(tla.node, columns, undistributableSpace, isFixedLayout, false)
-	if borderCollapse {
-		// The edge cells hold the collapsed outer borders, as Layout's
-		// zeroed table border reflects (Blink splits them between the
-		// table's TableBorders and the cells); the caller adds the
-		// table's own border, so take it out here.
-		tableBorder := ComputeFragmentGeometry(tla.style, wdm).Border
-		minMax.MinContent = max(0, minMax.MinContent-tableBorder.InlineStart-tableBorder.InlineEnd)
-		minMax.MaxContent = max(0, minMax.MaxContent-tableBorder.InlineStart-tableBorder.InlineEnd)
-	}
 
 	// The captions' min-content contributions, against the table's content
 	// box.
-	tableBP := ComputeFragmentGeometry(tla.style, wdm).InlineBorderPadding()
+	tableBP := NodeFragmentGeometry(tla.node, tla.style, wdm).InlineBorderPadding()
 	minMax.Encompass(tla.computeCaptionConstraint(captions).MinContent - tableBP)
 	// A fixed-layout table with a percentage inline size wants all the
 	// space it can get (table_layout_algorithm.cc:724-726).

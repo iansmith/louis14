@@ -1033,7 +1033,7 @@ func gridItemInlineContribution(node *LayoutInputNode, cs *css.Style, containerW
 		// grid_layout_algorithm.cc:1460-1500); the additional column pass
 		// measures it again against its rows.
 		minContrib, maxContrib = measureOrthogonalChild(node, cs, childWDM, containerWDM, ctx, space, Indefinite, Indefinite)
-		edges = ComputeFragmentGeometry(cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
+		edges = withCollapsedTableBorder(ComputeFragmentGeometry(cs, containerWDM), node, cs, containerWDM).InlineBorderPadding() + ResolveMargins(cs, containerWDM, 0).InlineSum()
 		return minContrib, maxContrib, edges
 	}
 	// Parallel: compute intrinsic sizes in the child's writing mode, then add
