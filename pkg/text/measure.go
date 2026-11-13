@@ -656,51 +656,28 @@ func FontDescentFromFont(fontSize float64, fontPath string, reg *FontRegistry) f
 	return math.Round(float64(m.Descent) / 64.0)
 }
 
-// FontTypoAscentFromFont returns the unrounded font typo ascent in pixels.
-// Mirrors Blink's float-precision ascent (`FontMetrics::FloatAscent()` /
-// `FixedAscent()` at
-// `third_party/blink/renderer/platform/fonts/font_metrics.h:117-133 @
-// 574216cbb0c2b86a39c1d41ad85b2891a050b44c`) used by sub-pixel-precise
-// layout paths such as `ComputeEmHeight` in
-// `core/layout/inline/ruby_utils.cc:78-126`. Unlike `FontAscentFromFont`,
-// this does NOT apply `math.Round` — for use where downstream layout
-// math needs to agree with the renderer's unrounded `GetFontMetrics`
-// path (e.g. ruby annotation positioning, where layout-vs-render
-// rounding mismatch surfaces as a visible 1px gap; see LOU-161
-// findings.md).
-//
-// reg is the optional FontRegistry for looking up CSS Fonts 4 ascent-override
-// values. nil is safe and leaves the native metric unchanged.
-func FontTypoAscentFromFont(fontSize float64, fontPath string, reg *FontRegistry) float64 {
-	m := openFont(fontPath, fontSize)
-	if m.FontID < 0 {
-		return fontSize * 0.8
-	}
-	if reg != nil {
-		if mo := reg.MetricsOverrideForPath(fontPath); mo.Ascent != nil {
-			// Unrounded: mirrors Blink's float_ascent_ = ascent_override × size.
-			return *mo.Ascent * fontSize
+// NormalizedTypoAscentAndDescent returns the em-height ascent and descent of
+// the font at fontPath and fontSize for the alphabetic baseline, the ones
+// ruby annotations and text-emphasis marks are laid out with: the OS/2
+// sTypoAscender and -sTypoDescender normalized to sum to fontSize, else,
+// failing those, the font metrics' unrounded ascent and descent normalized
+// the same way. Mirrors SimpleFontData::NormalizedTypoAscentAndDescent /
+// ComputeNormalizedTypoAscentAndDescent (platform/fonts/simple_font_data.cc:
+// 339-393 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); callers handle the
+// central baseline (fontSize/2 each) themselves. The CSS Fonts 4 overrides
+// do not apply, as in Blink.
+func NormalizedTypoAscentAndDescent(fontSize float64, fontPath string) (ascent, descent float64) {
+	if t := typefaceForPath(fontPath); t.loaded && t.typoAscender > 0 {
+		if a, d, ok := normalizedTypoAscentAndDescent(float64(t.typoAscender), float64(t.typoDescender), fontSize); ok {
+			return a, d
 		}
 	}
-	return float64(m.Ascent) / 64.0
-}
-
-// FontTypoDescentFromFont returns the unrounded font typo descent in pixels.
-// See FontTypoAscentFromFont for the rationale.
-//
-// reg is the optional FontRegistry for looking up CSS Fonts 4 descent-override
-// values. nil is safe and leaves the native metric unchanged.
-func FontTypoDescentFromFont(fontSize float64, fontPath string, reg *FontRegistry) float64 {
 	m := openFont(fontPath, fontSize)
 	if m.FontID < 0 {
-		return fontSize * 0.2
+		return fontSize * 0.8, fontSize * 0.2
 	}
-	if reg != nil {
-		if mo := reg.MetricsOverrideForPath(fontPath); mo.Descent != nil {
-			return *mo.Descent * fontSize
-		}
-	}
-	return float64(m.Descent) / 64.0
+	a, d, _ := normalizedTypoAscentAndDescent(float64(m.Ascent)/64, float64(m.Descent)/64, fontSize)
+	return a, d
 }
 
 // FontHeightFromFont returns the font's recommended line height in pixels for
@@ -1083,4 +1060,46 @@ func MeasureTextVerticalFromFont(text string, fontSize float64, fontPath string)
 		blockAdvance = layoutunit.FromFloat64Ceil(math.Round(fontSize * 1.2))
 	}
 	return
+}
+
+// EmHeightOverAdjustment is how far an emphasized text item's over edge moves
+// toward the baseline before its emphasis mark is placed: the primary font's
+// ascent less its normalized typo ascent, floored and never negative
+// (AdjustTextOverUnderOffsetsForEmHeight, core/layout/inline/ruby_utils.cc:
+// 36-79 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink stores it as the
+// item's negated annotation ascent (SetTextEmphasisAnnotationMetrics,
+// ruby_utils.cc:898-941), which TextPainter::SetEmphasisMark
+// (core/paint/text_painter.cc:529) and ComputeAnnotationOverflow
+// (ruby_utils.cc:775-776) both apply, with TextEmphasisAsRuby stable. On the
+// central baseline the ascent is Height() / 2 (font_metrics.cc:157-158) and
+// the normalized ascent em - em / 2 (simple_font_data.cc:346-348), both @ the
+// same SHA.
+func EmHeightOverAdjustment(fontSize float64, fontPath string, centralBaseline bool) float64 {
+	ascent, normAscent := emHeightAscents(fontSize, fontPath, centralBaseline)
+	return math.Floor(math.Max(0, ascent-normAscent))
+}
+
+// EmHeightAscent is how far above the baseline a ruby annotation sits: the
+// base's em height, ComputeEmHeight's run-font normalized ascent rounded up
+// and capped at the primary ascent, moved to the integer text top
+// (core/layout/inline/ruby_utils.cc:90-107 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): ceil(ascent) - max(0, ascent -
+// ceil(normalized ascent)). For an integer ascent it is the over edge
+// EmHeightOverAdjustment leaves an emphasized item; on the central baseline
+// the ascent Height() / 2 can be a half pixel and the two differ.
+func EmHeightAscent(fontSize float64, fontPath string, centralBaseline bool) float64 {
+	ascent, normAscent := emHeightAscents(fontSize, fontPath, centralBaseline)
+	return math.Ceil(ascent) - math.Max(0, ascent-math.Ceil(normAscent))
+}
+
+// emHeightAscents returns the primary font's ascent and normalized typo
+// ascent for the alphabetic or central baseline.
+func emHeightAscents(fontSize float64, fontPath string, centralBaseline bool) (ascent, normAscent float64) {
+	ascent = FontAscentFromFont(fontSize, fontPath, nil)
+	if !centralBaseline {
+		normAscent, _ = NormalizedTypoAscentAndDescent(fontSize, fontPath)
+		return ascent, normAscent
+	}
+	em := layoutunit.FromFloat64Round(fontSize)
+	return (ascent + FontDescentFromFont(fontSize, fontPath, nil)) / 2, em.Sub(em.DivInt(2)).Float64()
 }
