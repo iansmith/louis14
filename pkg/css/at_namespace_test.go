@@ -116,7 +116,9 @@ func TestParseStylesheet_NamespaceRuleOrdering(t *testing.T) {
 		// css_parser_impl.cc:699-701 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		{"after an unknown at-rule statement", `@layerfoo; @namespace url(svg);`, "svg"},
 		{"after an unknown at-rule block", `@foo {} @namespace url(svg);`, "svg"},
-		{"after an invalid style rule", `a[ { color: blue } @namespace url(svg);`, "svg"},
+		// `a]`: an invalid selector whose block still closes. An unclosed `a[` would
+		// swallow the rest of the sheet (TestStrayCloseBraceJoinsNextPrelude).
+		{"after an invalid style rule", `a] { color: blue } @namespace url(svg);`, "svg"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,7 +146,9 @@ func TestParseStylesheet_ImportRuleOrdering(t *testing.T) {
 		{"first", `@import "a.css";`, []string{"a"}},
 		{"after an early @layer statement", `@layer x; @import "a.css";`, []string{"a"}},
 		{"after an unknown at-rule", `@foo; @import "a.css";`, []string{"a"}},
-		{"after an invalid style rule", `a[ { color: blue } @import "a.css";`, []string{"a"}},
+		// `a]`: an invalid selector whose block still closes. An unclosed `a[` would
+		// swallow the rest of the sheet (TestStrayCloseBraceJoinsNextPrelude).
+		{"after an invalid style rule", `a] { color: blue } @import "a.css";`, []string{"a"}},
 		{"after @namespace", `@namespace "x"; @import "a.css";`, nil},
 		{"after a style rule", `p { color: blue } @import "a.css";`, nil},
 		{"after a block at-rule", `@media all {} @import "a.css";`, nil},
@@ -400,7 +404,10 @@ func TestParseStylesheet_DroppedOrderingRulesAreNotInTheRuleList(t *testing.T) {
 		// URI: ConsumeImportRule, css_parser_impl.cc) neither enters the
 		// list nor changes the ordering.
 		{`@foo; @import "a.css";`, 1},
-		{`a[ { color: blue } @namespace "x";`, 1},
+		// `a]`: an invalid selector whose block still closes. An unclosed `a[` would
+		// swallow the rest of the sheet (TestStrayCloseBraceJoinsNextPrelude).
+		{`a] { color: blue } @namespace "x";`, 1},
+		{`a[ { color: blue } @namespace "x";`, 0},
 		{`@import; p { color: blue }`, 1},
 	}
 	for _, tc := range cases {
