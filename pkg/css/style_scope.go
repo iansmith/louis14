@@ -91,37 +91,17 @@ func parseScopeBoundarySelectors(list string, relativeToScope bool) ([]Selector,
 		if relativeToScope {
 			sel = scopedSelectorText(sel)
 		}
+		// ParseScopeBoundary disallows pseudo-elements
+		// (DisallowPseudoElementsScope, css_selector_parser.cc:190 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): one an :is() or
+		// :where() does not enclose drops the boundary.
 		parsed := parseSelector(sel)
-		if parsed.PseudoElement != "" || namesPseudoElement(sel) {
+		if unforgiven, _ := scanPseudoElements(sel); parsed.PseudoElement != "" || unforgiven {
 			return nil, false
 		}
 		selectors = append(selectors, parsed)
 	}
 	return selectors, len(selectors) > 0
-}
-
-// namesPseudoElement reports a `::` in sel outside a string token and an
-// escape: a pseudo-element, which ParseScopeBoundary disallows
-// (DisallowPseudoElementsScope, css_selector_parser.cc:190), even when
-// parseSelector does not extract it (::placeholder, ::part(), ...). A `::`
-// inside an attribute-value string is string-token text
-// (CSSTokenizer::ConsumeStringTokenUntil, css_tokenizer.cc:393; both @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func namesPseudoElement(sel string) bool {
-	for i := 0; i < len(sel); i++ {
-		switch c := sel[i]; c {
-		case '"', '\'':
-			n, _ := skipStringToken(sel[i+1:], c)
-			i += n
-		case '\\':
-			i++
-		case ':':
-			if i+1 < len(sel) && sel[i+1] == ':' {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // anchoredToScope gives each selector without :scope the implicit :scope
@@ -335,9 +315,8 @@ func setImplicitScopeOwners(sheet *Stylesheet, owner *html.Node) {
 // RuleSet::AddChildRules, rule_set.cc:1057-1064). An invalid prelude
 // drops the rule.
 func parseScopeRule(ruleStr string, ss *Stylesheet) []Rule {
-	bracePos := indexTopLevelBrace(ruleStr)
-	closePos := strings.LastIndex(ruleStr, "}")
-	if bracePos < 0 || closePos < bracePos {
+	bracePos, closePos, ok := blockBounds(ruleStr)
+	if !ok {
 		return nil
 	}
 	prelude := strings.TrimSpace(ruleStr[:bracePos])

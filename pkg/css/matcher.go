@@ -818,19 +818,10 @@ func matchesNthChild(node *html.Node, arg string) bool {
 // is empty and the caller should run the existing An+B-only path.
 func splitNthChildArg(arg string) (string, string, bool) {
 	depth := 0
-	inString := byte(0)
 	for i := 0; i < len(arg); i++ {
 		ch := arg[i]
-		if inString != 0 {
-			if ch == '\\' && i+1 < len(arg) {
-				i++
-			} else if ch == inString {
-				inString = 0
-			}
-			continue
-		}
 		if ch == '"' || ch == '\'' {
-			inString = ch
+			i, _ = stringTokenEnd(arg, i)
 			continue
 		}
 		if ch == '(' || ch == '[' {
@@ -1183,9 +1174,9 @@ func checkPseudoNot(node *html.Node, arg string, ctx matchContext) bool {
 // :first-line). The parser's findTopLevelPseudoElement helper does the same
 // paren-aware scan used during selector parsing.
 func containsPseudoElementArg(selectors []string) bool {
-	tokens := []string{
-		"::before", "::after", "::first-letter", "::first-line", "::marker",
-		":before", ":after", ":first-letter", ":first-line",
+	tokens := []string{"::marker"}
+	for _, name := range legacyPseudoElements {
+		tokens = append(tokens, "::"+name, ":"+name)
 	}
 	for _, sel := range selectors {
 		sel = strings.TrimSpace(sel)
@@ -1207,21 +1198,10 @@ func containsPseudoElementArg(selectors []string) bool {
 // like `[data-x="…has(…)…"]` don't false-positive. Brackets, parens, and
 // quotes are tracked to skip non-selector context.
 func containsHas(s string) bool {
-	inStr := byte(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if inStr != 0 {
-			if c == '\\' && i+1 < len(s) {
-				i++
-				continue
-			}
-			if c == inStr {
-				inStr = 0
-			}
-			continue
-		}
 		if c == '"' || c == '\'' {
-			inStr = c
+			i, _ = stringTokenEnd(s, i)
 			continue
 		}
 		// Look for `:has(` — only when preceded by selector-context

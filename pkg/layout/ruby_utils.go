@@ -89,8 +89,8 @@ func baseFontAscentFromSubLine(
 // position the annotation baseline relative to the line's block origin.
 //
 // Why this is distinct from `computeLineMetricsEx`:
-//  1. No half-leading. computeLineMetricsEx adds `(lineHt − (asc+desc))/2`
-//     to both ascent and descent for `line-height: normal`. Blink's
+//  1. No leading. computeLineMetricsEx adds calculateLeadingSpace(lineHt,
+//     asc+desc) to the ascent and descent for `line-height: normal`. Blink's
 //     annotation positioning uses font em-height only; the leading is
 //     a property of the OUTER line's block metrics.
 //  2. No integer rounding. computeLineMetricsEx → alignmentAscentFromFont
