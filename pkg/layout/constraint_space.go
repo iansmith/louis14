@@ -115,6 +115,18 @@ type ConstraintSpace struct {
 	// Mirrors Blink's ConstraintSpace::IsBlockSizeOverride flag.
 	IsBlockSizeOverride bool
 
+	// IsRestrictedBlockSizeTableCell: this table cell's block size is
+	// restricted (its table has a specified block size, or it has a fixed
+	// one). Mirrors ConstraintSpace::IsRestrictedBlockSizeTableCell
+	// (constraint_space.h:622-626 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	IsRestrictedBlockSizeTableCell bool
+
+	// IsRestrictedBlockSizeTableCellChild: this box is a scrollable
+	// percentage-sized child of a restricted table cell, sized to its min
+	// block size. Mirrors ConstraintSpace::
+	// IsRestrictedBlockSizeTableCellChild (constraint_space.h:481).
+	IsRestrictedBlockSizeTableCellChild bool
+
 	// IsContentSuggestionLayout is true when this layout is performed for §4.5
 	// content size suggestion. The element's own explicit CSS block-size must
 	// be ignored — only content determines the block-size.
@@ -602,6 +614,21 @@ func (b *ConstraintSpaceBuilder) SetIsFixedBlockSizeIndefinite(v bool) *Constrai
 // Mirrors Blink's ConstraintSpaceBuilder::SetIsBlockSizeOverride.
 func (b *ConstraintSpaceBuilder) SetIsBlockSizeOverride(v bool) *ConstraintSpaceBuilder {
 	b.space.IsBlockSizeOverride = v
+	return b
+}
+
+// SetIsRestrictedBlockSizeTableCell mirrors ConstraintSpaceBuilder::
+// SetIsRestrictedBlockSizeTableCell (constraint_space_builder.h:363 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (b *ConstraintSpaceBuilder) SetIsRestrictedBlockSizeTableCell(v bool) *ConstraintSpaceBuilder {
+	b.space.IsRestrictedBlockSizeTableCell = v
+	return b
+}
+
+// SetIsRestrictedBlockSizeTableCellChild mirrors ConstraintSpaceBuilder::
+// SetIsRestrictedBlockSizeTableCellChild (constraint_space_builder.h:518).
+func (b *ConstraintSpaceBuilder) SetIsRestrictedBlockSizeTableCellChild() *ConstraintSpaceBuilder {
+	b.space.IsRestrictedBlockSizeTableCellChild = true
 	return b
 }
 

@@ -26,6 +26,10 @@ type typeface struct {
 	// ascender and descender are FreeType's FT_FaceRec ascender/descender
 	// in font units (sfntFaceAscenderDescender).
 	ascender, descender int
+	// typoAscender and typoDescender are OS/2 sTypoAscender and
+	// -sTypoDescender in font units (typoAscenderAndDescender), 0 when the
+	// font has no OS/2 table that long.
+	typoAscender, typoDescender int
 	// loaded reports whether FreeType would load the face: its sfnt
 	// tables parse and head.unitsPerEm is within [16, 16384], the range
 	// sfnt_load_face accepts (src/sfnt/sfobjs.c:977-985, FreeType @
@@ -90,7 +94,9 @@ func (t *typeface) parse(data []byte) {
 	t.vertical = newOpenTypeVerticalData(get)
 	t.upem = unitsPerEmFromHead(head)
 	t.loaded = isValidUnitsPerEm(rawUnitsPerEm(head))
-	t.ascender, t.descender = sfntFaceAscenderDescender(get(tagHhea), get(tagOS2))
+	os2 := get(tagOS2)
+	t.ascender, t.descender = sfntFaceAscenderDescender(get(tagHhea), os2)
+	t.typoAscender, t.typoDescender = typoAscenderAndDescender(os2)
 }
 
 // The unitsPerEm range both FreeType (sfnt_load_face, which refuses a face

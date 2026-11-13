@@ -63,31 +63,50 @@ type tableRow struct {
 type tableColWidth struct {
 	colIndex int
 	span     int     // number of columns covered
-	width    float64 // resolved width in pixels (0 = not set)
+	width    float64 // resolved width in pixels, when hasWidth
+	// hasWidth: the width is a fixed length, 0 included (a zero-width
+	// column is constrained, InlineSizesFromStyle).
+	hasWidth bool
 	minWidth float64 // resolved min-width in pixels; hasMin false means the value was absent, auto, or a percentage/calc-% (which GetLength rejects)
 	hasMin   bool    // true if min-width is a concrete px length
 	maxWidth float64 // resolved max-width in pixels; hasMax false means the value was absent, auto, or a percentage/calc-% (which GetLength rejects)
 	hasMax   bool    // true if max-width is a concrete px length
+	// percent is the percentage width (InlineSizesFromStyle's
+	// percentage_inline_size); hasPercent false when there is none or it
+	// is 0, which CreateColumn drops.
+	percent    float64
+	hasPercent bool
 }
 
 // extractColWidthSpec reads width/min-width/max-width constraints from a
 // col/colgroup computed style. Returns the populated spec and true if any
 // concrete constraint is present; (zero, false) otherwise.
 func extractColWidthSpec(style *css.Style, colIndex, span int) (tableColWidth, bool) {
-	w, okWidth := style.GetLength("width")
-	mw, okMin := style.GetLength("min-width")
-	xw, okMax := style.GetLength("max-width")
-	// Include a spec when ANY of width>0, okMin, or okMax holds — a
-	// min-width-only col must still produce a spec (col-definite-min-size row 1).
-	if (okWidth && w > 0) || okMin || okMax {
+	w, okWidth := cellFixedLength(style, "width")
+	mw, okMin := cellFixedLength(style, "min-width")
+	xw, okMax := cellFixedLength(style, "max-width")
+	// A percentage width, read as a cell's is (TableTypes::CreateColumn →
+	// InlineSizesFromStyle, table/table_layout_algorithm_types.cc:24-75,
+	// :86-115 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a 0% one is
+	// dropped (:102-103).
+	// Horizontal, as the lengths above are read physically.
+	pct, okPct := cellPercentageInlineSize(style, WritingDirectionMode{})
+	okPct = okPct && pct != 0
+	// Include a spec when ANY of a width, okMin, okMax or a percentage holds
+	// — a min-width-only col must still produce a spec
+	// (col-definite-min-size row 1).
+	if okWidth || okMin || okMax || okPct {
 		return tableColWidth{
-			colIndex: colIndex,
-			span:     span,
-			width:    w,
-			minWidth: mw,
-			hasMin:   okMin,
-			maxWidth: xw,
-			hasMax:   okMax,
+			colIndex:   colIndex,
+			span:       span,
+			width:      w,
+			hasWidth:   okWidth,
+			minWidth:   mw,
+			hasMin:     okMin,
+			maxWidth:   xw,
+			hasMax:     okMax,
+			percent:    pct,
+			hasPercent: okPct,
 		}, true
 	}
 	return tableColWidth{}, false
@@ -223,17 +242,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		tableBorders = resolveCollapsedCellBorders(rows, colStyleSpecs, tla.style, wdm, numCols)
 	}
 
-	// Choose the column width algorithm: fixed or auto table layout.
-	var colWidths []float64
-	if tla.style.GetTableLayout() == css.TableLayoutFixed && hasExplicitTableWidth {
-		colWidths = tla.computeColumnWidthsFixed(rows, numCols, availableForCols, spacingForCols, colWidthSpecs)
-	} else {
-		colWidths = tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, geom, captions, colWidthSpecs)
-	}
+	colWidths := tla.computeColumnWidths(rows, numCols, availableForCols, borderCollapse, hasExplicitTableWidth, geom, captions, colWidthSpecs)
 
 	// Track which columns have explicit col/colgroup widths (used for orthogonal cell row height).
 	colHasExplicit := make([]bool, numCols)
 	for _, cws := range colWidthSpecs {
+		if !(cws.hasWidth || cws.hasMin || cws.hasMax) {
+			continue // a percentage alone gives no length
+		}
 		for s := 0; s < cws.span; s++ {
 			ci := cws.colIndex + s
 			if ci < numCols {
@@ -249,16 +265,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	contentInlineSize += spacingForCols // include inline spacing in total
 
-	// When a parent algorithm fixed the table's inline size, an auto-layout
-	// table's columns already fill it (computeColumnWidths). The fixed-layout
-	// column widths do not yet spread excess width over explicit columns
-	// (Blink SynchronizeAssignableTableInlineSizeAndColumnsFixed, table/
-	// table_layout_utils.cc:776 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so
-	// the fixed size still floors the border box here.
 	borderBoxInline := contentInlineSize + geom.InlineBorderPadding()
-	if tla.space.IsFixedInlineSize && geom.BorderBoxSize.InlineSize > borderBoxInline {
-		borderBoxInline = geom.BorderBoxSize.InlineSize
-	}
 
 	// Separate top and bottom captions.
 	var topCaptions, bottomCaptions []tableCaption
@@ -319,6 +326,9 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// final layout (Phase 3).
 		layoutInlineSize float64
 		cellWDM          WritingDirectionMode
+		// isRestrictedBlockSize: the cell's block size is restricted
+		// (isRestrictedBlockSizeTableCell), in its measure and final spaces.
+		isRestrictedBlockSize bool
 		// intrinsicBlockSize is the cell's own minimum block-size — the
 		// value that contributes to row intrinsic for rowSpan == 1 cells,
 		// and that DistributeRowspanCellToRows distributes across spanned
@@ -411,7 +421,8 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// All @ d4ecdfed88f962439247c2ad36b8fe47805b1520. A relative
 			// cell's percentage insets resolve against its row instead
 			// (Phase 3, relativeCellOffset).
-			cellSpace := tla.tableCellConstraintSpace(cellWDM, layoutWidth, Indefinite, true, tableData)
+			isRestrictedBlockSize := isTableBlockSizeSpecified || cellHasSpecifiedBlockSize(cell.style, cellWDM)
+			cellSpace := tla.tableCellConstraintSpace(cellWDM, layoutWidth, Indefinite, true, isRestrictedBlockSize, tableData)
 
 			cellResult := layoutElement(tla.ctx, cell.node, cellSpace)
 			cellLogical := NewLogicalFragment(wdm, cellResult.Fragment)
@@ -461,13 +472,14 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			}
 
 			cellLayouts = append(cellLayouts, cellMeasurement{
-				result:             cellResult,
-				inlineOffset:       cellInlineOffset,
-				cell:               cell,
-				layoutInlineSize:   layoutWidth,
-				cellWDM:            cellWDM,
-				intrinsicBlockSize: cellBlockForRow,
-				rowIndex:           rowIdx,
+				result:                cellResult,
+				inlineOffset:          cellInlineOffset,
+				cell:                  cell,
+				layoutInlineSize:      layoutWidth,
+				cellWDM:               cellWDM,
+				isRestrictedBlockSize: isRestrictedBlockSize,
+				intrinsicBlockSize:    cellBlockForRow,
+				rowIndex:              rowIdx,
 			})
 		}
 
@@ -780,7 +792,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 			cellBlockSize, initialIndefinite := computeCellBlockSize(spRows, rowIdx, 1, blockSpacing,
 				cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-			result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, tableData)
+			result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, cellBlockSize, initialIndefinite, cl.isRestrictedBlockSize, tableData)
 			cellFrag := result.Fragment
 			cellFrag.HasCollapsedBorders = borderCollapse
 
@@ -937,7 +949,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		// the cell will continue to show") and is clipped to the border box.
 		spannedBlock, initialIndefinite := computeCellBlockSize(spRows, rowIdx, cl.cell.rowSpan, blockSpacing,
 			cl.intrinsicBlockSize, cellHasSpecifiedBlockSize(cl.cell.style, wdm), isTableBlockSizeSpecified)
-		result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, spannedBlock, initialIndefinite, tableData)
+		result := tla.layoutCellAtFinalSize(cl.cell.node, cl.cellWDM, cl.layoutInlineSize, cl.result, spannedBlock, initialIndefinite, cl.isRestrictedBlockSize, tableData)
 		cellFrag := result.Fragment
 		cellFrag.HasCollapsedBorders = borderCollapse
 		if spansCollapsedRow {
@@ -1076,7 +1088,7 @@ func resolveCollapsedCellBorders(rows []tableRow, colStyleSpecs []tableColStyle,
 }
 
 // ComputeMinMaxSizes returns the table's content-box min/max-content
-// inline-sizes, for an auto-layout table: the column constraints summed by
+// inline-sizes: the column constraints summed by
 // ComputeGridInlineMinMax with the border spacing as undistributable space,
 // encompassing the captions' min-content contributions. Mirrors Blink's
 // TableLayoutAlgorithm::ComputeMinMaxSizes (table/table_layout_algorithm.cc:
@@ -1100,8 +1112,9 @@ func (tla *TableLayoutAlgorithm) ComputeMinMaxSizes() MinMaxSizes {
 			undistributableSpace = inlineSpacing * float64(numCols+1)
 		}
 	}
-	columns := tla.computeColumnConstraints(rows, numCols, Indefinite, inlineSpacing, colWidthSpecs)
-	minMax := ComputeGridInlineMinMax(tla.node, columns, undistributableSpace, false, false)
+	isFixedLayout := tla.isFixedTableLayout()
+	columns := tla.computeColumnConstraints(rows, numCols, Indefinite, inlineSpacing, colWidthSpecs, isFixedLayout)
+	minMax := ComputeGridInlineMinMax(tla.node, columns, undistributableSpace, isFixedLayout, false)
 	if borderCollapse {
 		// The edge cells hold the collapsed outer borders, as Layout's
 		// zeroed table border reflects (Blink splits them between the
@@ -1116,6 +1129,11 @@ func (tla *TableLayoutAlgorithm) ComputeMinMaxSizes() MinMaxSizes {
 	// box.
 	tableBP := ComputeFragmentGeometry(tla.style, wdm).InlineBorderPadding()
 	minMax.Encompass(tla.computeCaptionConstraint(captions).MinContent - tableBP)
+	// A fixed-layout table with a percentage inline size wants all the
+	// space it can get (table_layout_algorithm.cc:724-726).
+	if isFixedLayout && hasPercentLogicalWidth(tla.style, wdm) {
+		minMax.MaxContent = kTableMaxInlineSize
+	}
 	return minMax
 }
 
@@ -1139,6 +1157,15 @@ func (tla *TableLayoutAlgorithm) computeCaptionConstraint(captions []tableCaptio
 		constraint.MaxContent = max(constraint.MaxContent, sizes.MaxContent+extra)
 	}
 	return constraint
+}
+
+// isFixedTableLayout reports whether the table uses the fixed table layout
+// algorithm: table-layout: fixed with a non-auto inline size. Mirrors
+// ComputedStyle::IsFixedTableLayout (computed_style.h @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (tla *TableLayoutAlgorithm) isFixedTableLayout() bool {
+	return tla.style.GetTableLayout() == css.TableLayoutFixed &&
+		!isAutoSizeInDirection(tla.style, tla.space.WritingDirection, true)
 }
 
 // collectRowsAndCaptions extracts table rows, captions, and col/colgroup width specs
@@ -1496,10 +1523,12 @@ func specifiedBlockSize(style *css.Style, wdm WritingDirectionMode) float64 {
 // block size. Mirrors Blink's SetupTableCellConstraintSpaceBuilder
 // (table/table_layout_utils.cc:1363-1425 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14's
-// IsFixedBlockSizeIndefinite is Blink's IsInitialBlockSizeIndefinite. Not
-// ported: the alignment baseline (LOU-839 T8b) and
-// IsRestrictedBlockSizeTableCell.
-func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirectionMode, inlineSize, blockSize float64, isInitialBlockSizeIndefinite bool, tableData *TableConstraintSpaceData) ConstraintSpace {
+// IsFixedBlockSizeIndefinite is Blink's IsInitialBlockSizeIndefinite.
+// isRestrictedBlockSize marks a cell whose table has a specified block size
+// or that has a fixed one (:1418-1419); its scrollable percentage-height
+// children then size to their min block size. Not ported: the alignment
+// baseline (LOU-948).
+func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirectionMode, inlineSize, blockSize float64, isInitialBlockSizeIndefinite, isRestrictedBlockSize bool, tableData *TableConstraintSpaceData) ConstraintSpace {
 	wdm := tla.space.WritingDirection
 	b := NewConstraintSpaceBuilder(wdm, cellWDM, true).
 		SetOrthogonalFallbackInlineSize(orthogonalFallbackSize(cellWDM, tla.ctx)).
@@ -1509,7 +1538,8 @@ func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirecti
 		SetPercentageResolutionSize(LogicalSize{InlineSize: inlineSize, BlockSize: Indefinite}).
 		SetPercentageResolutionInlineSize(inlineSize).
 		SetTableSectionData(tableData).
-		SetTableSectionIndex(0)
+		SetTableSectionIndex(0).
+		SetIsRestrictedBlockSizeTableCell(isRestrictedBlockSize)
 	if blockSize != Indefinite {
 		b.SetIsFixedBlockSize(true)
 		if wdm.IsVertical() == cellWDM.IsVertical() {
@@ -1532,13 +1562,13 @@ func (tla *TableLayoutAlgorithm) tableCellConstraintSpace(cellWDM WritingDirecti
 // layout_result_caching.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
 // without it each level of nested tables lays its cells out twice, which
 // is exponential in the nesting depth.
-func (tla *TableLayoutAlgorithm) layoutCellAtFinalSize(cell *LayoutInputNode, cellWDM WritingDirectionMode, inlineSize float64, measure *LayoutResult, cellBlockSize float64, initialIndefinite bool, tableData *TableConstraintSpaceData) *LayoutResult {
+func (tla *TableLayoutAlgorithm) layoutCellAtFinalSize(cell *LayoutInputNode, cellWDM WritingDirectionMode, inlineSize float64, measure *LayoutResult, cellBlockSize float64, initialIndefinite, isRestrictedBlockSize bool, tableData *TableConstraintSpaceData) *LayoutResult {
 	measured := NewLogicalFragment(tla.space.WritingDirection, measure.Fragment).BlockSize()
 	if layoutunit.FromFloat64Round(measured) == layoutunit.FromFloat64Round(cellBlockSize) {
 		return measure
 	}
 	return layoutElement(tla.ctx, cell,
-		tla.tableCellConstraintSpace(cellWDM, inlineSize, cellBlockSize, initialIndefinite, tableData))
+		tla.tableCellConstraintSpace(cellWDM, inlineSize, cellBlockSize, initialIndefinite, isRestrictedBlockSize, tableData))
 }
 
 // computeCellBlockSize returns a table cell's final block size, the sum of
@@ -1575,7 +1605,7 @@ func cellHasSpecifiedBlockSize(style *css.Style, wdm WritingDirectionMode) bool 
 	if style == nil {
 		return false
 	}
-	_, ok := style.GetLength(logicalBlockSizeProperty(wdm))
+	_, ok := cellFixedLength(style, logicalBlockSizeProperty(wdm))
 	return ok
 }
 
@@ -1590,7 +1620,7 @@ func cellCSSBlockSize(style *css.Style, wdm WritingDirectionMode, frag *Physical
 	if style == nil || frag == nil {
 		return 0, false
 	}
-	size, ok := style.GetLength(logicalBlockSizeProperty(wdm))
+	size, ok := cellFixedLength(style, logicalBlockSizeProperty(wdm))
 	if !ok {
 		return 0, false
 	}
@@ -1624,125 +1654,6 @@ func relativeCellOffset(cell tableCell, rowStyle *css.Style, wdm WritingDirectio
 	})
 }
 
-// computeColumnWidthsFixed computes column widths using the fixed table layout
-// algorithm (CSS 2.1 §17.5.2.1). Only the first row is examined for sizing.
-// This is faster and more predictable than the auto algorithm.
-func (tla *TableLayoutAlgorithm) computeColumnWidthsFixed(
-	rows []tableRow, numCols int, availableForCols float64, spacingForCols float64,
-	colWidthSpecs []tableColWidth,
-) []float64 {
-	if numCols == 0 {
-		return []float64{}
-	}
-
-	colWidths := make([]float64, numCols)
-	hasExplicit := make([]bool, numCols)
-
-	// Step 1a: Apply <col> element widths (CSS 2.1 §17.5.2.1 step 1).
-	// "A column element with a value other than 'auto' for the 'width'
-	// property sets the width for that column."
-	for _, cws := range colWidthSpecs {
-		// Compute the effective per-column width: start from cws.width,
-		// apply max then min clamp (CSS used-value order: min wins over smaller max).
-		eff := cws.width
-		if cws.hasMax {
-			if eff > cws.maxWidth {
-				eff = cws.maxWidth
-			}
-		}
-		if cws.hasMin {
-			if eff < cws.minWidth {
-				eff = cws.minWidth
-			}
-		}
-		// Assign eff to columns only when the column has an effective constraint:
-		// width>0 OR hasMin (a min-raised column is constrained).
-		// A column with hasMax only and width==0 stays unconstrained (max-width alone is inert).
-		// Use cws.width (declared width), not eff (clamped), so that width:Xpx; max-width:0
-		// still treats the column as constrained (it gets eff=0, not auto).
-		if cws.width > 0 || cws.hasMin {
-			for s := 0; s < cws.span; s++ {
-				ci := cws.colIndex + s
-				if ci < numCols && !hasExplicit[ci] {
-					colWidths[ci] = eff
-					hasExplicit[ci] = true
-				}
-			}
-		}
-	}
-
-	// Step 1b: Check first-row cells for explicit widths.
-	// "A cell in the first row with a value other than 'auto' for the 'width'
-	// property determines the width for that column."
-	if len(rows) > 0 {
-		for _, cell := range rows[0].cells {
-			colIdx := cell.colIndex
-			if colIdx >= numCols {
-				continue
-			}
-			if cell.style != nil {
-				inlineProp := "width"
-				if tla.space.WritingDirection.IsVertical() {
-					inlineProp = "height"
-				}
-				if w, ok := cell.style.GetLength(inlineProp); ok && w > 0 {
-					// Convert content-box to border-box for column sizing.
-					wBB := w
-					if cell.style.GetBoxSizing() != "border-box" {
-						cellGeom := ComputeFragmentGeometry(cell.style, tla.space.WritingDirection)
-						wBB += cellGeom.InlineBorderPadding()
-					}
-					if cell.colSpan > 1 {
-						// Distribute explicit width equally across spanned columns.
-						perCol := wBB / float64(cell.colSpan)
-						for c := 0; c < cell.colSpan && colIdx+c < numCols; c++ {
-							if !hasExplicit[colIdx+c] {
-								colWidths[colIdx+c] = perCol
-								hasExplicit[colIdx+c] = true
-							}
-						}
-					} else {
-						colWidths[colIdx] = wBB
-						hasExplicit[colIdx] = true
-					}
-				}
-			}
-		}
-	}
-
-	// Step 2: Distribute remaining width equally among columns without
-	// explicit widths (CSS 2.1 §17.5.2.1 step 3).
-	usedWidth := 0.0
-	unsetCols := 0
-	for i := 0; i < numCols; i++ {
-		usedWidth += colWidths[i]
-		if !hasExplicit[i] {
-			unsetCols++
-		}
-	}
-
-	if unsetCols > 0 {
-		remaining := availableForCols - usedWidth
-		if remaining > 0 {
-			perCol := remaining / float64(unsetCols)
-			for i := 0; i < numCols; i++ {
-				if !hasExplicit[i] {
-					colWidths[i] = perCol
-				}
-			}
-		} else {
-			// Fallback: give unset columns a minimal width.
-			for i := 0; i < numCols; i++ {
-				if !hasExplicit[i] {
-					colWidths[i] = 10
-				}
-			}
-		}
-	}
-
-	return colWidths
-}
-
 // cellExplicitInlineSize returns the cell's specified inline-size measured along
 // the TABLE's inline axis (CSS "width" for a horizontal table, "height" for a
 // vertical one), and whether one is specified. For an orthogonal cell the cell's
@@ -1754,10 +1665,26 @@ func cellExplicitInlineSize(cell tableCell, tableWD WritingDirectionMode) (float
 	if cell.style == nil {
 		return 0, false
 	}
-	if w, ok := cell.style.GetLength(logicalInlineSizeProperty(tableWD)); ok && w > 0 {
-		return w, true
+	// A width of 0 is a specified width too (InlineSizesFromStyle,
+	// table/table_layout_algorithm_types.cc:24-75 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	return cellFixedLength(cell.style, logicalInlineSizeProperty(tableWD))
+}
+
+// cellFixedLength returns a cell's prop when it is a fixed length (Blink's
+// Length::IsFixed), the only sizes the table reads as lengths
+// (InlineSizesFromStyle, table/table_layout_algorithm_types.cc:24-75;
+// ComputeMinimumRowBlockSize, table/table_layout_utils.cc:265-292 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A calculation with a
+// percentage is not one, though GetLength resolves it against 0: the
+// table reads it as a percentage at most (cellPercentageInlineSize), else
+// as auto.
+func cellFixedLength(style *css.Style, prop string) (float64, bool) {
+	v, ok := style.Get(prop)
+	if !ok || css.IsMathFunctionWithPercent(v) {
+		return 0, false
 	}
-	return 0, false
+	return style.GetLengthForVal(v)
 }
 
 // computeColumnConstraints returns the table's column constraints: each
@@ -1768,18 +1695,36 @@ func cellExplicitInlineSize(cell tableCell, tableWD WritingDirectionMode) (float
 // ApplyCellConstraintsToColumnConstraints's total-percentage clamp
 // (:144-160) and Column::Encompass's percentage rule
 // (table/table_layout_algorithm_types.cc:290-293), all @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Not ported: colspan cells'
-// distribution to columns (DistributeColspanCellsToColumns), mergeable
-// columns, and <col> percentages. availableInline is the cells' available
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b. Not ported: mergeable columns.
+// availableInline is the cells' available
 // inline-size (Indefinite while sizing the table intrinsically);
 // inlineSpacing is the table's inline border spacing (0 when collapsed).
-func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCols int, availableInline, inlineSpacing float64, colWidthSpecs []tableColWidth) *TableTypesColumns {
+//
+// In a fixed-layout table (isFixedLayout) only the first row's cells count
+// (ComputeSectionInlineConstraints, table/table_layout_utils.cc:418-419), a
+// cell has no content minimum (CreateCellInlineConstraint,
+// table/table_layout_algorithm_types.cc:172-185), a column a <col> width
+// constrains ignores its cells (Column::Encompass, :264-266), colspan cells
+// fill only the columns no cell sized (DistributeColspanCellToColumnsFixed,
+// table_layout_utils.cc:924-1005), and percentages over 100% scale down
+// (:162-167).
+func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCols int, availableInline, inlineSpacing float64, colWidthSpecs []tableColWidth, isFixedLayout bool) *TableTypesColumns {
 	// Each column's min/max content width.
 	colMin := make([]float64, numCols)
 	colMax := make([]float64, numCols)
 	colPercent := make([]float64, numCols)
 	colHasPercent := make([]bool, numCols)
+	colPercentBorderPadding := make([]float64, numCols)
+	// colHasSize: a <col> or a single-column cell sized the column (Blink's
+	// Column min/max_inline_size have a value).
+	colHasSize := make([]bool, numCols)
+	// colConstrainedByCol: a <col> width constrains the column, which in a
+	// fixed-layout table its cells then do not change.
+	colConstrainedByCol := make([]bool, numCols)
 	var colspanCells []TableTypesColspanCell
+	if isFixedLayout && len(rows) > 1 {
+		rows = rows[:1]
+	}
 
 	// colConstrained is the order-independent "this column has a specified width"
 	// set — Blink's Column.is_constrained ("true if any cell for this column is
@@ -1814,7 +1759,7 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 					eff = cws.minWidth
 				}
 			}
-			// Fold eff into colMin/colMax exactly as cws.width was (only raise).
+			// Fold eff into colMin/colMax (only raise).
 			if eff > colMin[ci] {
 				colMin[ci] = eff
 			}
@@ -1822,11 +1767,19 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 				colMax[ci] = eff
 			}
 			// Set colConstrained only when the column has an effective constraint:
-			// width>0 OR hasMin (a min-raised column is constrained).
-			// A column with hasMax only and width==0 stays unconstrained (max-width alone is inert).
-			if cws.width > 0 || cws.hasMin {
+			// a width (0 included) OR hasMin (a min-raised column is constrained).
+			// A column with hasMax only and no width stays unconstrained (max-width alone is inert).
+			if cws.hasWidth || cws.hasMin {
 				colConstrained[ci] = true
+				colConstrainedByCol[ci] = true
 			}
+			// A <col> percentage makes a percentage column; the cells'
+			// larger percentages win (Column::Encompass, table/
+			// table_layout_algorithm_types.cc:290-293).
+			if cws.hasPercent && (!colHasPercent[ci] || cws.percent > colPercent[ci]) {
+				colPercent[ci], colHasPercent[ci] = cws.percent, true
+			}
+			colHasSize[ci] = true
 		}
 	}
 
@@ -1853,6 +1806,10 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 				continue
 			}
 
+			if isFixedLayout && cell.colSpan == 1 && colConstrainedByCol[colIdx] {
+				continue
+			}
+
 			// Explicit inline-size on the cell, from the table's axis. Shared with the
 			// colConstrained pre-pass above via cellExplicitInlineSize.
 			explicitW, hasExplicit := cellExplicitInlineSize(cell, tla.space.WritingDirection)
@@ -1862,6 +1819,19 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 			// sizing is skipped.
 			cellMin, cellMax, hasCellSize := 0.0, 0.0, true
 			pct, hasPct := cellPercentageInlineSize(cell.style, tla.space.WritingDirection)
+			childWDM := tla.space.WritingDirection
+			if cell.style != nil {
+				childWDM = NewWritingDirectionMode(cell.style)
+			}
+			isOrthogonal := tla.space.WritingDirection.IsVertical() != childWDM.IsVertical()
+			childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
+				SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
+				SetOrthogonalFallbackInlineSize(
+					orthogonalFallbackSize(childWDM, tla.ctx)).
+				SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
+				SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
+				SetPercentageResolutionInlineSize(tla.space.PercentageResolutionInlineSize).
+				Build()
 			if hasExplicit {
 				// explicitW is a content-box width; column sizing uses border-box.
 				// If the cell has box-sizing:border-box the value already includes BP;
@@ -1871,7 +1841,24 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 					cellGeom := ComputeFragmentGeometry(cell.style, tla.space.WritingDirection)
 					explicitBB += cellGeom.InlineBorderPadding()
 				}
-				cellMin, cellMax = explicitBB, explicitBB
+				// The specified width is only the max guess: the minimum
+				// stays the cell's content minimum, raised by its
+				// min-width, and the max never goes below it
+				// (CreateCellInlineConstraint, table/
+				// table_layout_algorithm_types.cc:172-199 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The content
+				// sizes skip the width, which ComputeMinMaxSizes would
+				// return as the cell's contribution. An orthogonal cell
+				// keeps min = max = its width. A fixed-layout cell
+				// measures no content, so its max is its width (its min is
+				// zeroed below).
+				if isOrthogonal || isFixedLayout {
+					cellMin, cellMax = explicitBB, explicitBB
+				} else {
+					content := computeContentMinMaxSizes(tla.ctx, cell.node, childSpace)
+					cellMin = content.MinContent + ComputeFragmentGeometry(cell.style, childWDM).InlineBorderPadding()
+					cellMax = max(cellMin, explicitBB)
+				}
 				// (colConstrained for this column was set in the pre-pass above.)
 			} else {
 				// Compute intrinsic size.
@@ -1893,22 +1880,9 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 				// sizing rather than let it override the constraint. colConstrained is
 				// fully populated before this loop, so the decision does not depend on
 				// the order cells/rows are visited.
-				childWDM := tla.space.WritingDirection
-				if cell.style != nil {
-					childWDM = NewWritingDirectionMode(cell.style)
-				}
-				isOrthogonal := tla.space.WritingDirection.IsVertical() != childWDM.IsVertical()
 				skipIntrinsic := isOrthogonal && cell.colSpan == 1 && colConstrained[colIdx]
 				hasCellSize = !skipIntrinsic
 				if !skipIntrinsic {
-					childSpace := NewConstraintSpaceBuilder(tla.space.WritingDirection, childWDM, true).
-						SetInlineAutoBehavior(AutoSizeBehaviorStretchImplicit).
-						SetOrthogonalFallbackInlineSize(
-							orthogonalFallbackSize(childWDM, tla.ctx)).
-						SetOrthogonalFallbackBlockSize(tla.space.OrthogonalFallbackBlockSize).
-						SetAvailableSize(LogicalSize{InlineSize: availableInline, BlockSize: Indefinite}).
-						SetPercentageResolutionInlineSize(tla.space.PercentageResolutionInlineSize).
-						Build()
 					if isOrthogonal {
 						res := layoutElement(tla.ctx, cell.node, childSpace)
 						cellMin = NewLogicalFragment(tla.space.WritingDirection, res.Fragment).InlineSize()
@@ -1921,6 +1895,12 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 						cellMax = mm.MaxContent + cellBP
 					}
 				}
+			}
+			// A fixed-layout cell has no content minimum
+			// (CreateCellInlineConstraint, table/
+			// table_layout_algorithm_types.cc:172-185).
+			if isFixedLayout {
+				cellMin = 0
 			}
 			if cell.colSpan > 1 {
 				colspanCells = append(colspanCells, TableTypesColspanCell{
@@ -1936,13 +1916,20 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 				})
 				continue
 			}
-			// Column::Encompass keeps the largest cell percentage.
+			// Column::Encompass keeps the largest cell percentage. A
+			// fixed-layout content-box percentage cell adds its border and
+			// padding (CreateCellInlineConstraint, table/
+			// table_layout_algorithm_types.cc:202-206).
 			if hasPct && (!colHasPercent[colIdx] || pct > colPercent[colIdx]) {
 				colPercent[colIdx], colHasPercent[colIdx] = pct, true
+				if isFixedLayout && (cell.style == nil || cell.style.GetBoxSizing() != "border-box") {
+					colPercentBorderPadding[colIdx] = ComputeFragmentGeometry(cell.style, tla.space.WritingDirection).InlineBorderPadding()
+				}
 			}
 			if hasCellSize {
 				colMin[colIdx] = max(colMin[colIdx], cellMin)
 				colMax[colIdx] = max(colMax[colIdx], cellMax)
+				colHasSize[colIdx] = true
 			}
 		}
 	}
@@ -1950,11 +1937,12 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 	columns := &TableTypesColumns{Data: make([]TableTypesColumn, numCols)}
 	for i := range columns.Data {
 		columns.Data[i] = TableTypesColumn{
-			MinInlineSize: colMin[i],
-			MaxInlineSize: colMax[i],
-			Percent:       colPercent[i],
-			HasPercent:    colHasPercent[i],
-			IsConstrained: colConstrained[i],
+			MinInlineSize:        colMin[i],
+			MaxInlineSize:        colMax[i],
+			Percent:              colPercent[i],
+			HasPercent:           colHasPercent[i],
+			PercentBorderPadding: colPercentBorderPadding[i],
+			IsConstrained:        colConstrained[i],
 		}
 	}
 
@@ -1968,23 +1956,38 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 		return colspanCells[i].Span < colspanCells[j].Span
 	})
 	for _, colspanCell := range colspanCells {
-		DistributeColspanCellToColumnsAuto(colspanCell, inlineSpacing, columns)
+		if isFixedLayout {
+			DistributeColspanCellToColumnsFixed(colspanCell, inlineSpacing, columns, colHasSize)
+		} else {
+			DistributeColspanCellToColumnsAuto(colspanCell, inlineSpacing, columns)
+		}
 	}
 
-	// Column total percentage is clamped to 100%: max(0, 100% minus the
-	// percentages of the prior columns) (auto layout, :144-160).
+	// Column total percentage is clamped to 100%: in an auto table to
+	// max(0, 100% minus the percentages of the prior columns); in a fixed
+	// table all percentages scale so they total 100% (:144-167).
 	totalPercentage := 0.0
 	for i := range columns.Data {
 		if columns.Data[i].HasPercent {
-			columns.Data[i].Percent = min(columns.Data[i].Percent, 100-totalPercentage)
+			if !isFixedLayout {
+				columns.Data[i].Percent = min(columns.Data[i].Percent, 100-totalPercentage)
+			}
 			totalPercentage += columns.Data[i].Percent
+		}
+	}
+	if isFixedLayout && totalPercentage > 100 {
+		for i := range columns.Data {
+			if columns.Data[i].HasPercent {
+				columns.Data[i].Percent = columns.Data[i].Percent * 100 / totalPercentage
+			}
 		}
 	}
 	return columns
 }
 
-// computeColumnWidths returns an auto-layout table's column widths: the
-// assignable table inline size, distributed to the column constraints.
+// computeColumnWidths returns the table's column widths: the assignable
+// table inline size, distributed to the column constraints by the fixed or
+// auto layout algorithm.
 func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	rows []tableRow, numCols int, availableInline float64, borderCollapse bool, hasExplicitWidth bool,
 	geom FragmentGeometry, captions []tableCaption, colWidthSpecs []tableColWidth,
@@ -1993,7 +1996,8 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	if !borderCollapse {
 		inlineSpacing, _ = tla.logicalBorderSpacing()
 	}
-	columns := tla.computeColumnConstraints(rows, numCols, availableInline, inlineSpacing, colWidthSpecs)
+	isFixedLayout := tla.isFixedTableLayout()
+	columns := tla.computeColumnConstraints(rows, numCols, availableInline, inlineSpacing, colWidthSpecs, isFixedLayout)
 
 	// The assignable table inline size (ComputeAssignableTableInlineSize,
 	// table/table_layout_algorithm.cc:223-258 @
@@ -2012,9 +2016,9 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	// (SynchronizeAssignableTableInlineSizeAndColumns, table/
 	// table_layout_utils.cc:1849-1864).
 	if tla.space.IsFixedInlineSize {
-		return DistributeInlineSizeToComputedInlineSizeAuto(availableInline, columns.Data, true)
+		return SynchronizeAssignableTableInlineSizeAndColumns(availableInline, isFixedLayout, columns)
 	}
-	grid := ComputeGridInlineMinMax(tla.node, columns, 0, false, true)
+	grid := ComputeGridInlineMinMax(tla.node, columns, 0, isFixedLayout, true)
 	extent := availableInline
 	if !hasExplicitWidth {
 		extent = min(max(extent, grid.MinContent), grid.MaxContent)
@@ -2036,7 +2040,7 @@ func (tla *TableLayoutAlgorithm) computeColumnWidths(
 	// taken against the table's content box (:248-250).
 	used = max(used, tla.computeCaptionConstraint(captions).MinContent-geom.InlineBorderPadding())
 	assignable := used - spacing
-	return DistributeInlineSizeToComputedInlineSizeAuto(assignable, columns.Data, true)
+	return SynchronizeAssignableTableInlineSizeAndColumns(assignable, isFixedLayout, columns)
 }
 
 // tableCaption tracks a caption element during table layout.

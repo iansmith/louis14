@@ -48,7 +48,7 @@ func ruleKindOf(text string) ruleKind {
 		return ruleKindImport
 	case hasAtKeyword(text, "@namespace"):
 		return ruleKindNamespace
-	case hasAtKeyword(text, "@layer") && !strings.Contains(text, "{"):
+	case hasAtKeyword(text, "@layer") && indexTopLevelBrace(text) < 0:
 		return ruleKindLayerStatement
 	}
 	return ruleKindOther

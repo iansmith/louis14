@@ -200,6 +200,17 @@ func computeReplacedChildPercentageBlockSize(bla *BlockLayoutAlgorithm) (float64
 	return 0, false
 }
 
+// isOverflowAutoOrScrollInBlockDirection reports whether style's overflow
+// along its block axis is auto or scroll (Blink's
+// OverflowBlockDirection() == kAuto || kScroll).
+func isOverflowAutoOrScrollInBlockDirection(style *css.Style, wdm WritingDirectionMode) bool {
+	ov := style.GetOverflowY()
+	if wdm.IsVertical() {
+		ov = style.GetOverflowX()
+	}
+	return ov == css.OverflowAuto || ov == css.OverflowScroll
+}
+
 // previouslyConsumedBlockSize is the border-box block-size earlier fragments
 // of a box consumed: Blink's previously_consumed_block_size, read from a
 // break-inside token only (fragmentation_utils.cc:553-555 @ a9f50e522efa).
@@ -1211,6 +1222,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// child's BFC block-offset resolves: it is laid out again there
 			// (Blink's ForcedBfcBlockOffset).
 			forcedChildBfcBlockOffset := math.NaN()
+			childPercentageBlockSize := childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize)
 			newChildSpaceBuilder := func(borderEdgeOff float64) *ConstraintSpaceBuilder {
 				b := NewConstraintSpaceBuilder(wdm, childWDM, isChildNewFC).
 					SetOrthogonalFallbackInlineSize(
@@ -1222,7 +1234,7 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 					}).
 					SetPercentageResolutionSize(LogicalSize{
 						InlineSize: contentInlineSize,
-						BlockSize:  childPercResolutionBlockSize(bla, hasExplicitBlock, explicitBlockSize),
+						BlockSize:  childPercentageBlockSize,
 					}).
 					SetPercentageResolutionInlineSize(contentInlineSize).
 					SetExclusionSpace(bla.containerBuilder.GetExclusionSpace())
@@ -1240,6 +1252,19 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 
 				b.SetInlineAutoBehavior(childInlineAutoBehavior)
+
+				// A scrollable percentage-height child of a restricted table
+				// cell is sized to its min block size while the percentage
+				// cannot resolve (CreateConstraintSpaceForChild,
+				// block_layout_algorithm.cc:3474-3487 @
+				// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+				if bla.space.TableSectionData != nil && bla.space.IsRestrictedBlockSizeTableCell &&
+					childPercentageBlockSize == Indefinite &&
+					!child.IsSemiReplaced() && child.Style() != nil &&
+					propertyHasPercent(child.Style(), logicalBlockSizeProperty(childWDM)) &&
+					isOverflowAutoOrScrollInBlockDirection(child.Style(), childWDM) {
+					b.SetIsRestrictedBlockSizeTableCellChild()
+				}
 
 				// For non-BFC children, propagate the BFC block and inline
 				// offsets so they can correctly query the exclusion space in
@@ -1900,6 +1925,13 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 		// size (length_utils.cc:906-916, :929-940 @
 		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		finalBlockSize = max(0, bla.space.AvailableSize.BlockSize.Float64()-geom.BlockBorderPadding())
+		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
+	} else if bla.space.IsRestrictedBlockSizeTableCellChild {
+		// A scrollable percentage-height child of a restricted table cell
+		// is its initial min block size (ComputeBlockSizeForFragment-
+		// Internal, length_utils.cc:813-821 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		finalBlockSize = ResolveMinBlockSize(bla.style, wdm, bla.space, geom).Float64()
 		clearBlockEndIfExcluded(shouldBreakInside, bla.containerBuilder.HasInflowChildBreakInside())
 	} else if bla.space.TableSectionData != nil && !bla.space.IsFixedBlockSize {
 		// A table cell measured without a fixed block size ends at its

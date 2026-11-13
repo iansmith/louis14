@@ -53,7 +53,18 @@ func baseFontAscentFromSubLine(
 		// strut ascent (maxAscent), and annotationBlockTop is computed relative
 		// to that grown maxAscent. Using overridden baseFontAsc here would
 		// double-count the override delta and push the annotation into the base.
-		asc, _ := blockAscentDescent(fontSize, resolveFontPath(r.Item.Style, fonts), nil, wdm, centralBaseline)
+		fontPath := resolveFontPath(r.Item.Style, fonts)
+		var asc float64
+		if wdm.WM == WritingModeVerticalLR {
+			// louis14 places vertical-lr annotations on the block-start
+			// (line-under) side, so this measures that side, less the
+			// em-height adjustment.
+			asc, _ = blockAscentDescent(fontSize, fontPath, nil, wdm, centralBaseline)
+			asc -= text.EmHeightOverAdjustment(fontSize, fontPath, centralBaseline)
+		} else {
+			// Annotations sit on the base's em height (text.EmHeightAscent).
+			asc = text.EmHeightAscent(fontSize, fontPath, centralBaseline)
+		}
 		if asc > maxAscent {
 			maxAscent = asc
 		}
@@ -73,8 +84,8 @@ func baseFontAscentFromSubLine(
 // position the annotation baseline relative to the line's block origin.
 //
 // Why this is distinct from `computeLineMetricsEx`:
-//  1. No half-leading. computeLineMetricsEx adds `(lineHt − (asc+desc))/2`
-//     to both ascent and descent for `line-height: normal`. Blink's
+//  1. No leading. computeLineMetricsEx adds calculateLeadingSpace(lineHt,
+//     asc+desc) to the ascent and descent for `line-height: normal`. Blink's
 //     annotation positioning uses font em-height only; the leading is
 //     a property of the OUTER line's block metrics.
 //  2. No integer rounding. computeLineMetricsEx → blockAscentDescent
@@ -116,8 +127,7 @@ func annotationEmHeightFromSubLine(
 			d = fontSize / 2
 		} else {
 			fontPath := resolveFontPath(r.Item.Style, fonts)
-			a = text.FontTypoAscentFromFont(fontSize, fontPath, fonts.Registry)
-			d = text.FontTypoDescentFromFont(fontSize, fontPath, fonts.Registry)
+			a, d = text.NormalizedTypoAscentAndDescent(fontSize, fontPath)
 			if sidewaysVLR {
 				a, d = d, a
 			}
@@ -197,9 +207,14 @@ func emphasisMarkAscentFromLine(
 		baseAsc, _ := blockAscentDescent(fontSize, fontPath, nil, wdm, centralBaseline)
 		markHeight := markFontSize
 		if !centralBaseline {
-			markHeight = text.FontTypoAscentFromFont(markFontSize, fontPath, fonts.Registry) +
-				text.FontTypoDescentFromFont(markFontSize, fontPath, fonts.Registry)
+			markAsc, markDesc := text.NormalizedTypoAscentAndDescent(markFontSize, fontPath)
+			markHeight = markAsc + markDesc
 		}
+		// ComputeAnnotationOverflow puts the mark above the item's over edge
+		// less its annotation ascent (ruby_utils.cc:775-776 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which lowers it by the
+		// em-height adjustment.
+		baseAsc -= text.EmHeightOverAdjustment(fontSize, fontPath, centralBaseline)
 		if n := baseAsc + markHeight; n > needed {
 			needed = n
 		}
