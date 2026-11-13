@@ -81,6 +81,13 @@ type ringProbe struct {
 //   - an anonymous block adds no rect of its own (:1263-1264), only its
 //     text items (:1442-1455), so the anonymous wrapper of "XX" overflowing
 //     a 10px-tall block contributes the 40px of text, not its full width;
+//   - an inline box without a box fragment of its own (culled,
+//     LayoutInline::ComputeInitialShouldCreateBoxFragment,
+//     core/layout/layout_inline.cc:179-227 @
+//     a9f50e522efa9005e6ec765a9a785c74f5c2c86b) leaves its text as the
+//     block's line items, so the ring wraps a plain span's overflowing
+//     text, while a span with a box fragment (here a transparent border)
+//     adds only its non-text descendants, so its text does not count;
 //   - a focused inline adds the descendants of every fragment
 //     (AddOutlineRectsForInlineBox, :1306-1386), so a relatively positioned
 //     inline-block in its second fragment extends the ring.
@@ -100,6 +107,15 @@ func TestFocusRing_OutlineRects(t *testing.T) {
 			[]ringProbe{
 				{100, 39, black, "no ring along the anonymous wrapper's bottom edge"},
 				{100, 29, blue, "the ring runs along the block's own bottom edge right of the text"},
+			}},
+		{"culled inline's text", `<div style="position:absolute;left:20px;top:20px;width:50px;height:50px;outline:auto 1px blue"><span style="font:50px/1 Ahem;color:transparent">XX</span></div>`,
+			[]ringProbe{
+				{120, 45, blue, "a culled span's text is a line item of the block, so the ring wraps its overflow"},
+			}},
+		{"box-fragment inline's text", `<div style="position:absolute;left:20px;top:20px;width:50px;height:50px;outline:auto 1px blue"><span style="font:50px/1 Ahem;color:transparent;border-left:1px solid transparent">XX</span></div>`,
+			[]ringProbe{
+				{120, 45, black, "text inside an inline box fragment is not a block line item"},
+				{69, 45, blue, "the ring runs down the block's right edge"},
 			}},
 		{"later fragment's descendant", `<div style="position:absolute;left:10px;top:10px;width:120px;font:20px/20px Ahem;color:transparent">XXX <span style="outline:auto 1px blue">XX X<span style="display:inline-block;width:20px;height:40px;position:relative;top:20px"></span></span></div>`,
 			[]ringProbe{
