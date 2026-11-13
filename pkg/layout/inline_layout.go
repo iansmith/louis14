@@ -2276,17 +2276,18 @@ func createLineBoxEx(
 			// `core/layout/inline/ruby_utils.cc:705-826 @
 			// 574216cbb0c2b86a39c1d41ad85b2891a050b44c`: the annotation
 			// occupies existing half-leading first; the line grows only
-			// by the amount the annotation overflows the line-box ascent.
+			// by the amount the annotation overflows the line-over side.
 			// Under tall line-heights, the annotation fits inside the
 			// natural leading and the line does not grow at all.
 			//
 			// Concretely: needed = max base-font-ascent across columns +
-			// annotation height; if needed > current maxAscent, grow by
-			// the deficit. The pre-LOU-161 pattern was unconditional
+			// annotation height; if needed exceeds the line-over side, grow
+			// it by the deficit (growLineOverSide: maxAscent, or maxDescent
+			// in vertical-lr). The pre-LOU-161 pattern was unconditional
 			// `maxAscent += annoAsc`, which over-inflated under tall
 			// line-heights — the Bug A half of the ruby-annotation-Y
 			// diagnosis. Per-line max (not per-column) is intentional
-			// here: maxAscent is a line-wide quantity. The per-column
+			// here: the line metrics are line-wide. The per-column
 			// equivalent at the paint site below is distinct and must
 			// stay distinct — see the note there.
 			var baseFontAsc float64
@@ -2295,9 +2296,7 @@ func createLineBoxEx(
 					baseFontAsc = a
 				}
 			}
-			if needed := baseFontAsc + annoAsc; needed > maxAscent {
-				maxAscent = needed
-			}
+			growLineOverSide(baseFontAsc+annoAsc, wdm, &maxAscent, &maxDescent)
 		}
 	}
 
@@ -2307,11 +2306,9 @@ func createLineBoxEx(
 	// above. Mirrors Blink `InlineBoxState::ComputeEmphasisMarkOutsets`
 	// (`core/layout/inline/inline_box_state.cc:216-229`) feeding
 	// `ComputeAnnotationOverflow` (`core/layout/inline/ruby_utils.cc:748-810`),
-	// both @ 028f13cd82591cc213686dbcd075eebe562e5615. Ascent side only,
+	// both @ 028f13cd82591cc213686dbcd075eebe562e5615. Line-over side only,
 	// regardless of emphasis position — see emphasisMarkAscentFromLine.
-	if needed := emphasisMarkAscentFromLine(line, wdm, fonts, centralBaseline); needed > maxAscent {
-		maxAscent = needed
-	}
+	growLineOverSide(emphasisMarkAscentFromLine(line, wdm, fonts, centralBaseline), wdm, &maxAscent, &maxDescent)
 
 	lineHeight := maxAscent + maxDescent
 	if lineHeight <= 0 && parentStyle == nil {
@@ -3050,8 +3047,8 @@ func createLineBoxEx(
 		case InlineItemOpenRubyColumn:
 			// CSS Ruby Phase 2: paint the base + annotation sub-line
 			// glyphs at the column's current inline position. The
-			// outer line's `maxAscent` already includes the
-			// annotation contribution (RubyBlockPositionCalculator
+			// outer line's metrics already include the
+			// annotation contribution on the line-over side (RubyBlockPositionCalculator
 			// adjusted it above in Step 1). See inline_layout_ruby.go.
 			if r.RubyColumn != nil {
 				// Mirror Blink at `core/layout/inline/ruby_utils.cc:981 @
@@ -3070,10 +3067,7 @@ func createLineBoxEx(
 				// individual column's font ascent because each column
 				// places its own annotation. Don't dedupe.
 				baseFontAsc := baseFontAscentFromSubLine(r.RubyColumn.BaseLine, wdm, fonts, centralBaseline)
-				annotationBlockTop := maxAscent - baseFontAsc - rbpc.annotationAscent
-				if annotationBlockTop < 0 {
-					annotationBlockTop = 0
-				}
+				annotationBlockTop := annotationBlockStart(maxAscent, baseFontAsc, rbpc.annotationAscent, lineHeight, wdm)
 				emitRubyColumnFragments(
 					r.RubyColumn,
 					inlinePos,
@@ -3277,17 +3271,16 @@ func createLineBoxEx(
 	return result.Fragment, lineHeight, maxAscent, alignOffset, residualSpanStack, lineOOFCandidates
 }
 
-// blockAscentDescent returns a font's ascent and descent measured from the
-// baseline toward the line's block-start and block-end edges. On the
-// alphabetic baseline these are the font's integer ascent and descent; on the
-// central baseline Blink splits FontMetrics::Height() as Height() -
-// Height() / 2 on the line-over side and Height() / 2 on the line-under side
+// lineRelativeAscentDescent returns a font's ascent and descent measured from
+// the baseline toward the line-over and line-under edges. On the alphabetic
+// baseline these are the font's integer ascent and descent; on the central
+// baseline Blink splits FontMetrics::Height() as Height() - Height() / 2 on
+// the line-over side and Height() / 2 on the line-under side
 // (FontMetrics::IntAscentInternal, platform/fonts/font_metrics.cc:193-194 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), the split InlineBoxState::
 // ComputeTextMetrics uses for both the line box and the text fragment
-// (core/layout/inline/inline_box_state.cc:130-136 @ same SHA). Line-over is
-// block-end in the flipped-lines mode (vertical-lr), so there the two swap.
-func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistry, wdm WritingDirectionMode, centralBaseline bool) (ascent, descent float64) {
+// (core/layout/inline/inline_box_state.cc:130-136 @ same SHA).
+func lineRelativeAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistry, centralBaseline bool) (ascent, descent float64) {
 	ascent = text.FontAscentFromFont(fontSize, fontPath, reg)
 	descent = text.FontDescentFromFont(fontSize, fontPath, reg)
 	if centralBaseline {
@@ -3295,10 +3288,13 @@ func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistr
 		descent = CentralBaselineUnderSide(height)
 		ascent = height - descent
 	}
-	if wdm.IsFlippedLines() {
-		ascent, descent = descent, ascent
-	}
 	return ascent, descent
+}
+
+// blockAscentDescent is lineRelativeAscentDescent measured toward the line's
+// block-start and block-end edges instead (WritingDirectionMode.lineToBlock).
+func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistry, wdm WritingDirectionMode, centralBaseline bool) (ascent, descent float64) {
+	return wdm.lineToBlock(lineRelativeAscentDescent(fontSize, fontPath, reg, centralBaseline))
 }
 
 // CentralBaselineUnderSide is the part of a font box of the given height on
@@ -3310,6 +3306,35 @@ func blockAscentDescent(fontSize float64, fontPath string, reg *text.FontRegistr
 // a text fragment's left edge.
 func CentralBaselineUnderSide(height float64) float64 {
 	return math.Floor(height / 2)
+}
+
+// growLineOverSide grows the line's metrics so that needed fits between the
+// baseline and its line-over edge. louis14 measures maxAscent from the line's
+// block-start, which is line-over except in the flipped-lines mode
+// (vertical-lr), where line-over is block-end and maxDescent holds it; Blink
+// maps over annotation overflow the same way (InlineLayoutAlgorithm,
+// core/layout/inline/inline_layout_algorithm.cc:981-992 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func growLineOverSide(needed float64, wdm WritingDirectionMode, maxAscent, maxDescent *float64) {
+	side := maxAscent
+	if wdm.IsFlippedLines() {
+		side = maxDescent
+	}
+	if needed > *side {
+		*side = needed
+	}
+}
+
+// annotationBlockStart is the block-start offset within the line of an over
+// annotation annotationHeight tall whose base's em height reaches baseOver
+// past the baseline (maxAscent from the line's block-start): above the em
+// height on the line-over side, which is block-end in vertical-lr, kept
+// inside the line box.
+func annotationBlockStart(maxAscent, baseOver, annotationHeight, lineHeight float64, wdm WritingDirectionMode) float64 {
+	if wdm.IsFlippedLines() {
+		return math.Min(maxAscent+baseOver, math.Max(0, lineHeight-annotationHeight))
+	}
+	return math.Max(0, maxAscent-baseOver-annotationHeight)
 }
 
 // textFragmentMetrics returns a text fragment's font size, the distance from

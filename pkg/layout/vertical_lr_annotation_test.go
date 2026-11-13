@@ -30,15 +30,20 @@ func verticalLineProbe(t *testing.T, wm, to, body string) (width float64, text m
 
 func TestVerticalLR_OverAnnotationOnLineOverSide(t *testing.T) {
 	for _, to := range []string{"sideways", "mixed"} {
-		rlWidth, _ := verticalLineProbe(t, "vertical-rl", to, `<ruby>X<rt>a</rt></ruby>Y`)
+		rlWidth, rl := verticalLineProbe(t, "vertical-rl", to, `<ruby>X<rt>a</rt></ruby>Y`)
 		lrWidth, lr := verticalLineProbe(t, "vertical-lr", to, `<ruby>X<rt>a</rt></ruby>Y`)
 		if lrWidth != rlWidth {
 			t.Errorf("%s: vertical-lr ruby line width = %v, want vertical-rl's %v", to, lrWidth, rlWidth)
 		}
-		if base, anno := lr["X"], lr["a"]; base == nil || anno == nil {
-			t.Fatalf("%s: missing base or annotation text box", to)
-		} else if anno.X < base.X+base.Width {
-			t.Errorf("%s: vertical-lr annotation x = %v, want on the line-over (right) side of the base, x >= %v", to, anno.X, base.X+base.Width)
+		// The annotation sits on the base's em height on the right in both
+		// modes, so a one-line vertical-lr layout matches vertical-rl's.
+		for _, s := range []string{"X", "a"} {
+			if lr[s] == nil || rl[s] == nil {
+				t.Fatalf("%s: missing text box %q", to, s)
+			}
+			if lr[s].X != rl[s].X {
+				t.Errorf("%s: vertical-lr %q x = %v, want vertical-rl's %v", to, s, lr[s].X, rl[s].X)
+			}
 		}
 	}
 }
