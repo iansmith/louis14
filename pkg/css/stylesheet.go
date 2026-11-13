@@ -5688,7 +5688,7 @@ func isValidImageValue(value string) bool {
 		return true
 	}
 	// Multi-layer values: every comma-separated layer must be a valid <image>.
-	for _, layer := range splitCommaSeparated(trimmed) {
+	for _, layer := range SplitTopLevelCommas(trimmed) {
 		if !isValidSingleImageLayer(strings.TrimSpace(layer)) {
 			return false
 		}
