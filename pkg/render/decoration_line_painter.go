@@ -41,10 +41,11 @@ func (r *Renderer) drawLineAsStroke(x, top, width, thickness float64, style stro
 	}
 
 	if keep != nil {
-		// Blink outsets each intercept 1px vertically.
+		// The line's bounds: t tall about the snapped middle
+		// (DecorationLinePainter::Bounds).
 		r.dc.Push()
 		defer r.dc.Pop()
-		r.clipOutSkippedInk(x, width, top-1, thickness+2, keep)
+		r.clipOutSkippedInk(x, width, midY-t/2, t, keep)
 	}
 	r.strokeWithDash(func(b pathBuilder) {
 		b.MoveTo(startX, y)
@@ -53,13 +54,15 @@ func (r *Renderer) drawLineAsStroke(x, top, width, thickness float64, style stro
 }
 
 // clipOutSkippedInk clips out the stretches of [x, x+width] that skip-ink
-// leaves between the kept segments, over the band [bandTop,
-// bandTop+bandHeight], so the line paints on unbroken through them as
-// Blink's non-anti-aliased ClipOut of each glyph intercept does
+// leaves between the kept segments, so the line paints on unbroken through
+// them as Blink's non-anti-aliased ClipOut of each glyph intercept does
 // (TextPainter::ClipDecorationLine, core/paint/text_painter.cc:574-627 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The caller saves and restores
-// the clip.
-func (r *Renderer) clipOutSkippedInk(x, width, bandTop, bandHeight float64, keep []inkSegment) {
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Across the line the clip covers
+// the line's bounds (boundsTop, boundsHeight) inset decorationClipInset and
+// outset 1px, a net decorationClipInset either side. The caller saves and
+// restores the clip.
+func (r *Renderer) clipOutSkippedInk(x, width, boundsTop, boundsHeight float64, keep []inkSegment) {
+	bandTop, bandHeight := boundsTop+decorationClipInset-1, boundsHeight-2*decorationClipInset+2
 	from := x
 	for _, s := range keep {
 		if s.Start > from {
@@ -132,9 +135,7 @@ func (r *Renderer) drawWavyLine(x, top, width, thickness, wavyOffset float64, ke
 	r.dc.DrawRectangle(x, rectTop, width, rectHeight)
 	clipPath(r.dc, graphics.AntiAliased, textshape.ClipOpIntersect)
 	if keep != nil {
-		// ClipDecorationLine insets the bounds 0.5px vertically, then
-		// outsets each intercept 1px.
-		r.clipOutSkippedInk(x, width, rectTop-0.5, rectHeight+1, keep)
+		r.clipOutSkippedInk(x, width, rectTop, rectHeight, keep)
 	}
 
 	y := top + wavyOffset + 0.5
