@@ -7,6 +7,7 @@ import (
 
 	"louis14/pkg/css"
 	"louis14/pkg/geometry"
+	"louis14/pkg/geometry/layoutunit"
 	"louis14/pkg/graphics"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
@@ -2297,7 +2298,7 @@ func (layer *PaintLayer) selfPaintingDescendantBoxes() map[*layout.Box]bool {
 // non-self-painting children.
 func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geometry.PhysicalRect {
 	if !layer.isLayoutInline() {
-		return visualOverflowRect(layer.Box, selfPainting)
+		return visualOverflowRect(layer.Box, selfPainting).Unite(layer.outlineInkOverflowRect())
 	}
 	rect := layer.linesBoundingBox
 	layer.forEachChild(func(c *PaintLayer, childSelfPainting bool) {
@@ -2305,7 +2306,32 @@ func (layer *PaintLayer) localBoundingBox(selfPainting map[*layout.Box]bool) geo
 			rect = rect.Unite(visualOverflowRect(c.Box, selfPainting))
 		}
 	})
-	return rect
+	return rect.Unite(layer.outlineInkOverflowRect())
+}
+
+// outlineInkOverflowRect is the ink overflow the layer's own outline adds to
+// its visual overflow: its outline rect inflated by OutlineOutsetExtent, as
+// PhysicalBoxFragment::ComputeSelfInkOverflow unites it
+// (core/layout/physical_box_fragment.cc:1161-1174 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), its outline rects being the
+// united AddSelfOutlineRects (outlineRects). Empty when the layer has no
+// outline.
+func (layer *PaintLayer) outlineInkOverflowRect() geometry.PhysicalRect {
+	if !layer.hasOutline() {
+		return geometry.PhysicalRect{}
+	}
+	var united geometry.PhysicalRect
+	for _, r := range layer.outlineRects() {
+		united = united.Unite(geometry.PhysicalRectEnclosingRect(r))
+	}
+	e := layoutunit.New(outlineOutsetExtent(layer))
+	return united.ExpandEdges(e, e, e, e)
+}
+
+// hasOutline is ComputedStyle::HasOutline: an outline with a style and a
+// width.
+func (layer *PaintLayer) hasOutline() bool {
+	return layer.OutlineStyle != "none" && layer.OutlineWidth > 0
 }
 
 // visualOverflowRect stands in for LayoutBox::VisualOverflowRect
