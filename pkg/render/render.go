@@ -4016,8 +4016,89 @@ func outlinePaintRect(layer *PaintLayer) (x, y, w, h float64) {
 	return pixelSnap(box.X, box.Y, box.Width, box.Height)
 }
 
+// Blink's focus ring geometry (core/paint/outline_painter.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a 3px ring at zoom 1
+// (FocusRingStrokeWidth, :38-47) drawn as two strokes of twice the inner
+// width, so 2px each (:50-57, :921-929); the default corner radius is the
+// ring width (DefaultFocusRingCornerRadius, :758-761).
+const (
+	focusRingStrokeWidth      = 3.0
+	focusRingInnerStrokeWidth = focusRingStrokeWidth / 3
+	focusRingOuterStrokeWidth = focusRingStrokeWidth / 3 * 2
+)
+
+// focusRingOuterColor is the outer ring's color in a light color scheme
+// (PaintFocusRing, outline_painter.cc:879-880 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b; #101010 in a dark one).
+var focusRingOuterColor = css.Color{R: 255, G: 255, B: 255, A: 1}
+
+// drawFocusRing paints outline-style: auto around the single outline rect
+// (x, y, w, h) as Blink's PaintFocusRing / PaintSingleFocusRing do
+// (outline_painter.cc:813-930 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// the outline rect is outset by the focus ring offset, an outer white ring
+// is stroked one inner-ring width further out, and the inner ring in
+// outline-color is stroked over it, both 2px wide, centred on their rounded
+// rects (DrawPlatformFocusRing, platform/graphics/platform_focus_ring.cc,
+// same SHA). Not ported: dark color schemes (outer #101010, inner white),
+// zoom scaling, native-appearance radii, and multi-rect contours (LOU-969;
+// consolidateInlineOutlines hands this one rect).
+func (r *Renderer) drawFocusRing(layer *PaintLayer, x, y, w, h float64) {
+	offset := focusRingOffset(layer)
+	radii := focusRingCornerRadii(layer)
+	for _, ring := range []struct {
+		outset float64
+		color  css.Color
+	}{
+		{offset + math.Ceil(focusRingInnerStrokeWidth), focusRingOuterColor},
+		{offset, layer.OutlineColor},
+	} {
+		// AdjustedOutlineOffset (:77-82): a negative offset never shrinks
+		// the ring below half the rect in each direction.
+		ox := math.Max(ring.outset, -math.Floor(w/2))
+		oy := math.Max(ring.outset, -math.Floor(h/2))
+		r.setColor(ring.color)
+		r.dc.SetLineWidth(focusRingOuterStrokeWidth)
+		r.buildRoundedRectPath(x-ox, y-oy, w+2*ox, h+2*oy, radii)
+		r.dc.Stroke()
+	}
+}
+
+// focusRingOffset is Blink's FocusRingOffset (outline_painter.cc:59-74 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): outline-offset, pulled one
+// pixel in when every border edge is at least a pixel wide.
+func focusRingOffset(layer *PaintLayer) float64 {
+	offset := math.Trunc(layer.OutlineOffset)
+	if b := layer.Box; b != nil && min(b.Border.Top, b.Border.Right, b.Border.Bottom, b.Border.Left) >= 1 {
+		offset--
+	}
+	return offset
+}
+
+// focusRingCornerRadii is Blink's GetFocusRingCornerRadii for an element
+// without native appearance (outline_painter.cc:763-811 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): an author border-radius
+// outset by outline-offset with every radius at least the ring width, else
+// the ring width on every corner.
+func focusRingCornerRadii(layer *PaintLayer) css.EllipticalRadii {
+	ringRadius := css.EllipticalRadius{Rx: focusRingStrokeWidth, Ry: focusRingStrokeWidth}
+	if !hasBorderRadius(layer) {
+		return css.EllipticalRadii{ringRadius, ringRadius, ringRadius, ringRadius}
+	}
+	o := layer.OutlineOffset
+	radii := layer.BorderRadius.Outset(o, o, o, o)
+	for i := range radii {
+		radii[i].Rx = math.Max(radii[i].Rx, ringRadius.Rx)
+		radii[i].Ry = math.Max(radii[i].Ry, ringRadius.Ry)
+	}
+	return radii
+}
+
 func (r *Renderer) drawOutline(layer *PaintLayer) {
 	x, y, w, h := outlinePaintRect(layer)
+	if layer.OutlineStyle == "auto" {
+		r.drawFocusRing(layer, x, y, w, h)
+		return
+	}
 
 	width := layer.OutlineWidth
 	offset := layer.OutlineOffset
@@ -4054,13 +4135,7 @@ func (r *Renderer) drawOutline(layer *PaintLayer) {
 
 	r.setColor(layer.OutlineColor)
 
-	// Treat `auto` as `solid` — louis14 has no focus-ring concept (CSS UI 4
-	// §4 explicitly permits this fallback).
 	style := layer.OutlineStyle
-	if style == "auto" {
-		style = "solid"
-	}
-
 	switch style {
 	case "solid":
 		if hasBorderRadius(layer) {
