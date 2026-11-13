@@ -32,15 +32,17 @@ type focusRingRectCollector struct {
 	own    int
 	prune  bool
 	anchor bool
+	// toFocused maps rects of the descendant being walked to the focused
+	// element's space: the composed transforms of the transformed boxes
+	// between them (nil when there are none).
+	toFocused *geometry.Transform
 }
 
 // focusRingOutlineRects returns the outline rects of an outline-style: auto
 // layer: for a block (or atomic inline) its self outline rects
 // (AddSelfOutlineRects, :1220-1239), for an inline box the rects of every
 // non-empty fragment plus each fragment's descendants
-// (AddOutlineRectsForInlineBox, :1306-1386). Not ported: transforms on
-// layered descendants (Blink maps them through LocalToAncestorRects).
-// HasControlClip needs no port: with SelectUsesUAClip stable
+// (AddOutlineRectsForInlineBox, :1306-1386). HasControlClip needs no port: with SelectUsesUAClip stable
 // (runtime_enabled_features.json5:5533-5535) it is always false.
 func (r *Renderer) focusRingOutlineRects(l *PaintLayer) []geometry.RectF {
 	c := focusRingRectCollector{r: r, prune: l.OutlineOffset >= 0, anchor: l.Box.Node.IsHTMLAnchorElement()}
@@ -172,11 +174,32 @@ func (c *focusRingRectCollector) addDescendantBox(d *layout.Box) {
 	if (d.LayoutNode != nil && d.LayoutNode.IsMarkerNode()) || isInlineBoxFragment(d) {
 		return
 	}
+	if d.Style == nil || !d.Style.HasTransform() {
+		c.addOwnRect(d)
+		c.addNormalChildren(d)
+		return
+	}
+	// A transformed descendant (its layer's HasLayer branch, :1499-1510)
+	// collects its rects in its own space and maps each to the focused
+	// element's (VectorOutlineRectCollector::Combine → LocalToAncestorRect,
+	// core/layout/outline_rect_collector.cc:49-61), which composes every
+	// transform on the way before taking one bounding box. Box geometry is
+	// untransformed and localTransformMatrix works in those coordinates.
+	outer := c.toFocused
+	m := localTransformMatrix(d)
+	if outer != nil {
+		m = outer.Mul(m)
+	}
+	c.toFocused = &m
 	c.addOwnRect(d)
 	c.addNormalChildren(d)
+	c.toFocused = outer
 }
 
 func (c *focusRingRectCollector) add(r geometry.RectF) {
+	if c.toFocused != nil {
+		r = c.toFocused.MapRect(r)
+	}
 	if c.prune {
 		for _, o := range c.rects[:c.own] {
 			if o.Union(r) == o {
