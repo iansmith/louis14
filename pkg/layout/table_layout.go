@@ -707,10 +707,11 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	}
 
 	firstRowHeight := 0.0
-	firstRowBaseline := 0.0   // max cell baseline in first VISIBLE row
-	lastRowBaseline := 0.0    // max cell baseline in last VISIBLE row
-	lastRowBlockOffset := 0.0 // block offset of last VISIBLE row
-	emittedRows := 0          // count of visible (non-collapsed) rows emitted
+	firstRowBaseline := 0.0    // max cell baseline in first VISIBLE row
+	firstRowBlockOffset := 0.0 // block offset of first VISIBLE row
+	lastRowBaseline := 0.0     // max cell baseline in last VISIBLE row
+	lastRowBlockOffset := 0.0  // block offset of last VISIBLE row
+	emittedRows := 0           // count of visible (non-collapsed) rows emitted
 	// rowStarts[i] is row i's block offset in the content box (a collapsed
 	// row starts, and ends, where the next row starts), rowStarts[len(rows)]
 	// the end of the last row: the collapsed-borders row geometry.
@@ -913,6 +914,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 		if emittedRows == 0 {
 			firstRowHeight = rowHeight
 			firstRowBaseline = rowBaseline
+			firstRowBlockOffset = blockOffset
 		}
 		lastRowBaseline = rowBaseline
 		lastRowBlockOffset = blockOffset
@@ -1021,13 +1023,17 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// and the last row's baseline as the table's last baseline.
 	if len(rows) > 0 {
 		borderPaddingStart := geom.Border.BlockStart + geom.Padding.BlockStart
+		// The first row sits below the top captions and the leading
+		// border spacing, which its block offset includes, as Blink's
+		// first section's baseline at its offset does
+		// (table_layout_algorithm.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if firstRowBaseline > 0 {
 			// First baseline: distance from table border-box block-start
 			// to the first row's text baseline.
-			builder.SetBaseline(borderPaddingStart + firstRowBaseline)
+			builder.SetBaseline(borderPaddingStart + firstRowBlockOffset + firstRowBaseline)
 		} else if firstRowHeight > 0 {
 			// Fallback: center of first row (no cells had a text baseline).
-			builder.SetBaseline(borderPaddingStart + firstRowHeight/2)
+			builder.SetBaseline(borderPaddingStart + firstRowBlockOffset + firstRowHeight/2)
 		}
 		if lastRowBaseline > 0 {
 			builder.SetLastBaseline(borderPaddingStart + lastRowBlockOffset + lastRowBaseline)
