@@ -38,13 +38,78 @@ func textHasBidiControls(text string) bool {
 //
 // After this call, itemsData.RuneLevels holds per-rune resolved levels,
 // itemsData.ParagraphLevels holds per-rune base levels, and each item's
-// BidiLevel/ParagraphLevel is set from the level at its start offset.
+// BidiLevel/ParagraphLevel is set from the level at its start offset, a
+// float or out-of-flow item's from its neutral (below).
+//
+// A float or out-of-flow item takes no room in TextContent; it is resolved
+// as a U+FFFC OBJECT REPLACEMENT CHARACTER (a neutral) at its offset and
+// takes that character's level, as Blink's InlineNode::SegmentBidiRuns does
+// (inline_node.cc:1361-1430 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b);
+// RuneLevels stay per TextContent rune.
 func resolveBidiParagraphs(itemsData *InlineItemsData, baseLevelFn func(content []rune) int) {
 	if len(itemsData.TextContent) == 0 {
 		return
 	}
 
-	runes := []rune(itemsData.TextContent)
+	text := itemsData.TextContent
+	runeAtByte := runeIndexByByte(text)
+	original := []rune(text)
+
+	// The floats and out-of-flow items, each as a neutral before the rune
+	// at its offset.
+	type neutral struct {
+		item *InlineItem
+		at   int // index in the augmented runes
+	}
+	var neutrals []neutral
+	runes := original
+	next := 0
+	for _, item := range itemsData.Items {
+		if !isBidiNeutralObject(item) {
+			continue
+		}
+		if len(neutrals) == 0 {
+			runes = make([]rune, 0, len(original)+1)
+		}
+		at := runeAtByte[min(item.StartOffset, len(text))]
+		runes = append(runes, original[next:at]...)
+		next = at
+		neutrals = append(neutrals, neutral{item, len(runes)})
+		runes = append(runes, '\uFFFC')
+	}
+	if len(neutrals) > 0 {
+		runes = append(runes, original[next:]...)
+	}
+
+	allLevels, paraLevels := resolveBidiRunes(runes, baseLevelFn)
+
+	// Drop the neutrals from the per-rune levels.
+	if len(neutrals) > 0 {
+		textLevels := make([]int, 0, len(original))
+		textParaLevels := make([]int, 0, len(original))
+		n := 0
+		for i := range runes {
+			if n < len(neutrals) && neutrals[n].at == i {
+				n++
+				continue
+			}
+			textLevels = append(textLevels, allLevels[i])
+			textParaLevels = append(textParaLevels, paraLevels[i])
+		}
+		itemsData.RuneLevels, itemsData.ParagraphLevels = textLevels, textParaLevels
+	} else {
+		itemsData.RuneLevels, itemsData.ParagraphLevels = allLevels, paraLevels
+	}
+	assignItemBidiLevels(itemsData, runeAtByte, itemsData.RuneLevels, itemsData.ParagraphLevels)
+	for _, n := range neutrals {
+		n.item.BidiLevel = allLevels[n.at]
+		n.item.ParagraphLevel = paraLevels[n.at]
+	}
+}
+
+// resolveBidiRunes resolves runes' per-rune levels and paragraph base
+// levels, each paragraph independently (UAX#9 P1).
+func resolveBidiRunes(runes []rune, baseLevelFn func(content []rune) int) (allLevels, paraLevels []int) {
 	nRunes := len(runes)
 
 	// Bidi class for each rune.
@@ -54,8 +119,8 @@ func resolveBidiParagraphs(itemsData *InlineItemsData, baseLevelFn func(content 
 		allClasses[i] = props.Class()
 	}
 
-	allLevels := make([]int, nRunes)
-	paraLevels := make([]int, nRunes)
+	allLevels = make([]int, nRunes)
+	paraLevels = make([]int, nRunes)
 
 	// Process each paragraph independently (UAX#9 P1). Paragraph boundaries are
 	// at class-B characters; the separator is kept with the preceding paragraph.
@@ -94,26 +159,15 @@ func resolveBidiParagraphs(itemsData *InlineItemsData, baseLevelFn func(content 
 
 		paraStart = paraEnd
 	}
-
-	itemsData.RuneLevels = allLevels
-	itemsData.ParagraphLevels = paraLevels
-	assignItemBidiLevels(itemsData, allLevels, paraLevels)
+	return allLevels, paraLevels
 }
 
 // assignItemBidiLevels stamps each InlineItem's BidiLevel and ParagraphLevel
 // from the resolved per-rune levels. Items past the end of TextContent take the
 // last paragraph's embedding level, matching ICU's ubidi_getLevelAt().
-func assignItemBidiLevels(itemsData *InlineItemsData, levels, paraLevels []int) {
+func assignItemBidiLevels(itemsData *InlineItemsData, runeAtByte []int, levels, paraLevels []int) {
 	text := itemsData.TextContent
 	nRunes := len(levels)
-
-	runeAtByte := make([]int, len(text)+1)
-	ri := 0
-	for bi := range text {
-		runeAtByte[bi] = ri
-		ri++
-	}
-	runeAtByte[len(text)] = ri
 
 	for _, item := range itemsData.Items {
 		offset := item.StartOffset
@@ -137,7 +191,8 @@ func assignItemBidiLevels(itemsData *InlineItemsData, levels, paraLevels []int) 
 // ICU ubidi_setPara with an explicit UBIDI_LTR/UBIDI_RTL para level.
 //
 // After this call, itemsData.RuneLevels is populated with per-rune resolved
-// levels and each item's BidiLevel is set from the level at its start offset.
+// levels and each item's BidiLevel is set from the level at its start offset
+// (a float or out-of-flow item's from its neutral, resolveBidiParagraphs).
 func ResolveBidiLevels(itemsData *InlineItemsData, baseDir Direction) {
 	baseLevel := 0
 	if baseDir == DirectionRTL {
@@ -764,26 +819,19 @@ func SplitItemsAtLevelBoundaries(itemsData *InlineItemsData) {
 
 	text := itemsData.TextContent
 
-	nRunes := utf8.RuneCountInString(text)
-	runeAtByte := make([]int, len(text)+1)
-	byteAtRune := make([]int, nRunes+1)
-	ri := 0
-	for bi := range text {
-		runeAtByte[bi] = ri
-		byteAtRune[ri] = bi
-		ri++
-	}
-	runeAtByte[len(text)] = ri
-	byteAtRune[ri] = len(text)
+	runeAtByte := runeIndexByByte(text)
+	byteAtRune := byteOffsetByRune(text)
 
 	var newItems []*InlineItem
 
 	for _, item := range itemsData.Items {
 		if item.Type != InlineItemText {
-			// Non-text items: update level from RuneLevels if within text,
-			// otherwise keep the level already assigned by ResolveBidiLevels
-			// (which uses the paragraph embedding level for end-of-text items).
-			if item.StartOffset < len(text) {
+			// Non-text items other than floats and out-of-flow items (which
+			// keep their neutral's level, resolveBidiParagraphs): update the
+			// level from RuneLevels if within text, otherwise keep the level
+			// already assigned by ResolveBidiLevels (which uses the paragraph
+			// embedding level for end-of-text items).
+			if item.StartOffset < len(text) && !isBidiNeutralObject(item) {
 				rIdx := runeAtByte[item.StartOffset]
 				if item.Type == InlineItemCloseTag && rIdx > 0 {
 					// CloseTag: use the level of the rune BEFORE the offset
@@ -896,4 +944,34 @@ func ReorderLineVisual(results []InlineItemResult, paragraphLevel int) {
 			}
 		}
 	}
+}
+
+// runeIndexByByte maps each byte offset of text (and len(text)) to the index
+// of the rune starting there.
+func runeIndexByByte(text string) []int {
+	runeAtByte := make([]int, len(text)+1)
+	ri := 0
+	for bi := range text {
+		runeAtByte[bi] = ri
+		ri++
+	}
+	runeAtByte[len(text)] = ri
+	return runeAtByte
+}
+
+// byteOffsetByRune maps each rune index of text, and its rune count, to the
+// rune's byte offset (len(text) for the count): runeIndexByByte's inverse.
+func byteOffsetByRune(text string) []int {
+	byteAtRune := make([]int, 0, len(text)+1)
+	for bi := range text {
+		byteAtRune = append(byteAtRune, bi)
+	}
+	return append(byteAtRune, len(text))
+}
+
+// isBidiNeutralObject reports whether an item is a float or out-of-flow
+// item, which takes no room in TextContent and is resolved for bidi as a
+// U+FFFC neutral (resolveBidiParagraphs).
+func isBidiNeutralObject(item *InlineItem) bool {
+	return (item.Type == InlineItemFloat || item.Type == InlineItemOutOfFlow) && item.StartOffset == item.EndOffset
 }

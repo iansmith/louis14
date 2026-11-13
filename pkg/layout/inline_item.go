@@ -115,6 +115,13 @@ type InlineItem struct {
 	inAnonymousInline bool
 }
 
+// Direction is the item's resolved bidi direction, from its BidiLevel.
+// Mirrors Blink's InlineItem::Direction (inline/inline_item.h:163 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (item *InlineItem) Direction() Direction {
+	return DirectionFromLevel(item.BidiLevel)
+}
+
 // IsInlinePaintGroup reports whether a non-atomic inline (display: inline |
 // ruby | ruby-text, non-replaced — the boxes Blink models as LayoutInline)
 // gets its own self-painting PaintLayer, so that all of its fragments, text

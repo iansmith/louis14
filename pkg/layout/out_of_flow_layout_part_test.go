@@ -317,27 +317,38 @@ func TestOOFInsetAlignment(t *testing.T) {
 // inline direction (a block-level box sits on the next line, at the line's
 // start) and by its align-self within the line box's block extent: a center
 // or end block edge moves its static point to the line box's middle or end.
-// justify-items / align-items do not apply in inline layout. Blink sets the
+// justify-items / align-items do not apply in inline layout. Self-start /
+// self-end resolve against the box's line item's container direction: for
+// a block-level box its block container's, for an inline-level box the
+// direction of its own bidi level, not the `direction` of the inline
+// element around it (span: an RTL <span> around an LTR box). Blink sets the
 // edges in FragmentBuilder::AddOutOfFlowInlineChildCandidate
-// (fragment_builder.cc:545-585 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-// `a` (20x20) is in a 100x100 positioned container with a 1px border.
+// (fragment_builder.cc:545-585) from LogicalLineBuilder's OOF container
+// direction (logical_line_builder.cc:312-322 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `a` (20x20) is in a 100x100
+// positioned container with a 1px border.
 func TestOOFInlineStaticPositionAlignment(t *testing.T) {
+	const rtlSpan = "direction:rtl"
 	for _, tc := range []struct {
-		name, abs string
-		want      fragRect
+		name, abs, span string
+		want            fragRect
 	}{
-		{"start", "", fragRect{1, 26, 20, 20}},
-		{"justify-self:end", "justify-self:end", fragRect{-19, 26, 20, 20}},
-		{"justify-self:center", "justify-self:center", fragRect{-9, 26, 20, 20}},
-		{"align-self:end", "align-self:end", fragRect{1, 31, 20, 20}},
-		{"align-self:center", "align-self:center", fragRect{1, 28.5, 20, 20}},
-		{"self-end, rtl box", "justify-self:self-end;direction:rtl", fragRect{1, 26, 20, 20}},
-		{"align-self:end, inline-level", "align-self:end;display:inline-block", fragRect{21, 6, 20, 20}},
+		{"start", "", "", fragRect{1, 26, 20, 20}},
+		{"justify-self:end", "justify-self:end", "", fragRect{-19, 26, 20, 20}},
+		{"justify-self:center", "justify-self:center", "", fragRect{-9, 26, 20, 20}},
+		{"align-self:end", "align-self:end", "", fragRect{1, 31, 20, 20}},
+		{"align-self:center", "align-self:center", "", fragRect{1, 28.5, 20, 20}},
+		{"self-end, rtl box", "justify-self:self-end;direction:rtl", "", fragRect{1, 26, 20, 20}},
+		{"self-start, ltr box in an rtl span", "justify-self:self-start;direction:ltr", rtlSpan, fragRect{1, 26, 20, 20}},
+		{"self-end, ltr box in an rtl span", "justify-self:self-end;direction:ltr", rtlSpan, fragRect{-19, 26, 20, 20}},
+		{"inline-level self-start, ltr box in an rtl span", "display:inline-block;justify-self:self-start;direction:ltr", rtlSpan, fragRect{21, 1, 20, 20}},
+		{"inline-level self-end, ltr box in an rtl span", "display:inline-block;justify-self:self-end;direction:ltr", rtlSpan, fragRect{1, 1, 20, 20}},
+		{"align-self:end, inline-level", "align-self:end;display:inline-block", "", fragRect{21, 6, 20, 20}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
 				`<div style="position:relative;width:100px;height:100px;border:1px solid">`+
-				`<span style="font:10px/25px Ahem">XX <div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div><br>XX</span></div>`)
+				`<span style="font:10px/25px Ahem;`+tc.span+`">XX <div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div><br>XX</span></div>`)
 			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
 		})
 	}
@@ -371,6 +382,90 @@ func TestOOFGridStaticPositionAlignment(t *testing.T) {
 				`<div style="display:grid;position:relative;width:100px;height:100px;border:1px solid;`+tc.grid+`">`+
 				`<div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div></div>`)
 			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
+
+// TestOOFBlockLevelStaticPositionVisualOrder pins which line a block-level
+// out-of-flow box in a line takes: the next one only when inline content
+// precedes it in the line's visual order (after bidi reordering), walked
+// from the line's start. In an RTL run inside an LTR line, a box after the
+// run's text is visually before it, so it stays on the line. The box is
+// resolved for bidi as a U+FFFC neutral, taking the run's level, and an
+// undecorated inline box's open tag is not inline content
+// (TestOOFBlockLevelAfterInlineBoxTags). Mirrors
+// PlaceOutOfFlowObjects (inline/inline_layout_algorithm.cc:760-855),
+// InlineNode::SegmentBidiRuns (inline/inline_node.cc:1361-1430) and
+// LogicalLineItem::HasInFlowFragment (inline/logical_line_item.h:162-166 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). want is from Chrome headless.
+func TestOOFBlockLevelStaticPositionVisualOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name, span string
+		want       fragRect
+	}{
+		{"rtl embedding", "direction:rtl;unicode-bidi:embed", fragRect{1, 1, 20, 20}},
+		{"rtl isolate", "direction:rtl;unicode-bidi:isolate", fragRect{1, 1, 20, 20}},
+		{"control: ltr", "", fragRect{1, 26, 20, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0;font:10px/25px serif">`+
+				`<div style="position:relative;width:200px;height:100px;border:1px solid">`+
+				`<span style="`+tc.span+`">אבג <div id=a style="position:absolute;width:20px;height:20px"></div></span>X</div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
+
+// oofAhemPrefix starts a page whose .a boxes are 20x20 abspos, in Ahem.
+const oofAhemPrefix = `<!DOCTYPE html><style>body{margin:0;font:10px/10px Ahem}` +
+	`.a{position:absolute;width:20px;height:20px}</style>`
+
+// An out-of-flow box alone in an RTL block's inline content is a U+FFFC
+// neutral at the paragraph's base level, so its container direction is RTL
+// and start aligns to the right even with no text (SegmentBidiRuns,
+// inline_node.cc:1361-1430 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestOOFStaticPositionEmptyRTLParagraph(t *testing.T) {
+	for _, tc := range []struct {
+		name, box string
+		x         float64
+	}{
+		{"inline-level start", `<span><span id=a class=a style="justify-self:start"></span></span>`, 180},
+		{"inline-level LTR self-start", `<span><span id=a class=a style="justify-self:self-start;direction:ltr"></span></span>`, 180},
+		{"block-level start", `<span><div id=a class=a style="justify-self:start"></div></span>`, 180},
+		{"inline-level end", `<span><span id=a class=a style="justify-self:end"></span></span>`, 200},
+		{"inline-level LTR self-end", `<span><span id=a class=a style="justify-self:self-end;direction:ltr"></span></span>`, 200},
+		{"inline-level left", `<span><span id=a class=a style="justify-self:left"></span></span>`, 180},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, oofAhemPrefix+
+				`<div dir=rtl style="position:relative;width:200px;height:50px">`+tc.box+`</div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {{tc.x, 0, 20, 20}}}, chrome157)
+		})
+	}
+}
+
+// Whether an inline box's tags count as content preceding a block-level
+// out-of-flow box, which then takes its static position on the next line
+// (PlaceOutOfFlowObjects' has_preceding_inline_level_content,
+// inline_layout_algorithm.cc:760-855 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). From Chrome 157 headless.
+func TestOOFBlockLevelAfterInlineBoxTags(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		y             float64
+	}{
+		{"inside an undecorated span", `<span><div id=a class=a></div></span>X`, 0},
+		{"inside a span with start padding", `<span style="padding-left:5px"><div id=a class=a></div></span>X`, 10},
+		{"inside a span with a start border", `<span style="border-left:1px solid"><div id=a class=a></div></span>X`, 10},
+		{"inside a span with a start margin", `<span style="margin-left:5px"><div id=a class=a></div></span>X`, 10},
+		{"inside a span with end padding", `<span style="padding-right:5px"><div id=a class=a></div></span>X`, 0},
+		{"after an empty span", `<span></span><div id=a class=a></div>X`, 10},
+		{"after a nested empty span", `<b><span></span></b><div id=a class=a></div>X`, 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, oofAhemPrefix+
+				`<div style="position:relative;width:200px;height:50px">`+tc.content+`</div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {{0, tc.y, 20, 20}}}, chrome157)
 		})
 	}
 }

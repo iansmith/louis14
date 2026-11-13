@@ -519,7 +519,7 @@ func fragmentToBox(frag *PhysicalFragment, parent *Box, absX, absY float64) *Box
 		// UAX#9 L4: RTL runs (odd bidi level) must be drawn in visual order.
 		// The fragment text is in logical (Unicode) order; reverse rune order
 		// so the renderer draws characters left-to-right in visual order.
-		if frag.BidiLevel%2 == 1 {
+		if DirectionFromLevel(frag.BidiLevel) == DirectionRTL {
 			text = ReverseAndMirrorRunes(text)
 		}
 		box.Text = text
