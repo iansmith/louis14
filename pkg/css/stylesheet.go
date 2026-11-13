@@ -1177,14 +1177,22 @@ func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
 // inside an open `(`. See third_party/blink/renderer/core/css/parser/
 // css_tokenizer.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 //
-// `[` / `]` are deliberately NOT tracked here. They appear in attribute
-// selectors at the top of qualified rules and never legitimately wrap
-// brace pairs in real-world CSS; treating them as scope-changers would
-// destroy the parser's ability to recover from malformed selectors like
-// `[} { ... }` (Acid2 line 32; covered by
-// TestErrorRecovery_InvalidSelectors).
+// `[` blocks are tracked as Blink's tokenizer tracks them: an unclosed `[`
+// in a prelude runs to end of input, so `[} { ... }` swallows the rest of
+// the sheet (TestStrayCloseBraceJoinsNextPrelude).
 func splitRules(css string) []string {
 	return splitRulesAt(css, nil)
+}
+
+// blockCloser is the token that closes the block opener opens.
+func blockCloser(opener byte) byte {
+	switch opener {
+	case '(':
+		return ')'
+	case '[':
+		return ']'
+	}
+	return '}'
 }
 
 // splitRulesAt is splitRules that, when starts is non-nil, also records
@@ -1200,8 +1208,14 @@ func splitRulesAt(css string, starts *[]int) []string {
 			*starts = append(*starts, from)
 		}
 	}
-	depth := 0
-	parenDepth := 0
+	// The closers the open blocks await, innermost last, as Blink's
+	// tokenizer stacks them (CSSTokenizer::BlockStart / BlockEnd,
+	// css_tokenizer.cc:66-87 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): a
+	// `)`, `]` or `}` closes a block only when it matches the innermost one,
+	// and is otherwise a plain token. A rule ends where a `}` closes a
+	// top-level `{` block.
+	var buf [16]byte
+	blocks := buf[:0]
 	start := 0
 
 	for i := 0; i < len(css); i++ {
@@ -1213,69 +1227,42 @@ func splitRulesAt(css string, starts *[]int) []string {
 			continue
 		}
 
-		if ch == '"' || ch == '\'' {
+		switch ch {
+		case '"', '\'':
 			i, _ = stringTokenEnd(css, i)
-			continue
-		}
-
-		// Track paren depth so braces inside an at-rule prelude's
-		// parenthesised condition don't get mistaken for the rule body.
-		if ch == '(' {
-			parenDepth++
-			continue
-		}
-		if ch == ')' && parenDepth > 0 {
-			parenDepth--
-			continue
-		}
-
-		if parenDepth > 0 {
-			// Inside a (...) block, `{`/`}`/`;` are component-value tokens,
-			// not rule delimiters. Skip rule-boundary logic.
-			continue
-		}
-
-		if ch == '{' {
-			depth++
-		} else if ch == '}' {
-			depth--
-			if depth <= 0 {
-				// Found complete rule (or recovered from negative depth)
-				depth = 0
-				ruleStr := css[start : i+1]
-				if strings.TrimSpace(ruleStr) != "" {
+		case '(', '[', '{':
+			blocks = append(blocks, blockCloser(ch))
+		case ')', ']', '}':
+			if len(blocks) == 0 || blocks[len(blocks)-1] != ch {
+				// A stray closer is no rule boundary: it stays in the next
+				// rule's prelude (CSSParserImpl::ConsumeRuleList,
+				// css_parser_impl.cc:748-791).
+				continue
+			}
+			blocks = blocks[:len(blocks)-1]
+			if ch == '}' && len(blocks) == 0 {
+				if ruleStr := css[start : i+1]; strings.TrimSpace(ruleStr) != "" {
 					emit(ruleStr, start)
 				}
 				start = i + 1
 			}
-		} else if depth == 0 && ch == ';' {
-			// CSS 2.1 error recovery: a stray ';' after '}' at the top level
-			// becomes part of the next rule's text, making its selector invalid.
-			// This is tested by Acid2 line 102: ".parser { m\argin: 2em; };"
-			// where the ';' should cause the next rule to be skipped.
-			// However, ';' that terminates an at-rule (e.g., @import url(...);)
-			// should be skipped normally.
-			isAfterCloseBrace := false
-			for j := i - 1; j >= 0; j-- {
-				c := css[j]
-				if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-					continue
-				}
-				if c == '}' {
-					isAfterCloseBrace = true
-				}
-				break
+		case ';':
+			// A top-level `;` ends a statement at-rule (`@import url(...);`).
+			// In a qualified rule's prelude it is a token of the prelude,
+			// which ConsumeStyleRule reads to its `{`, so it stays in the
+			// rule's text and invalidates its selector (Acid2's
+			// `.parser { m\argin: 2em; };`).
+			if len(blocks) > 0 {
+				continue
 			}
-			if !isAfterCloseBrace {
+			if ruleText := strings.TrimSpace(css[start : i+1]); strings.HasPrefix(ruleText, "@") {
 				// At-rule terminator (no body): emit the statement at-rules
 				// (ruleKindOf) for the at-rule scanner.
-				if ruleText := strings.TrimSpace(css[start : i+1]); ruleKindOf(ruleText) != ruleKindOther {
+				if ruleKindOf(ruleText) != ruleKindOther {
 					emit(ruleText, start)
 				}
 				start = i + 1
 			}
-			// If after '}', leave the ';' in the next rule's text
-			// so isValidSelector will reject the selector starting with ';'
 		}
 	}
 
@@ -1287,7 +1274,7 @@ func splitRulesAt(css string, starts *[]int) []string {
 	// `{` is still open while a `var(` is also open. A naive
 	// `strings.Repeat("}", depth)` would put the `}` inside the function
 	// call, corrupting the rule body.
-	if (depth > 0 || parenDepth > 0) && start < len(css) && strings.TrimSpace(css[start:]) != "" {
+	if len(blocks) > 0 && strings.TrimSpace(css[start:]) != "" {
 		synthesized := closeUnmatchedTokens(css[start:])
 		emit(synthesized, start)
 	} else if ruleText := strings.TrimSpace(css[start:]); ruleKindOf(ruleText) != ruleKindOther {
@@ -1312,9 +1299,21 @@ func isValidSelector(s string) bool {
 		return false
 	}
 	// Check for unbalanced brackets
-	bracketDepth := 0
+	bracketDepth, parenDepth := 0, 0
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
+		case '\\':
+			i++ // an escaped `;`, `{`, ... is ident text
+		case '(':
+			parenDepth++
+		case ')':
+			parenDepth = max(parenDepth-1, 0)
+		case ';':
+			// A top-level `;` is no selector token. One in a functional
+			// pseudo-class's argument is left to that argument's parse.
+			if parenDepth == 0 {
+				return false
+			}
 		case '"', '\'':
 			// A bad string makes the selector invalid; a `{` or `}` in a
 			// string is string text.
@@ -3103,27 +3102,30 @@ func blockBounds(rule string) (openPos, closePos int, ok bool) {
 }
 
 // indexTopLevelBrace returns the byte index of the first `{` in s that lies
-// outside any `(` block and outside string literals, or -1 if none. Used to
-// split an at-rule's prelude from its body without being fooled by braces
-// that appear as component-value tokens inside the prelude's parens (e.g.
-// `@supports not unknown(!@#% { ... })`). `[` / `]` are not tracked — see
-// splitRules' comment for rationale.
+// outside any `(` or `[` block and outside strings, or -1 if none: the start
+// of a rule's block, past braces that are component values inside its
+// prelude (e.g. `@supports not unknown(!@#% { ... })`). Blocks stack as
+// splitRulesAt stacks them: a closer that does not match the innermost
+// block is a plain token.
 func indexTopLevelBrace(s string) int {
-	parenDepth := 0
+	var buf [16]byte
+	blocks := buf[:0]
 	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
+		switch c := s[i]; c {
+		case '\\':
+			i++
 		case '"', '\'':
 			i, _ = stringTokenEnd(s, i)
-		case '(':
-			parenDepth++
-		case ')':
-			if parenDepth > 0 {
-				parenDepth--
-			}
+		case '(', '[':
+			blocks = append(blocks, blockCloser(c))
 		case '{':
-			if parenDepth == 0 {
+			if len(blocks) == 0 {
 				return i
+			}
+			blocks = append(blocks, '}')
+		case ')', ']', '}':
+			if len(blocks) > 0 && blocks[len(blocks)-1] == c {
+				blocks = blocks[:len(blocks)-1]
 			}
 		}
 	}

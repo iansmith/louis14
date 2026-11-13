@@ -163,7 +163,8 @@ func TestInsertRuleOrdering(t *testing.T) {
 // invalid selector take no place in it, and a nested rule's style is its
 // own declarations, not a nested rule's.
 func TestRuleListIsBlinksRules(t *testing.T) {
-	c := NewStyleSheetContents(`@charset "utf-8"; a[ { color: red } p { color: blue }`, NewParserContext(""))
+	// `a]`, not `a[`: an unclosed `[` would swallow p (TestStrayCloseBraceJoinsNextPrelude).
+	c := NewStyleSheetContents(`@charset "utf-8"; a] { color: red } p { color: blue }`, NewParserContext(""))
 	if c.RuleCount() != 1 {
 		t.Errorf("RuleCount = %d, want 1 (only p)", c.RuleCount())
 	}
