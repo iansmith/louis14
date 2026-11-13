@@ -45,3 +45,33 @@ func TestDecorationLine_DottedFitsDots(t *testing.T) {
 	assertPixel(t, img, 106, 29, black, "last dot, centre x 96.92")
 	assertPixel(t, img, 111, 29, white, "past the last dot, which ends at x 99.92")
 }
+
+// Upright vertical text paints its decorations line-relative under the
+// writing-mode rotation, through the same DrawLineAsStroke as horizontal
+// text (TextFragmentPainter::Paint, core/paint/text_fragment_painter.cc:
+// 369-379, :686-692 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a 3px
+// dashed underline down a 100px upright run from y 10 has the horizontal
+// case's fitted dashes along y: 6px dashes, 3.4px gaps, the last ending at
+// the run's end. The underline is offset 6px to the left of the glyph
+// column (x 40-60), so the first dark column left of x 40 is the line's.
+func TestDecorationLine_UprightVerticalDashed(t *testing.T) {
+	img := render.RenderPage(t, `<!DOCTYPE html><html><body style="margin:0">`+
+		`<div style="position:absolute;left:40px;top:10px;writing-mode:vertical-rl;text-orientation:upright;font:20px/20px Ahem;`+
+		`text-decoration:underline dashed black;text-decoration-thickness:3px;text-underline-offset:6px;text-decoration-skip-ink:none">XXXXX</div></body></html>`, 70, 130)
+	col := -1
+	for x := 39; x >= 0 && col < 0; x-- {
+		for y := 10; y < 110; y++ {
+			if r, _, _, _ := img.At(x, y).RGBA(); r>>8 < 64 {
+				col = x
+				break
+			}
+		}
+	}
+	if col < 0 {
+		t.Fatal("no underline found left of the glyph column")
+	}
+	assertPixel(t, img, col, 13, black, "first dash, y 10-16")
+	assertPixel(t, img, col, 17, white, "first gap, y 16-19.4")
+	assertPixel(t, img, col, 22, black, "second dash, y 19.4-25.4")
+	assertPixel(t, img, col, 107, black, "last dash, y 104-110")
+}
