@@ -99,7 +99,6 @@ func (s *componentStream) consumeDelim(d string) bool {
 func splitComponentValues(value string) []string {
 	var toks []string
 	depth := 0
-	var quote byte
 	start := -1
 	flush := func(end int) {
 		if start >= 0 {
@@ -110,15 +109,12 @@ func splitComponentValues(value string) []string {
 	for i := 0; i < len(value); i++ {
 		c := value[i]
 		switch {
-		case quote != 0:
-			if c == '\\' {
-				i++
-			} else if c == quote {
-				quote = 0
-			}
-			continue
 		case c == '"' || c == '\'':
-			quote = c
+			if start < 0 {
+				start = i
+			}
+			i, _ = stringTokenEnd(value, i)
+			continue
 		case c == '(' || c == '[':
 			depth++
 		case c == ')' || c == ']':

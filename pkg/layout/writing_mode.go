@@ -83,6 +83,14 @@ func (wdm WritingDirectionMode) IsFlippedBlocks() bool {
 	return wdm.WM == WritingModeVerticalRL || wdm.WM == WritingModeSidewaysRL
 }
 
+// IsFlippedLines reports whether line-over is the block-end side: only
+// vertical-lr. Mirrors IsFlippedLinesWritingMode
+// (platform/text/writing_mode.h:67-69 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (wdm WritingDirectionMode) IsFlippedLines() bool {
+	return wdm.WM == WritingModeVerticalLR
+}
+
 // IsSideways returns true for sideways-rl and sideways-lr writing modes.
 // Per CSS Writing Modes 3 §5.1, these modes force text-orientation: sideways
 // regardless of the computed value: all glyphs are rotated 90° from the
