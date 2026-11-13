@@ -166,13 +166,12 @@ func newGridSets(tracks []css.GridTrack, available float64) []gridSet {
 		if s.trackSize.isFitContent {
 			s.fitContentLimit = s.trackSize.fitContent
 		}
-		if s.trackSize.hasFixedMax() {
-			s.growthLimit = s.trackSize.max.length
+		if limit, ok := s.trackSize.initialGrowthLimit(); ok {
+			s.growthLimit = limit
 		}
 		if s.trackSize.hasFixedMin() {
 			s.baseSize = s.trackSize.min.length
 		}
-		s.ensureGrowthLimitIsNotLessThanBaseSize()
 		sets[i] = s
 	}
 	return sets
@@ -278,8 +277,12 @@ func (a *gridTrackSizingAlgorithm) spansFlexible(it *gridSizingItem) bool {
 // size is not auto, it is a scroll container, or it spans no auto minimum
 // or a flexible track with a span over 1; otherwise its min-content
 // contribution (CalculateIntrinsicMinimumContribution, grid_layout_utils.cc:
-// 506-600 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Not ported: the
-// clamp to a fixed spanned maximum.
+// 506-600 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). The automatic
+// minimum is clamped to the spanned tracks' definite maximum, not below the
+// item's margins, border and padding (ClampIntrinsicMinSize, :603-616;
+// grid_layout_algorithm.cc:784-800); with an auto min size, minimumSize is
+// those edges (gridItemMinimum). The baseline shim in that floor comes with
+// grid baseline alignment (LOU-978).
 func (a *gridTrackSizingAlgorithm) contribution(t gridContributionType, it *gridSizingItem) float64 {
 	switch t {
 	case gridForContentBasedMinimums, gridForIntrinsicMaximums:
@@ -292,9 +295,53 @@ func (a *gridTrackSizingAlgorithm) contribution(t gridContributionType, it *grid
 		if !it.minIsAuto || it.isTrackScrollContainer || special {
 			return it.minimumSize
 		}
+		if spanned, ok := a.spannedDefiniteMaxSize(it); ok {
+			return clampIntrinsicMinSize(it.minContent, it.minimumSize, spanned)
+		}
 		return it.minContent
 	}
 	return it.maxContent
+}
+
+// clampIntrinsicMinSize mirrors ClampIntrinsicMinSize
+// (grid/grid_layout_utils.cc:603-616 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the min-content contribution
+// clamped to the spanned tracks' definite size, but not below minClamp.
+func clampIntrinsicMinSize(minContentContribution, minClamp, spannedDefiniteMax float64) float64 {
+	return min(minContentContribution, max(spannedDefiniteMax, minClamp))
+}
+
+// spannedDefiniteMaxSize is the item's spanned tracks' size while they are
+// sized: their initial growth limits plus the gutters between them, or not
+// ok when any is indefinite. Mirrors GridLayoutTrackCollection::
+// CalculateSetSpanSize over the initialized sets' geometry
+// (CacheInitializedSetsGeometry; grid/grid_track_collection.cc:577-596,
+// :1037-1055 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (a *gridTrackSizingAlgorithm) spannedDefiniteMaxSize(it *gridSizingItem) (float64, bool) {
+	size := a.gutter * float64(it.span()-1)
+	for i := it.start; i < it.end; i++ {
+		limit, ok := a.sets[i].trackSize.initialGrowthLimit()
+		if !ok {
+			return 0, false
+		}
+		size += limit
+	}
+	return size, true
+}
+
+// initialGrowthLimit is a set's growth limit once initialized: its fixed
+// maximum, never below a fixed minimum, or not ok when the maximum is not
+// fixed (GridSizingTrackCollection::InitializeSets,
+// grid_track_collection.cc:1207-1252 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (s gridTrackSize) initialGrowthLimit() (float64, bool) {
+	if !s.hasFixedMax() {
+		return 0, false
+	}
+	if s.hasFixedMin() {
+		return max(s.max.length, s.min.length), true
+	}
+	return s.max.length, true
 }
 
 // affectedSize mirrors AffectedSizeForContribution (:360-375).
