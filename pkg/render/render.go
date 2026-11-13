@@ -6830,8 +6830,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 			top, height := wavyPaintRect(rectTop, thickness, wavyOffset)
 			lineTop, lineBottom = top, top+height
 		}
-		linePerpOverlapsGlyph := lineBottom > glyphYTop && lineTop < glyphYBottom
-		skipped := skipInk && len(glyphs) > 0 && linePerpOverlapsGlyph
+		skipped := skipInk && len(glyphs) > 0 && decorationBandCrossesGlyphs(lineTop, lineBottom, glyphYTop, glyphYBottom)
 		if skipped {
 			segments = skipInkSegments(xStart, xEnd, thickness, glyphs)
 		}

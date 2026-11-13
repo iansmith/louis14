@@ -108,3 +108,25 @@ func TestSkipInkSegments(t *testing.T) {
 		})
 	}
 }
+
+// TextPainter::ClipDecorationLine looks for glyph intercepts in the line's
+// bounds inset 0.5px across the line (core/paint/text_painter.cc:588-593 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so a line that overlaps the
+// glyphs by less than half a pixel skips no ink.
+func TestDecorationBandCrossesGlyphs_IgnoresUnderHalfPixel(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		top, bottom float64
+		want        bool
+	}{
+		{"0.4px into the glyphs", 49.6, 55.6, false},
+		{"0.6px into the glyphs", 49.4, 55.4, true},
+		{"touching the glyphs", 50, 56, false},
+		{"inside the glyphs", 20, 26, true},
+		{"0.4px above the glyphs' top", 4.4, 10.4, false},
+	} {
+		if got := decorationBandCrossesGlyphs(c.top, c.bottom, 10, 50); got != c.want {
+			t.Errorf("%s: band %v-%v over glyphs 10-50 = %v, want %v", c.name, c.top, c.bottom, got, c.want)
+		}
+	}
+}

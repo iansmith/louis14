@@ -22,6 +22,13 @@ type inkSegment struct {
 	End   float64
 }
 
+// decorationBandCrossesGlyphs reports whether a decoration line whose
+// bounds run from boundsTop to boundsBottom across the line crosses glyph
+// ink running from glyphTop to glyphBottom there, so skip-ink applies.
+func decorationBandCrossesGlyphs(boundsTop, boundsBottom, glyphTop, glyphBottom float64) bool {
+	return boundsBottom > glyphTop && boundsTop < glyphBottom
+}
+
 // kDecorationClipMaxDilation caps skip-ink's dilation of a glyph intercept
 // (core/paint/text_painter.cc:46 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 const kDecorationClipMaxDilation = 13
