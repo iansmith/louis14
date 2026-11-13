@@ -103,17 +103,17 @@ func resolveTransitions(style *Style) []resolvedTransition {
 // classification expandAnimationShorthand uses for the animation shorthand.
 func transitionLonghands(style *Style) (props, durations, timingFns, delays []string) {
 	if v, ok := style.Get("transition-property"); ok {
-		props = splitTopLevelCommas(v)
-		durations = splitTopLevelCommas(getOr(style, "transition-duration", "0s"))
-		timingFns = splitTopLevelCommas(getOr(style, "transition-timing-function", "ease"))
-		delays = splitTopLevelCommas(getOr(style, "transition-delay", "0s"))
+		props = SplitTopLevelCommas(v)
+		durations = SplitTopLevelCommas(getOr(style, "transition-duration", "0s"))
+		timingFns = SplitTopLevelCommas(getOr(style, "transition-timing-function", "ease"))
+		delays = SplitTopLevelCommas(getOr(style, "transition-delay", "0s"))
 		return props, durations, timingFns, delays
 	}
 	shorthand, ok := style.Get("transition")
 	if !ok || strings.TrimSpace(shorthand) == "" {
 		return nil, nil, nil, nil
 	}
-	for _, item := range splitTopLevelCommas(shorthand) {
+	for _, item := range SplitTopLevelCommas(shorthand) {
 		prop := "all" // <single-transition-property> defaults to all
 		duration := "0s"
 		timingFn := "ease"

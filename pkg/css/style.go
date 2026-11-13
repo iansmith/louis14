@@ -12771,9 +12771,10 @@ func (s *Style) WillChangeEstablishesInlineContainingBlock() bool {
 	return false
 }
 
-// splitTopLevelCommas splits s on commas that are not nested inside parentheses
-// or quotes. Used for comma-separated CSS list values (animation, transition).
-func splitTopLevelCommas(s string) []string {
+// SplitTopLevelCommas splits s on commas outside parentheses and string
+// tokens (stringTokenEnd), each part trimmed: a comma-separated CSS list
+// value (animation, transition, font-family, @font-face src).
+func SplitTopLevelCommas(s string) []string {
 	var parts []string
 	depth := 0
 	start := 0
@@ -12897,7 +12898,7 @@ func isTimeToken(tok string) bool {
 // list; omitted components reset to their initial value. The first <time> in a
 // <single-animation> is the duration, the second is the delay.
 func expandAnimationShorthand(style *Style, value string) {
-	items := splitTopLevelCommas(value)
+	items := SplitTopLevelCommas(value)
 	var names, durations, timingFns, delays, iterCounts, directions, fillModes, playStates []string
 	for _, item := range items {
 		item = strings.TrimSpace(item)

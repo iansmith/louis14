@@ -635,17 +635,17 @@ func resolveAnimations(style *Style, keyframesMaps []map[string][]KeyframeRule) 
 	if !ok || strings.TrimSpace(nameStr) == "" {
 		return nil
 	}
-	names := splitTopLevelCommas(nameStr)
+	names := SplitTopLevelCommas(nameStr)
 	if len(names) == 0 {
 		return nil
 	}
-	durations := splitTopLevelCommas(getOr(style, "animation-duration", "0s"))
-	timingFns := splitTopLevelCommas(getOr(style, "animation-timing-function", "ease"))
-	delays := splitTopLevelCommas(getOr(style, "animation-delay", "0s"))
-	iterCounts := splitTopLevelCommas(getOr(style, "animation-iteration-count", "1"))
-	directions := splitTopLevelCommas(getOr(style, "animation-direction", "normal"))
-	fillModes := splitTopLevelCommas(getOr(style, "animation-fill-mode", "none"))
-	playStates := splitTopLevelCommas(getOr(style, "animation-play-state", "running"))
+	durations := SplitTopLevelCommas(getOr(style, "animation-duration", "0s"))
+	timingFns := SplitTopLevelCommas(getOr(style, "animation-timing-function", "ease"))
+	delays := SplitTopLevelCommas(getOr(style, "animation-delay", "0s"))
+	iterCounts := SplitTopLevelCommas(getOr(style, "animation-iteration-count", "1"))
+	directions := SplitTopLevelCommas(getOr(style, "animation-direction", "normal"))
+	fillModes := SplitTopLevelCommas(getOr(style, "animation-fill-mode", "none"))
+	playStates := SplitTopLevelCommas(getOr(style, "animation-play-state", "running"))
 
 	// CSS Animations §4: when a longhand list is shorter than animation-name,
 	// its values repeat (are "filled" by cycling).
