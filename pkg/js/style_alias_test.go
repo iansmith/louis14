@@ -1,6 +1,11 @@
 package js
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/css"
+	"louis14/pkg/html"
+)
 
 // The CSSOM resolves an alias to its target before it reads or writes a
 // declaration, so grid-column-gap is column-gap through element.style and
@@ -24,6 +29,19 @@ func TestStyleAliasesAreTheirTarget(t *testing.T) {
 		check("camel-case alias", s.getPropertyValue("column-gap"), "6px");
 		check("removeProperty returns the old value", s.removeProperty("grid-column-gap"), "6px");
 		check("removed through alias", s.getPropertyValue("column-gap"), "");
-		check("computed alias", getComputedStyle(el).getPropertyValue("grid-row-gap"), "4px");
 	`)
+}
+
+// getComputedStyle resolves an alias too (CSSComputedStyleDeclaration::
+// getPropertyValue's CssPropertyID, css_computed_style_declaration.cc:
+// 492-495 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Checked on the
+// accessor: runWithLayout's engine has no style resolver.
+func TestComputedStyleAliasIsItsTarget(t *testing.T) {
+	n := &html.Node{}
+	s := css.NewStyle()
+	s.Set("row-gap", "4px")
+	c := &computedStyleAccessor{node: n, styles: map[*html.Node]*css.Style{n: s}}
+	if got := c.resolve("grid-row-gap"); got != "4px" {
+		t.Errorf("grid-row-gap resolved to %q, want 4px (row-gap's)", got)
+	}
 }
