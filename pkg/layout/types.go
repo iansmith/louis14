@@ -182,6 +182,13 @@ func (b *Box) IsOwnPaintGroupFragment() bool {
 	return b.PaintGroup != nil && b.Node != nil && b.PaintGroup.Node == b.Node
 }
 
+// HasNonVisibleOverflow mirrors LayoutObject::HasNonVisibleOverflow: some
+// axis's overflow is not visible, or paint containment applies, on a box
+// that respects overflow.
+func (b *Box) HasNonVisibleOverflow() bool {
+	return b.Style != nil && hasNonVisibleOverflow(b.Style, b.Node)
+}
+
 // CreatesStackingContext returns true if this box establishes a new
 // stacking context per CSS 2.1 Appendix E / CSS Compositing §2.
 //
