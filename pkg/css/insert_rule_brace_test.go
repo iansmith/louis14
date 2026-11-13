@@ -18,3 +18,19 @@ func TestInsertRuleBraceInSelectorString(t *testing.T) {
 		t.Errorf("rules after insert = %q, want a[title=\"{\"] p", got)
 	}
 }
+
+// The CSSOM rule list binds a rule's declarations, and serializes an edited
+// rule, finding its block as the parser does: a `{` inside a string does
+// not open it (ConsumeStyleRule, as above).
+func TestRuleListBraceInSelectorString(t *testing.T) {
+	c := NewStyleSheetContents(`a[title="{"] { color: red } p { color: blue }`, NewParserContext(""))
+	r := c.Rules()[0]
+	d := c.RuleDeclarations(r)
+	if d == nil || d.Declarations["color"] != "red" {
+		t.Fatalf(`a[title="{"]'s declarations = %v, want color: red`, d)
+	}
+	c.SetRuleDeclaration(r, "color", "green")
+	if got := c.currentRuleTexts()[0]; got != `a[title="{"] { color: green; }` {
+		t.Errorf("edited rule text = %q, want a[title=\"{\"] { color: green; }", got)
+	}
+}
