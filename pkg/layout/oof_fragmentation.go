@@ -71,6 +71,20 @@ type LogicalOofContainingBlock struct {
 // Stored by value, not by pointer — the absent state is a zero-valued
 // LogicalOofInlineContainer{} (Container == nil), matching Blink's
 // `inline_container.container_ == nullptr` convention.
+// fixedposContainingNode is the element a fixed candidate deferred to
+// fragmentation is contained by: its fixedpos inline container's, or else
+// its fixedpos containing block fragment's (OutOfFlowCandidate.
+// ContainingNode).
+func fixedposContainingNode(cb LogicalOofContainingBlock, inline LogicalOofInlineContainer) *html.Node {
+	if inline.Container != nil {
+		return inline.Container
+	}
+	if cb.Fragment != nil {
+		return cb.Fragment.Node
+	}
+	return nil
+}
+
 type LogicalOofInlineContainer struct {
 	// Container is the inline DOM node. The DOM node (not LayoutInputNode)
 	// is stored to match against background fragments at OOF-resolution time.

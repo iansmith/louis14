@@ -33,6 +33,14 @@ type Box struct {
 	Position css.PositionType
 	ZIndex   int
 
+	// OutOfFlowContainer is, for an absolutely or fixed positioned box, the
+	// element whose containing block layout placed it against, or nil for
+	// the initial containing block: Blink's
+	// LayoutObject::ContainerForAbsolutePosition / ContainerForFixedPosition
+	// (core/layout/layout_object.cc:1752-1767 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as layout resolved it.
+	OutOfFlowContainer *html.Node
+
 	// Content for replaced elements and pseudo-elements.
 	ImagePath     string
 	PseudoContent string
