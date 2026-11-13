@@ -24,7 +24,9 @@ func TestContainerBodyNestedAtRules(t *testing.T) {
 		`@container ` + yes + ` { @scope (.r) { .t { color: blue } } }`,
 		`@container ` + yes + ` { @media all { .t { color: blue } } }`,
 		`@container ` + yes + ` { @supports (color: red) { .t { color: blue } } }`,
-		`@container ` + yes + ` { @layer l { .t { color: blue } } }`,
+		// !important: a layered normal rule loses to containerColor's
+		// unlayered green; a layered important one beats it.
+		`@container ` + yes + ` { @layer l { .t { color: blue !important } } }`,
 	} {
 		t.Run(css, func(t *testing.T) {
 			if got := containerColor(t, css); got != "blue" {
