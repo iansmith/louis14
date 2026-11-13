@@ -1,7 +1,6 @@
 package render
 
 import (
-	"os"
 	"reflect"
 	"testing"
 
@@ -36,14 +35,11 @@ func TestResolveFontFeatureSettingsDescriptor(t *testing.T) {
 // LOU465-FFS with a font-feature-settings descriptor, LOU465-Plain without.
 func descriptorTestRenderer(t *testing.T, descriptor string) *Renderer {
 	t.Helper()
-	fr := text.NewFontRegistry()
 	src := []css.FontFaceSrcValue{{URL: css.CSSURIValue{Data: css.URLData{Relative: "Ahem.ttf", Absolute: "Ahem.ttf"}}}}
-	fr.AddUserFontFaceRules([]css.FontFaceRule{
+	fc := text.DefaultFontConfig().WithUserFontFaces([]css.FontFaceRule{
 		{Family: "LOU465-FFS", Src: src, Weight: "normal", Style: "normal", FeatureSettings: descriptor},
 		{Family: "LOU465-Plain", Src: src, Weight: "normal", Style: "normal"},
-	}, func(url string) ([]byte, error) { return os.ReadFile("../../fonts/" + url) })
-	fc := text.DefaultFontConfig()
-	fc.Registry = fr
+	}, repoFontFetcher)
 	r := NewRenderer(10, 10)
 	r.SetFonts(fc)
 	t.Cleanup(r.closeTempFonts)

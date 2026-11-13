@@ -3,11 +3,14 @@ package render
 import (
 	"fmt"
 	"image"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"louis14/pkg/css"
 	"louis14/pkg/html"
 	"louis14/pkg/layout"
+	"louis14/pkg/text"
 )
 
 // RenderOption configures RenderPage and RenderDocument. Exported from a
@@ -70,9 +73,17 @@ func RenderDocument(t testing.TB, doc *html.Document, w, h int, opts ...RenderOp
 	if c.imageFetcher != nil {
 		engine.SetImageFetcher(c.imageFetcher)
 	}
+	fonts, hasFaces := pageFontConfig(t, doc)
+	if hasFaces {
+		engine.SetFontConfig(fonts)
+	}
 	boxes := engine.Layout(doc)
 	target := image.NewRGBA(image.Rect(0, 0, w, h))
 	r := NewRendererForImage(target)
+	if hasFaces {
+		r.SetFonts(fonts)
+		t.Cleanup(r.closeTempFonts)
+	}
 	if c.imageFetcher != nil {
 		r.SetImageFetcher(c.imageFetcher)
 	}
@@ -85,6 +96,38 @@ func RenderDocument(t testing.TB, doc *html.Document, w, h int, opts ...RenderOp
 	}
 	r.Render(boxes)
 	return target, boxes
+}
+
+// pageFontConfig registers doc's @font-face rules, their url()s read from
+// the repo's fonts/ directory, as the production and WPT paths register a
+// document's faces. A face none of whose sources loads fails t, so a test
+// never silently draws in a fallback face. ok is false when doc declares no
+// faces.
+func pageFontConfig(t testing.TB, doc *html.Document) (fc text.FontConfig, ok bool) {
+	t.Helper()
+	faces := css.DocumentFontFaces(doc)
+	if len(faces) == 0 {
+		return fc, false
+	}
+	// A face stops at its first source that loads, so every face loaded
+	// exactly when there are as many successful fetches as faces.
+	loaded := 0
+	fc = text.DefaultFontConfig().WithUserFontFaces(faces, func(url string) ([]byte, error) {
+		data, err := repoFontFetcher(url)
+		if err == nil {
+			loaded++
+		}
+		return data, err
+	})
+	if loaded != len(faces) {
+		t.Fatalf("only %d of the page's %d @font-face rules loaded", loaded, len(faces))
+	}
+	return fc, true
+}
+
+// repoFontFetcher reads a font url() from the repo's fonts/ directory.
+func repoFontFetcher(url string) ([]byte, error) {
+	return os.ReadFile(filepath.Join("..", "..", "fonts", url))
 }
 
 // Every paint pass in this package's tests asserts it left no Push/Pop

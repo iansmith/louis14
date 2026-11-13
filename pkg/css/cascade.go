@@ -1472,6 +1472,18 @@ func ParseDocumentStylesheets(doc *html.Document) []*Stylesheet {
 	return out
 }
 
+// DocumentFontFaces returns every @font-face rule in doc's stylesheets, in
+// order: the rules a document's StyleEngine::AddUserFontFaceRules registers
+// (core/css/style_engine.cc:3612-3629 @
+// 5992657f556bcd9d207a4aca187488462f027cab).
+func DocumentFontFaces(doc *html.Document) []FontFaceRule {
+	var faces []FontFaceRule
+	for _, sheet := range ParseDocumentStylesheets(doc) {
+		faces = append(faces, sheet.FontFaces...)
+	}
+	return faces
+}
+
 // DocumentStyleSheetContents returns doc's author sheets in tree order (the
 // sheets document.styleSheets lists): the cached []*StyleSheetContents for
 // doc, rebuilding it if Stylesheets has been mutated since the last call
