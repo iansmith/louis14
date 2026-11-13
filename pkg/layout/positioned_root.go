@@ -204,9 +204,9 @@ func computePositionedRootIMCB(
 
 	// Static position is (0, 0) with BiasStart — the root has no normal-flow
 	// placement in its CB. CB's padding is zero (viewport has no padding).
-	imcb = ComputeUnclampedIMCB(
+	imcb = ComputeInsetModifiedContainingBlock(isTableDisplay(rootStyle.GetDisplay()),
 		cbLogical,
-		LogicalAlignment{}, // ItemPositionNormal on both axes → BiasStart
+		ComputeAlignment(rootStyle),
 		oofInsets,
 		0, 0,
 		BiasStart, BiasStart,
@@ -214,8 +214,11 @@ func computePositionedRootIMCB(
 		wdm, wdm,
 	)
 
-	availInline = cbLogical.InlineSize
-	availBlock = cbLogical.BlockSize
+	// An auto size fits within the IMCB (ComputeOofInlineDimensions /
+	// ComputeOofBlockDimensions, absolute_utils.cc:619-705, :755-874 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	availInline = imcb.InlineSize()
+	availBlock = imcb.BlockSize()
 
 	stretchable := !isNonStretchableDisplay(rootStyle)
 

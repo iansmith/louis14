@@ -384,3 +384,26 @@ func (item *gridItem) endsAfter(other *gridItem) bool {
 	}
 	return item.colEnd >= other.colEnd
 }
+
+// AlignmentOffsetForOutOfFlow sets a grid out-of-flow child's static
+// position edges from its alignment in each axis, moving the static point
+// to the containing area's middle or end for center or end alignment.
+// Mirrors AlignmentOffsetForOutOfFlow (grid/grid_layout_utils.cc:466-503 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func AlignmentOffsetForOutOfFlow(inlineAxisEdge, blockAxisEdge AxisEdge, containerSize LogicalSize, staticPosition *LogicalStaticPosition) {
+	staticPosition.InlineEdge = staticEdgeAlong(inlineAxisEdge, containerSize.InlineSize, &staticPosition.Offset.InlineOffset)
+	staticPosition.BlockEdge = staticEdgeAlong(blockAxisEdge, containerSize.BlockSize, &staticPosition.Offset.BlockOffset)
+}
+
+// staticEdgeAlong is edge's static-position edge, moving offset to the
+// middle or end of an area size long for a center or end edge.
+func staticEdgeAlong(edge AxisEdge, size float64, offset *float64) StaticPositionEdge {
+	staticEdge := staticEdgeOfAxisEdge(edge)
+	switch staticEdge {
+	case StaticEdgeCenter:
+		*offset += size / 2
+	case StaticEdgeEnd:
+		*offset += size
+	}
+	return staticEdge
+}

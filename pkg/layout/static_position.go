@@ -3,15 +3,15 @@ package layout
 // StaticPositionEdge identifies which edge of the alignment container
 // a static position refers to. Blink calls these InlineEdge and BlockEdge.
 //
-// For block-level OOF children, the static position is at the start edge
-// by default. For inline-level OOF children found inside line boxes, the
-// position may refer to different edges depending on alignment.
+// A block-level OOF child's edges come from its justify-self / align-self
+// (InlineStaticPositionEdge / BlockStaticPositionEdge); flex and grid set
+// theirs from their own alignment; an inline-level OOF child's are start.
 type StaticPositionEdge int
 
 const (
-	StaticEdgeStart  StaticPositionEdge = iota // default for block-level OOF
-	StaticEdgeCenter                           // for align-self: center
-	StaticEdgeEnd                              // for align-self: end / flex-end
+	StaticEdgeStart  StaticPositionEdge = iota // start / normal alignment
+	StaticEdgeCenter                           // center alignment
+	StaticEdgeEnd                              // end alignment
 )
 
 // LogicalStaticPosition is the static position of an out-of-flow element,

@@ -226,3 +226,151 @@ func TestOOFStaticPositionWithPercentagePadding(t *testing.T) {
 		"g": {{30, 105, 5, 5}},
 	}, chrome152)
 }
+
+// chrome157 labels expected values probed with getBoundingClientRect in
+// headless Chrome 157 (157.0.8103.52).
+const chrome157 = "Chrome 157 getBoundingClientRect"
+
+// TestOOFStaticPositionAlignment pins a block-level out-of-flow box with
+// auto insets at its static position, aligned by its justify-self (auto: the
+// parent's justify-items; normal: start) within a zero-thickness line
+// across the parent's content box, and by its align-self (align-items does
+// not apply in block layout) against a zero-height line, so end puts the
+// whole box above its static block position. Blink sets the static
+// position's edges from them (InlineStaticPositionEdge /
+// BlockStaticPositionEdge, block_layout_algorithm_utils.cc:236-326, in
+// BlockLayoutAlgorithm::HandleOutOfFlowPositioned,
+// block_layout_algorithm.cc:1688-1716 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `a` (20x20) is the only child
+// of a 75x50 block with a 5px border at the top-left of the 1px-bordered
+// positioned container, so its static point is (6,6).
+func TestOOFStaticPositionAlignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, abs, parent string
+		want              fragRect
+	}{
+		{"start", "justify-self:start", "", fragRect{6, 6, 20, 20}},
+		{"center", "justify-self:center", "", fragRect{33.5, 6, 20, 20}},
+		{"end", "justify-self:end", "", fragRect{61, 6, 20, 20}},
+		{"auto, justify-items:end", "", "justify-items:end", fragRect{61, 6, 20, 20}},
+		{"auto, justify-items:center", "", "justify-items:center", fragRect{33.5, 6, 20, 20}},
+		{"align-self:end", "align-self:end", "", fragRect{6, -14, 20, 20}},
+		{"align-self:center", "align-self:center", "", fragRect{6, -4, 20, 20}},
+		{"self-end, vertical-rl", "justify-self:self-end;writing-mode:vertical-rl", "", fragRect{6, 6, 20, 20}},
+		{"self-end, rtl", "justify-self:self-end;direction:rtl", "", fragRect{6, 6, 20, 20}},
+		{"left", "justify-self:left", "", fragRect{6, 6, 20, 20}},
+		{"right, rtl parent", "justify-self:right", "direction:rtl", fragRect{6, 6, 20, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+				`<div style="position:relative;width:100px;height:100px;border:1px solid">`+
+				`<div style="width:75px;height:50px;border:5px solid;`+tc.parent+`">`+
+				`<div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div></div></div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
+
+// TestOOFInsetAlignment pins an out-of-flow box whose insets are both set
+// in an axis: it is aligned within its inset-modified containing block by
+// justify-self (the containing block's inline axis, even for an orthogonal
+// box) and align-self. Self-start / self-end take the box's own edges,
+// left / right the containing block's direction, and an overflowing box
+// (end, safe end or center) is shifted back to the containing block's
+// start. Mirrors GetAlignmentInsetBias (absolute_utils.cc:51-104) and
+// ComputeAlignment (:495-542), as ComputeUnclampedIMCB (:196) and
+// ComputeInsets (:326) use them @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+// `a` (20x20, inset:0) is in a 100x100 positioned container with a 1px
+// border.
+func TestOOFInsetAlignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, abs, container string
+		want                 fragRect
+	}{
+		{"start", "justify-self:start", "", fragRect{1, 1, 20, 20}},
+		{"center", "justify-self:center", "", fragRect{41, 1, 20, 20}},
+		{"end", "justify-self:end", "", fragRect{81, 1, 20, 20}},
+		{"align-self:center", "align-self:center", "", fragRect{1, 41, 20, 20}},
+		{"align-self:end", "align-self:end", "", fragRect{1, 81, 20, 20}},
+		{"end, vertical-rl box", "justify-self:end;writing-mode:vertical-rl", "", fragRect{81, 1, 20, 20}},
+		{"align-self:end, vertical-rl box", "align-self:end;writing-mode:vertical-rl", "", fragRect{1, 81, 20, 20}},
+		{"self-end, rtl box", "justify-self:self-end;direction:rtl", "", fragRect{1, 1, 20, 20}},
+		{"self-end, vertical-rl box", "justify-self:self-end;writing-mode:vertical-rl", "", fragRect{1, 1, 20, 20}},
+		{"left", "justify-self:left", "", fragRect{1, 1, 20, 20}},
+		{"right, rtl container", "justify-self:right", "direction:rtl", fragRect{81, 1, 20, 20}},
+		{"end, overflowing", "justify-self:end;width:150px", "", fragRect{1, 1, 150, 20}},
+		{"safe end, overflowing", "justify-self:safe end;width:150px", "", fragRect{1, 1, 150, 20}},
+		{"center, overflowing", "justify-self:center;width:150px", "", fragRect{1, 1, 150, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+				`<div style="position:relative;width:100px;height:100px;border:1px solid;`+tc.container+`">`+
+				`<div id=a style="position:absolute;inset:0;width:20px;height:20px;`+tc.abs+`"></div></div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
+
+// TestOOFInlineStaticPositionAlignment pins an out-of-flow box in a line
+// (here after "XX ", in a 25px-tall line of 10px Ahem) at its static
+// position aligned by its justify-self within a zero-thickness line in the
+// inline direction (a block-level box sits on the next line, at the line's
+// start) and by its align-self within the line box's block extent: a center
+// or end block edge moves its static point to the line box's middle or end.
+// justify-items / align-items do not apply in inline layout. Blink sets the
+// edges in FragmentBuilder::AddOutOfFlowInlineChildCandidate
+// (fragment_builder.cc:545-585 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+// `a` (20x20) is in a 100x100 positioned container with a 1px border.
+func TestOOFInlineStaticPositionAlignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, abs string
+		want      fragRect
+	}{
+		{"start", "", fragRect{1, 26, 20, 20}},
+		{"justify-self:end", "justify-self:end", fragRect{-19, 26, 20, 20}},
+		{"justify-self:center", "justify-self:center", fragRect{-9, 26, 20, 20}},
+		{"align-self:end", "align-self:end", fragRect{1, 31, 20, 20}},
+		{"align-self:center", "align-self:center", fragRect{1, 28.5, 20, 20}},
+		{"self-end, rtl box", "justify-self:self-end;direction:rtl", fragRect{1, 26, 20, 20}},
+		{"align-self:end, inline-level", "align-self:end;display:inline-block", fragRect{21, 6, 20, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+				`<div style="position:relative;width:100px;height:100px;border:1px solid">`+
+				`<span style="font:10px/25px Ahem">XX <div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div><br>XX</span></div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}
+
+// TestOOFGridStaticPositionAlignment pins an out-of-flow child of a grid
+// that is its containing block at its static position aligned within its
+// grid area (the padding box when not placed) by justify-self / align-self,
+// auto taking the grid's justify-items / align-items, auto margins not
+// applying, in each axis with auto insets. Blink moves the static position
+// to the area's middle or end (AlignmentOffsetForOutOfFlow,
+// grid/grid_layout_utils.cc:466-503, in GridLayoutAlgorithm::
+// PlaceOutOfFlowItems, grid/grid_layout_algorithm.cc:2602-2681 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). `a` (20x20) is in a
+// 100x100 positioned grid with a 1px border.
+func TestOOFGridStaticPositionAlignment(t *testing.T) {
+	for _, tc := range []struct {
+		name, grid, abs string
+		want            fragRect
+	}{
+		{"items center", "justify-items:center;align-items:center", "", fragRect{41, 41, 20, 20}},
+		{"self end", "", "justify-self:end;align-self:end", fragRect{81, 81, 20, 20}},
+		{"inline insets set", "justify-items:center;align-items:center", "left:0;right:0", fragRect{1, 41, 20, 20}},
+		{"block insets set", "justify-items:center;align-items:center", "top:0;bottom:0", fragRect{41, 1, 20, 20}},
+		{"in an area", "grid-template-columns:40px 60px;grid-template-rows:30px 70px", "grid-column:2;grid-row:2;justify-self:center;align-self:end", fragRect{61, 81, 20, 20}},
+		{"auto margins ignored", "justify-items:center", "margin-left:auto", fragRect{41, 1, 20, 20}},
+		{"self-end, rtl box", "", "justify-self:self-end;direction:rtl", fragRect{1, 1, 20, 20}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := oofPageRects(t, `<!DOCTYPE html><body style="margin:0">`+
+				`<div style="display:grid;position:relative;width:100px;height:100px;border:1px solid;`+tc.grid+`">`+
+				`<div id=a style="position:absolute;width:20px;height:20px;`+tc.abs+`"></div></div>`)
+			checkRectsFrom(t, got, map[string][]fragRect{"a": {tc.want}}, chrome157)
+		})
+	}
+}

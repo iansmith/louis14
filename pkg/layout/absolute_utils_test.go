@@ -213,6 +213,11 @@ func TestComputeMargins_HasAutoInset_ForcesZero(t *testing.T) {
 	}
 }
 
+// TestGetAlignmentInsetBias_Core: every non-normal position with default
+// overflow alignment arms the default-overflow snap, start-like ones
+// included (absolute_utils.cc:71-74 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); for them it snaps to the start
+// they already have.
 func TestGetAlignmentInsetBias_Core(t *testing.T) {
 	wdm := WritingDirectionMode{WM: WritingModeHorizontalTB, Dir: DirectionLTR}
 	cases := []struct {
@@ -222,11 +227,11 @@ func TestGetAlignmentInsetBias_Core(t *testing.T) {
 		wantOverrfl bool
 	}{
 		{"normal", ItemPositionNormal, BiasStart, false},
-		{"start", ItemPositionStart, BiasStart, false},
-		{"stretch", ItemPositionStretch, BiasStart, false},
+		{"start", ItemPositionStart, BiasStart, true},
+		{"stretch", ItemPositionStretch, BiasStart, true},
 		{"center", ItemPositionCenter, BiasEqual, true},
 		{"end", ItemPositionEnd, BiasEnd, true},
-		{"flex-start", ItemPositionFlexStart, BiasStart, false},
+		{"flex-start", ItemPositionFlexStart, BiasStart, true},
 		{"flex-end", ItemPositionFlexEnd, BiasEnd, true},
 	}
 	for _, c := range cases {
@@ -301,5 +306,43 @@ func TestComputeInsets_EndAlignmentOverflowFallsBackToDefault(t *testing.T) {
 	)
 	if !approxEq(iS, 10) || !approxEq(iE, -30) {
 		t.Fatalf("end-overflow-fallback: got (%v, %v), want (10, -30)", iS, iE)
+	}
+}
+
+// TestComputeInsetModifiedContainingBlock pins the clamps
+// ComputeInsetModifiedContainingBlock applies to the unclamped IMCB
+// (absolute_utils.cc:566-602 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+// insets past each other grow back to a 0 size (the block axis only when
+// definite), and a table's IMCB shrinks to the containing block.
+func TestComputeInsetModifiedContainingBlock(t *testing.T) {
+	wdm := WritingDirectionMode{WM: WritingModeHorizontalTB, Dir: DirectionLTR}
+	both := func(start, end float64) LogicalOofInsets {
+		return LogicalOofInsets{
+			InlineStart: start, HasInlineStart: true, InlineEnd: end, HasInlineEnd: true,
+			BlockStart: start, HasBlockStart: true, BlockEnd: end, HasBlockEnd: true,
+		}
+	}
+	imcb := func(isTable bool, avail LogicalSize, insets LogicalOofInsets) InsetModifiedContainingBlock {
+		return ComputeInsetModifiedContainingBlock(isTable, avail, LogicalAlignment{}, insets,
+			0, 0, BiasStart, BiasStart, false, wdm, wdm)
+	}
+	for _, tc := range []struct {
+		name                 string
+		isTable              bool
+		avail                LogicalSize
+		insets               LogicalOofInsets
+		wantInline, wantBlock float64
+	}{
+		{"crossed insets clamp to 0", false, LogicalSize{InlineSize: 100, BlockSize: 100}, both(80, 80), 0, 0},
+		{"indefinite block axis is not clamped", false, LogicalSize{InlineSize: 100, BlockSize: Indefinite}, both(80, 80), 0, Indefinite - 160},
+		{"a table shrinks to the containing block", true, LogicalSize{InlineSize: 100, BlockSize: 100}, both(-50, -50), 100, 100},
+		{"a non-table keeps its larger IMCB", false, LogicalSize{InlineSize: 100, BlockSize: 100}, both(-50, -50), 200, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := imcb(tc.isTable, tc.avail, tc.insets)
+			if got.InlineSize() != tc.wantInline || got.BlockSize() != tc.wantBlock {
+				t.Errorf("IMCB %vx%v, want %vx%v", got.InlineSize(), got.BlockSize(), tc.wantInline, tc.wantBlock)
+			}
+		})
 	}
 }

@@ -3285,6 +3285,12 @@ func hasOverflowSafe(v string) bool {
 	return strings.HasPrefix(strings.TrimSpace(v), "safe ")
 }
 
+// hasOverflowUnsafe returns true if the value has the "unsafe" overflow
+// keyword.
+func hasOverflowUnsafe(v string) bool {
+	return strings.HasPrefix(strings.TrimSpace(v), "unsafe ")
+}
+
 // flexOOFStaticMain maps the container's resolved justify-content to a
 // (StaticPositionEdge, offset-in-content-box) pair along the main axis.
 // Only the "packing" values collapse to a single point; the distributed

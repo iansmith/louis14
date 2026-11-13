@@ -342,7 +342,7 @@ func (gla *GridLayoutAlgorithm) Layout() *LayoutResult {
 		rowOffsets: rowOffsets, rowSizes: rowSizes,
 		lines: tree.lines,
 	}
-	gla.PlaceOutOfFlowItems(builder, oofChildren, tracks, paddingBox)
+	gla.PlaceOutOfFlowItems(builder, oofChildren, tracks, paddingBox, LogicalSize{InlineSize: contentInlineSize, BlockSize: finalBlockSize})
 
 	// Lay out the out-of-flow children. Mirrors the OutOfFlowLayoutPart
 	// run of Blink's BoxFragmentBuilder::HandleOofsAndSpecialDescendants
@@ -1190,24 +1190,33 @@ func (g gridTrackGeometry) ComputeOutOfFlowItemContainingRect(style *css.Style, 
 }
 
 // PlaceOutOfFlowItems adds the grid's out-of-flow children as candidates.
-// When the grid is their containing block the static position is the start
-// of their grid area (the padding box when not placed); otherwise it is the
-// content-box start. Mirrors GridLayoutAlgorithm::PlaceOutOfFlowItems
+// When the grid is their containing block the static position is in their
+// grid area (the padding box when not placed); otherwise it is in the
+// content box (contentSize). It is aligned there by the child's
+// justify-self / align-self (auto: the grid's justify-items / align-items).
+// Mirrors GridLayoutAlgorithm::PlaceOutOfFlowItems
 // (grid_layout_algorithm.cc:2602-2681 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b), including its use of
 // IsAbsoluteContainer for fixed-position children too (:2621). Not ported:
-// AlignmentOffsetForOutOfFlow (justify-self / align-self on the static
-// position) and the fragmentation deferral of a static position in a later
-// fragment (louis14 grids do not fragment).
-func (gla *GridLayoutAlgorithm) PlaceOutOfFlowItems(builder *BoxFragmentBuilder, oofChildren []*LayoutInputNode, tracks gridTrackGeometry, paddingBox gridArea) {
+// the fragmentation deferral of a static position in a later fragment
+// (louis14 grids do not fragment).
+func (gla *GridLayoutAlgorithm) PlaceOutOfFlowItems(builder *BoxFragmentBuilder, oofChildren []*LayoutInputNode, tracks gridTrackGeometry, paddingBox gridArea, contentSize LogicalSize) {
 	isAbsoluteContainer := gla.node.IsAbsoluteContainer()
 	isFixedContainer := gla.node.IsAbsoluteContainer()
+	wdm := gla.space.WritingDirection
 	for _, child := range oofChildren {
-		isFixed := child.Style().GetPosition() == css.PositionFixed
+		style := child.Style()
+		isFixed := style.GetPosition() == css.PositionFixed
 		var staticPosition LogicalStaticPosition
+		containingSize := contentSize
 		if (isAbsoluteContainer && !isFixed) || (isFixedContainer && isFixed) {
-			staticPosition.Offset = tracks.ComputeOutOfFlowItemContainingRect(child.Style(), paddingBox).offset
+			area := tracks.ComputeOutOfFlowItemContainingRect(style, paddingBox)
+			staticPosition.Offset, containingSize = area.offset, area.size
 		}
+		childWDM := NewWritingDirectionMode(style)
+		inlineEdge, _, _ := axisEdgeFromItemPosition(true, false, true, gla.style, wdm, style, childWDM)
+		blockEdge, _, _ := axisEdgeFromItemPosition(false, false, true, gla.style, wdm, style, childWDM)
+		AlignmentOffsetForOutOfFlow(inlineEdge, blockEdge, containingSize, &staticPosition)
 		builder.AddOutOfFlowCandidate(OutOfFlowCandidate{
 			Node:            child,
 			StaticPosition:  staticPosition,
