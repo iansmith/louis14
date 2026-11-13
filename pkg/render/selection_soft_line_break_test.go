@@ -72,3 +72,20 @@ func TestSelection_SoftLineBreakOnBlockLastLineWhenSelectionContinues(t *testing
 		wantPixel(t, img, 70, 30, tc.want, tc.display+": line-break widening past the block's last line")
 	}
 }
+
+// Blink's selection paint range ends in the last selected laid-out text
+// (LayoutSelection::Commit, core/editing/layout_selection.cc @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), not at the DOM boundary: a
+// selection of all of body's children ends in the div's own text, since
+// the script after it is not laid out, so the div's last line is not
+// widened (selection-over-highlight-001,
+// highlight-custom-properties-dynamic-001).
+func TestSelection_SoftLineBreakNotSelectedWithoutLaterSelectedText(t *testing.T) {
+	doc := render.ParsePage(t, softLineBreakPage+`<script>var unused = 1;</script>`)
+	body := doc.Root.ElementByID("d").Parent
+	doc.Selection = &html.Range{StartContainer: body, StartOffset: 0, EndContainer: body, EndOffset: len(body.Children)}
+	img, _ := render.RenderDocument(t, doc, 200, 60, render.WithEditingState())
+	wantPixel(t, img, 70, 10, inlineLayerLime, "line 1 still selects its soft line break")
+	wantPixel(t, img, 30, 30, inlineLayerLime, "line 2 glyphs are selected")
+	wantPixel(t, img, 70, 30, canvasWhite, "no selected text follows the div, so its last line is not widened")
+}
