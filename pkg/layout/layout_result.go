@@ -52,8 +52,9 @@ type LayoutResult struct {
 	LastBaseline float64
 
 	// UseLastBaselineForInlineBaseline mirrors Blink's
-	// use_last_baseline_for_inline_baseline_ — set by PropagateBaselineFromChild
-	// to indicate the last-baseline should be preferred for inline alignment.
+	// use_last_baseline_for_inline_baseline_: set on a block (and multicol,
+	// fieldset) laid out as an inline-block, whose inline baseline is then its
+	// last baseline rather than its first.
 	UseLastBaselineForInlineBaseline bool
 
 	// UnpositionedListMarker is a list-item marker that was not placed during
@@ -417,7 +418,8 @@ func hasNonVisibleOverflow(style *css.Style, node *html.Node) bool {
 // opt out (a <button>). Mirrors PhysicalBoxFragment::
 // ForceInlineBaselineSynthesis (core/layout/physical_box_fragment.h:169-173
 // @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); its
-// UseLastBaselineForInlineBaseline condition is the callers' display check.
+// UseLastBaselineForInlineBaseline condition is the callers' check of the
+// result's flag.
 func forceInlineBaselineSynthesis(style *css.Style, node *html.Node) bool {
 	if !isScrollContainerBox(style, node) || style.ShouldIgnoreOverflowPropertyForInlineBlockBaseline() {
 		return false

@@ -562,7 +562,10 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	var firstChildBaseline float64    // Baseline of the first in-flow block child (for propagation).
 	var firstChildBlockOffset float64 // Block offset of the first in-flow block child.
 	hasFirstChildBaseline := false
-	var lastChildBaseline float64    // Baseline of the last in-flow block child.
+	var lastChildBaseline float64 // Baseline of the last in-flow block child.
+	// inlineBlockBaseline: this box computes an inline-block's baselines
+	// (BaselineAlgorithmType::kInlineBlock).
+	inlineBlockBaseline := bla.space.BaselineAlgorithm == BaselineAlgorithmTypeInlineBlock
 	var lastChildBlockOffset float64 // Block offset of the last in-flow block child.
 	hasLastChildBaseline := false
 
@@ -1722,31 +1725,37 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 				}
 			}
 
-			// Track the last in-flow block child's baseline for
-			// CSS 2.1 §10.8.1 inline-block baseline propagation.
-			// Only a genuine last-baseline (from a line box, propagated up
-			// through block descendants) counts — never the first-baseline.
-			// If no descendant has a last-baseline, the enclosing
-			// inline-block falls back to its bottom margin edge at
-			// atomic-inline placement time (inline_layout.go).
+			// The last in-flow block child's baseline becomes this box's
+			// last baseline. Mirrors PropagateBaselineFromBlockChild
+			// (block_layout_algorithm.cc:3738-3778 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
+			// - A table gives an inline-block no baseline.
+			// - When computing an inline-block's baseline, a child gives its
+			//   last baseline only if its fragment uses its last baseline
+			//   for an inline baseline (the blocks laid out in the
+			//   inline-block do; a flex or grid container does not), its
+			//   first otherwise.
+			// - Such a child that is a block-axis scroll container gives its
+			//   block-end margin edge (ForceInlineBaselineSynthesis).
 			// CSS Align §9.1: orthogonal children don't contribute baselines.
-			//
-			// Flex/grid containers that don't set LastBaseline fall back to
-			// Baseline (first baseline): they export content-derived baseline
-			// regardless of overflow per CSS Align §4.3.
-			// A table gives an inline-block no baseline: when computing an
-			// inline-block's baseline, Blink skips table children
-			// (PropagateBaselineFromBlockChild, block_layout_algorithm.cc:
-			// 3740-3745 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-			skipTable := child.IsTable() && bla.space.BaselineAlgorithm == BaselineAlgorithmTypeInlineBlock
+			skipTable := child.IsTable() && inlineBlockBaseline
 			if !isOrthogonal && !skipTable {
-				childLastBL := childResult.LastBaseline
-				if childLastBL == 0 && childStyle != nil {
-					d := childStyle.GetDisplay()
-					if d == css.DisplayFlex || d == css.DisplayGrid ||
-						d == css.DisplayInlineFlex || d == css.DisplayInlineGrid {
-						childLastBL = childResult.Baseline
+				childLastBL := childResult.Baseline
+				if !inlineBlockBaseline || childResult.UseLastBaselineForInlineBaseline {
+					childLastBL = childResult.LastBaseline
+					// A flex or grid container that exported no last
+					// baseline gives its first.
+					if childLastBL == 0 && childStyle != nil {
+						d := childStyle.GetDisplay()
+						if d == css.DisplayFlex || d == css.DisplayGrid ||
+							d == css.DisplayInlineFlex || d == css.DisplayInlineGrid {
+							childLastBL = childResult.Baseline
+						}
 					}
+				}
+				if inlineBlockBaseline && childResult.UseLastBaselineForInlineBaseline &&
+					childWDM.WM == wdm.WM && forceInlineBaselineSynthesis(childStyle, child.DOMNode) {
+					childLastBL = childBlockSize + childMargins.BlockEnd
 				}
 				if childLastBL > 0 {
 					lastChildBaseline = childLastBL
@@ -1998,19 +2007,17 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 	}
 	// Set last baseline: for inline-block alignment §10.8.1 (uses last line box).
 	// For inline children, lastChildBaseline is the last line's baseline offset.
-	// For block children, it's the last child's propagated baseline.
-	//
-	// Non-flex/grid scroll containers synthesize their §10.8.1 baseline from
-	// block end — mirrors Blink LayoutBox::UseLogicalBottomMarginEdgeForInlineBlockBaseline.
-	// This lets an enclosing non-scrollable inline-block propagate the correct
-	// synthesized value via its own LastBaseline.
+	// For block children, it's the last child's propagated baseline. A
+	// scroll container's block-end margin edge stands in for it only where
+	// the box is an inline-block's (ForceInlineBaselineSynthesis, read by
+	// the parent and by the atomic inline's baseline).
 	logMargins := ResolveMargins(bla.style, wdm, bla.space.AvailableSize.InlineSize.Float64())
-	d := bla.style.GetDisplay()
-	isFlexGrid := d == css.DisplayFlex || d == css.DisplayGrid ||
-		d == css.DisplayInlineFlex || d == css.DisplayInlineGrid
-	if !isFlexGrid && forceInlineBaselineSynthesis(bla.style, bla.node.DOMNode) {
-		bla.containerBuilder.SetLastBaseline(finalBlockSize + geom.BlockBorderPadding() + logMargins.BlockEnd)
-	} else if hasLastChildBaseline {
+	if inlineBlockBaseline {
+		// block_layout_algorithm.cc:1510-1513 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
+		bla.containerBuilder.SetUseLastBaselineForInlineBaseline()
+	}
+	if hasLastChildBaseline {
 		bla.containerBuilder.SetLastBaseline(geom.Border.BlockStart + geom.Padding.BlockStart +
 			lastChildBlockOffset + lastChildBaseline)
 	} else if firstLineAscent > 0 {
