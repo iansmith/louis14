@@ -47,6 +47,12 @@ func (g sidewaysEmphasisGeometry) screenX(clockwise bool) float64 {
 	return g.boxLeft + rel - g.markAscent
 }
 
-// sidewaysEmphasisCentralBaseline is a stub; see
-// TestSidewaysEmphasisCentralBaseline.
-func sidewaysEmphasisCentralBaseline(box *layout.Box) bool { return false }
+// sidewaysEmphasisCentralBaseline reports whether a text box painted by
+// drawSidewaysEmphasisMarks sits on the central baseline: vertical-rl or
+// vertical-lr text with text-orientation: mixed, as opposed to sideways text
+// (ComputedStyle::GetFontBaseline, which the em-height adjustment reads,
+// core/layout/inline/ruby_utils.cc:920-929 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func sidewaysEmphasisCentralBaseline(box *layout.Box) bool {
+	return layout.NewWritingDirectionMode(box.Style).UsesCentralBaselineWithStyle(box.Style)
+}

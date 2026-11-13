@@ -5874,6 +5874,7 @@ func (r *Renderer) drawSidewaysEmphasisMarks(layer *PaintLayer, text string, box
 	// the two stay aligned until under ruby lands.
 	screenX := sidewaysEmphasisGeometry{
 		boxLeft: box.X, boxWidth: box.Width,
+		overAdjust: r.emHeightOverAdjustment(layer.FontSize, fontPath, sidewaysEmphasisCentralBaseline(box)),
 		markAscent: emphAscent, markDescent: emphDescent,
 		annotH: annotH,
 	}.screenX(layer.IsSidewaysRL)
