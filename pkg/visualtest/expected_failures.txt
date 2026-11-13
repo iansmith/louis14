@@ -110,3 +110,13 @@ css-pseudo/first-letter-punctuation-and-space.html	Blink-faithful failure: ::fir
 #     PASSES (rev 62ffcb685d, 2026-07-02). Verified via wpt.fyi search API with
 #     pinned run IDs. See LOU-364 final report.
 css-multicol/multicol-width-005.html	Blink-faithful failure: max-content with column-width, Blink max=max(content,column-width)=100 vs Mozilla ref 80; Chrome 150 F @ wpt.fyi run 5133332257177600, Firefox 152.0.4 P (LOU-364)
+
+# --- css-grid: grid baseline-alignment reftests Blink fails and Gecko passes
+#     (LOU-986 import). Chrome 157.0.8103.78 stable FAILS (wpt.fyi run
+#     5129789854449664, rev a17acfbc8a, 2026-11-12); Firefox 160.0 stable
+#     PASSES (wpt.fyi run 4899746574237696, same rev). Verified via the wpt.fyi
+#     search API with those pinned run IDs. Re-check if LOU-978's port makes
+#     one pass.
+css-grid/alignment/grid-baseline-align-001.html	Blink fails, Gecko passes: Chrome 157 F @ wpt.fyi run 5129789854449664, Firefox 160.0 P @ run 4899746574237696 (LOU-986)
+css-grid/alignment/grid-item-mixed-baseline-002.html	Blink fails, Gecko passes: Chrome 157 F @ wpt.fyi run 5129789854449664, Firefox 160.0 P @ run 4899746574237696 (LOU-986)
+css-grid/alignment/grid-item-mixed-baseline-003.html	Blink fails, Gecko passes: Chrome 157 F @ wpt.fyi run 5129789854449664, Firefox 160.0 P @ run 4899746574237696 (LOU-986)
