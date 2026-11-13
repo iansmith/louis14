@@ -16,6 +16,8 @@ func TestNestedMediaRulesAllGate(t *testing.T) {
 		// An outer @media still gates an inner one.
 		{`@media ` + never + ` { @media all { .t { color: red } } }`, "green"},
 		{`@media ` + never + ` { @scope (.r) { @media all { .t { color: red } } } }`, "green"},
+		{`@media ` + never + ` { @layer l { @media all { .t { color: red } } } }`, "green"},
+		{`@media ` + never + ` { @container (min-width: 0) { .t { color: red } } }`, "green"},
 		// A matching inner level does not rescue a failing middle one, nor
 		// an outer list with no matching branch.
 		{`@media all { @media ` + never + ` { @media ` + always + ` { .t { color: red } } } }`, "green"},

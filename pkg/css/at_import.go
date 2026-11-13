@@ -233,10 +233,7 @@ func resolveAtImport(ctx *ParserContext, atImportRule string, dst *Stylesheet) {
 		for i := range imported.Rules {
 			// Prepend so that nested @import media-query-lists from
 			// inside the imported sheet stay closest to the rule.
-			imported.Rules[i].ImportMediaQueries = append(
-				append([]*MediaQuery{}, importMQs...),
-				imported.Rules[i].ImportMediaQueries...,
-			)
+			imported.Rules[i].ImportMediaQueries = prependMediaQueries(importMQs, imported.Rules[i].ImportMediaQueries)
 		}
 	}
 	dst.Rules = append(dst.Rules, imported.Rules...)

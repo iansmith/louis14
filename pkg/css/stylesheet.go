@@ -105,7 +105,13 @@ type Rule struct {
 	// Important and Order. A selector list's rules share one block, as
 	// Blink's one rule for the list does.
 	*DeclarationResult
-	MediaQuery     *MediaQuery     // Phase 22: Optional media query wrapper
+	// MediaQueries are the queries of the @media rules the rule is in,
+	// outermost first: it applies only when all of them match, as
+	// RuleSet::AddChildRules adds an @media's child rules only when its
+	// query matches, at each level (rule_set.cc:999-1004 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). An @media's
+	// comma-separated query list is one copy of the rule per query.
+	MediaQueries   []*MediaQuery
 	ContainerQuery *ContainerQuery // Optional @container query wrapper
 	LayerName      string          // @layer name (empty = unlayered)
 
@@ -115,7 +121,7 @@ type Rule struct {
 	// or the @import had no media-query suffix. Multiple entries combine
 	// with OR (CSS Cascade 4 §3.1 "conditional import"); each entry uses
 	// Kleene 3-valued AND internally. The list is evaluated at apply time
-	// AND-combined with rule.MediaQuery (the inner `@media` wrapper, if any),
+	// AND-combined with rule.MediaQueries (the `@media` wrappers, if any),
 	// mirroring Blink's `CSSImportRule::ApplyRule` chained media check at
 	// third_party/blink/renderer/core/css/css_import_rule.cc @ 4883d11f.
 	ImportMediaQueries []*MediaQuery
@@ -1078,7 +1084,7 @@ func (stylesheet *Stylesheet) parseFlatRule(ctx *ParserContext, ruleStr string, 
 // At-rules that only register side-state on the stylesheet (@font-face,
 // @keyframes, @counter-style) mutate ss directly and return nil; conditional
 // rules that produce style rules return them so the caller can attach
-// LayerName / MediaQuery / @supports gating as appropriate. @import is NOT
+// LayerName / MediaQueries / @supports gating as appropriate. @import is NOT
 // handled here — it has its own ParserContext threading at the top-level
 // callsite.
 func dispatchAtRuleIntoStylesheet(ruleStr string, ss *Stylesheet) []Rule {
@@ -1582,34 +1588,14 @@ func parseMediaRule(ruleStr string, ss *Stylesheet) []Rule {
 	// Parse inner rules
 	innerRules := splitRules(innerCSS)
 
+	var inner []Rule
 	for _, innerRuleStr := range innerRules {
 		innerTrimmed := strings.TrimSpace(innerRuleStr)
 		if strings.HasPrefix(innerTrimmed, "@") {
-			// Nested at-rule. @media-inside-@media reuses the outer's
-			// mediaSinkLive (so an outer false-media disables nested
-			// font/keyframe registration), but the returned style rules
-			// carry the nested @media's own MediaQuery — they're not
-			// double-gated by the outer one. This mirrors Blink, which
-			// builds a StyleRuleMedia chain where each level evaluates
-			// independently at apply time but side-effect registration
-			// happens during parsing under the outer-condition mask.
-			switch {
-			case strings.HasPrefix(innerTrimmed, "@media"):
-				rules = append(rules, parseMediaRule(innerRuleStr, mediaSinkLive)...)
-			case strings.HasPrefix(innerTrimmed, "@supports"), hasAtKeyword(innerTrimmed, "@scope"):
-				conditionalRules := dispatchAtRuleIntoStylesheet(innerRuleStr, mediaSinkLive)
-				for _, mq := range mediaQueries {
-					for _, r := range conditionalRules {
-						r.MediaQuery = mq
-						rules = append(rules, r)
-					}
-				}
-			default:
-				// @font-face / @keyframes / @counter-style / @container /
-				// @layer — dispatch into the (possibly-nil) live sink so
-				// false-media blocks discard the registration.
-				rules = append(rules, dispatchAtRuleIntoStylesheet(innerRuleStr, mediaSinkLive)...)
-			}
+			// A nested at-rule registers into the live sink, so an outer
+			// false @media disables nested @font-face / @keyframes
+			// registration, and its rules are gated by this @media below.
+			inner = append(inner, dispatchAtRuleIntoStylesheet(innerRuleStr, mediaSinkLive)...)
 			continue
 		}
 		// Use parseRules (plural) to handle comma-separated selector groups
@@ -1617,18 +1603,27 @@ func parseMediaRule(ruleStr string, ss *Stylesheet) []Rule {
 		if err != nil {
 			continue
 		}
-		// Attach media query to all resulting rules. For a comma-separated
-		// media-query-list, emit one copy per branch — Kleene OR is realized
-		// by per-branch evaluation at apply time.
-		for _, mq := range mediaQueries {
-			for _, rule := range parsedRules {
-				rule.MediaQuery = mq
-				rules = append(rules, rule)
-			}
+		inner = append(inner, parsedRules...)
+	}
+	// Every rule the body yields, a nested @media's included, is gated by
+	// this @media too. For a comma-separated media-query-list, emit one
+	// copy per branch: Kleene OR is realized by per-branch evaluation at
+	// apply time.
+	for _, mq := range mediaQueries {
+		for _, rule := range inner {
+			rule.MediaQueries = prependMediaQueries([]*MediaQuery{mq}, rule.MediaQueries)
+			rules = append(rules, rule)
 		}
 	}
 
 	return rules
+}
+
+// prependMediaQueries is outer followed by inner, in a new slice: an
+// enclosing rule's media queries put before a rule's own, so the copies of
+// a rule do not share a backing array.
+func prependMediaQueries(outer, inner []*MediaQuery) []*MediaQuery {
+	return append(append(make([]*MediaQuery, 0, len(outer)+len(inner)), outer...), inner...)
 }
 
 // anyMediaQueryStaticallyTruthy reports whether at least one query in the
@@ -2336,7 +2331,7 @@ func parseSupportsRule(ruleStr string, ss *Stylesheet) []Rule {
 // `dispatchAtRuleIntoStylesheet` so @font-face / @keyframes / @counter-style
 // nested in a conditional body register on ss exactly as they would at the
 // top level. Style rules are accumulated and returned for the caller to gate
-// further (e.g. attaching MediaQuery / LayerName).
+// further (e.g. attaching MediaQueries / LayerName).
 //
 // `ss` may be nil. With a nil stylesheet, nested at-rules that register
 // side-state silently drop — the same behaviour as the pre-refactor parser.
@@ -4481,15 +4476,20 @@ func EvaluateMediaQueryList(list []*MediaQuery, viewportWidth, viewportHeight fl
 
 // RuleMediaApplies returns whether a rule's combined media gating evaluates
 // to definitely-true at the given viewport. Combines the @import-level
-// media-query-list (OR-of-MQs) AND-with the @media-level single MediaQuery,
+// media-query-list (OR-of-MQs) AND-with each enclosing @media's query,
 // mirroring Blink's `CSSImportRule::ApplyRule` chained check at
 // third_party/blink/renderer/core/css/css_import_rule.cc @ 4883d11f.
 // Per CSS Media Queries 4 §3.1, the result is Kleene 3-valued and only a
 // definitely-True result causes the rule to apply.
 func RuleMediaApplies(rule *Rule, viewportWidth, viewportHeight float64) bool {
-	importResult := EvaluateMediaQueryList(rule.ImportMediaQueries, viewportWidth, viewportHeight)
-	mediaResult := EvaluateMediaQuery(rule.MediaQuery, viewportWidth, viewportHeight)
-	return mediaAnd(importResult, mediaResult) == MediaQueryTrue
+	result := EvaluateMediaQueryList(rule.ImportMediaQueries, viewportWidth, viewportHeight)
+	for _, mq := range rule.MediaQueries {
+		if result == MediaQueryFalse {
+			break // False absorbs in AND.
+		}
+		result = mediaAnd(result, EvaluateMediaQuery(mq, viewportWidth, viewportHeight))
+	}
+	return result == MediaQueryTrue
 }
 
 // applyMediaRestrictor mirrors Blink's ApplyRestrictor() in
