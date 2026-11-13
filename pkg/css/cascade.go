@@ -3927,12 +3927,16 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 	// Unicode bidi class (L → ltr; R or AL → rtl). The shared
 	// elementDirectionality helper (matcher.go) implements that walk and
 	// also handles ancestor fallback when no strong character is found,
-	// matching Blink's HTMLElement::ResolveAutoDirectionality
-	// (third_party/blink/renderer/core/html/html_element.cc @
-	// 4883d11fef4a).
+	// matching Blink's Element::ResolveAutoDirectionality
+	// (core/dom/element.cc:6416-6507 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	if dirAttr, ok := node.GetAttribute("dir"); ok {
-		dirAttr = strings.ToLower(strings.TrimSpace(dirAttr))
-		switch dirAttr {
+		// Only a valid value counts, matched as :dir() matches it
+		// (toValidDirValue; CollectStyleForPresentationAttribute checks
+		// IsValidDirAttribute, core/html/html_element.cc:424-445 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		dir := toValidDirValue(dirAttr)
+		switch dir {
 		case "rtl":
 			style.Set("direction", "rtl")
 		case "ltr":
@@ -3944,7 +3948,7 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 				style.Set("direction", "ltr")
 			}
 		}
-		if dirAttr == "rtl" || dirAttr == "ltr" || dirAttr == "auto" {
+		if dir != "" {
 			if node.TagName == "bdo" {
 				style.Set("unicode-bidi", "isolate-override")
 			} else {

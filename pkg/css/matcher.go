@@ -640,12 +640,18 @@ func isVisitedLink(node *html.Node) bool {
 	return isLink && strings.TrimSpace(href) == ""
 }
 
-// isValidDirValue reports whether dir is a valid dir attribute value:
-// exactly ltr, rtl or auto, ASCII case-insensitively, untrimmed
-// (HTMLElement::IsValidDirAttribute, core/html/html_element.cc:357-361 @
+// toValidDirValue returns the dir keyword ("ltr", "rtl" or "auto") that dir
+// spells exactly, ASCII case-insensitively and untrimmed, or "" for an
+// invalid value (ToValidDirValue / IsValidDirAttribute,
+// core/html/html_element.cc:357-361, 3620-3634 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-func isValidDirValue(dir string) bool {
-	return strings.EqualFold(dir, "ltr") || strings.EqualFold(dir, "rtl") || strings.EqualFold(dir, "auto")
+func toValidDirValue(dir string) string {
+	for _, kw := range [...]string{"ltr", "rtl", "auto"} {
+		if strings.EqualFold(dir, kw) {
+			return kw
+		}
+	}
+	return ""
 }
 
 // elementDirectionality returns the element's directionality per the HTML
@@ -661,8 +667,11 @@ func isValidDirValue(dir string) bool {
 //  3. Otherwise (no `dir`, or an invalid value), inherit from the parent
 //     element; document default is LTR.
 //
-// Mirrors Blink's Element::CachedDirectionality / ResolveAutoDirectionality
-// (third_party/blink/renderer/core/dom/element.cc @ 4883d11fef4a). Without
+// Mirrors Blink's Element::ParentDirectionality and
+// ResolveAutoDirectionality (core/dom/element.cc:6260-6271, 6416-6507 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b) with
+// HTMLElement::CalculateAndAdjustAutoDirectionality
+// (core/html/html_element.cc:3690-3716 @ a9f50e52). Without
 // the per-element cache and invalidation graph Blink keeps — louis14's static
 // renderer recomputes per :dir() query, which is correct but O(descendants)
 // per match. For the WPT selectors corpus this is fine.
@@ -675,15 +684,12 @@ func elementDirectionality(node *html.Node) Direction {
 		if !ok {
 			continue
 		}
-		// A valid value matches exactly, ASCII case-insensitively
-		// (HTMLElement::IsValidDirAttribute, core/html/html_element.cc:
-		// 357-361 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		switch {
-		case strings.EqualFold(dirAttr, "ltr"):
+		switch toValidDirValue(dirAttr) {
+		case "ltr":
 			return DirectionLTR
-		case strings.EqualFold(dirAttr, "rtl"):
+		case "rtl":
 			return DirectionRTL
-		case strings.EqualFold(dirAttr, "auto"):
+		case "auto":
 			if dir, found := autoDirectionality(n); found {
 				return dir
 			}
@@ -700,12 +706,15 @@ func elementDirectionality(node *html.Node) Direction {
 // the corresponding direction. Per HTML "auto directionality" algorithm
 // (https://html.spec.whatwg.org/#auto-directionality), descendant subtrees
 // rooted at a `bdi`, `script`, `style`, `textarea` element, or any element
-// that itself has a `dir` attribute (other than the starting element)
-// are skipped. Returns (_, false) if no strong character is found.
+// that itself has a valid `dir` attribute (other than the starting
+// element; ElementAffectsDirectionality, core/html/html_element.cc:
+// 3662-3669 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) are skipped. An
+// invalid dir is no boundary: its text counts. Returns (_, false) if no
+// strong character is found.
 //
-// Mirrors Blink's HTMLElement::ResolveAutoDirectionality and the bidi-class
-// walk in core/html/canvas/text_metrics.cc-derived helpers (Blink @
-// 4883d11fef4a). Uses golang.org/x/text/unicode/bidi for the class lookup.
+// Mirrors Blink's Element::ResolveAutoDirectionality (core/dom/element.cc:
+// 6416-6507 @ a9f50e52). Uses golang.org/x/text/unicode/bidi for the class
+// lookup.
 func autoDirectionality(root *html.Node) (Direction, bool) {
 	var walk func(n *html.Node, isRoot bool) (Direction, bool)
 	walk = func(n *html.Node, isRoot bool) (Direction, bool) {
@@ -735,7 +744,7 @@ func autoDirectionality(root *html.Node) (Direction, bool) {
 			// (HTMLElement::ElementAffectsDirectionality,
 			// core/html/html_element.cc:3662-3669 @
 			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-			if dir, has := n.GetAttribute("dir"); has && isValidDirValue(dir) {
+			if dir, has := n.GetAttribute("dir"); has && toValidDirValue(dir) != "" {
 				return DirectionLTR, false
 			}
 		}
