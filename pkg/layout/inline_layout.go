@@ -64,8 +64,7 @@ func isCSSCollapsibleRune(r rune) bool {
 // isAtomicBaselineDisplay returns true iff the display type participates in baseline
 // alignment as an atomic inline. These are the displays that export a baseline (either
 // from contents or synthesized from the margin box) to the parent line's baseline
-// calculation. Mirrors Blink's set of atomic-inline displays that reach
-// UseLogicalBottomMarginEdgeForInlineBlockBaseline.
+// calculation (atomicInlineBaseline, or a synthesized baseline).
 func isAtomicBaselineDisplay(d css.DisplayType) bool {
 	switch d {
 	case css.DisplayInlineBlock, css.DisplayInlineFlex, css.DisplayFlex,
@@ -80,61 +79,32 @@ func isAtomicBaselineDisplay(d css.DisplayType) bool {
 	return false
 }
 
-// useLogicalBottomMarginEdgeForInlineBlockBaseline returns true iff the element should
-// synthesize its inline-level baseline from the logical bottom margin edge (border-box
-// block-end in the parent's writing direction), rather than deriving it from content.
-// Per CSS Align baseline-export (https://drafts.csswg.org/css-align/#baseline-export):
-// - inline-block, inline-table, table: synthesize from margin box when scrollable.
-// - inline-flex, inline-grid, flex, grid: always derive from content baseline.
-// This mirrors Blink LayoutBox::UseLogicalBottomMarginEdgeForInlineBlockBaseline
-// (third_party/blink/renderer/core/layout/layout_box.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
-func useLogicalBottomMarginEdgeForInlineBlockBaseline(d css.DisplayType, st *css.Style, node *html.Node) bool {
-	if st == nil {
-		return false
-	}
-	switch d {
-	case css.DisplayInlineBlock, css.DisplayTable, css.DisplayInlineTable,
-		// `inline flow-root list-item` is an inline-block container and
-		// follows the same rule (pure inline list items never reach the
-		// atomic baseline path).
-		css.DisplayInlineListItem:
-		// These displays synthesize from the margin box when they are
-		// block-axis scroll containers (forceInlineBaselineSynthesis).
-		return forceInlineBaselineSynthesis(st, node)
-	}
-	// Flex, grid, and other displays derive from content baseline regardless of overflow.
-	return false
-}
-
 // atomicInlineBaseline returns the baseline (distance from the border-box
 // block-start) a non-replaced atomic inline exports to its line box, or 0
 // when it has none (the caller then synthesizes one). The line-box ascent
 // computation and the atomic inline's placement both read it, so the two
 // always agree.
 //
-// Approximates LogicalBoxFragment::BaselineMetrics (logical_box_fragment.cc:
-// 14-36 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), which takes LastBaseline()
-// only when the fragment UseLastBaselineForInlineBaseline() — set by block-flow
-// inline-block layout (block_layout_algorithm.cc:1510-1513 @ a9f50e52) — and
-// FirstBaseline() otherwise. louis14's block layout does not set
-// LayoutResult.UseLastBaselineForInlineBaseline yet, so this selects by
-// display instead: flex, grid and tables export their first baseline.
-// Orthogonal and scrollable inline-block/table roots synthesize from the
+// Mirrors LogicalBoxFragment::BaselineMetrics (logical_box_fragment.cc:
+// 14-36 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b) for baseline-source
+// auto: a fragment that uses its last baseline for an inline baseline (a
+// block laid out as an inline-block) exports it, any other its first; one
+// of the former that is a block-axis scroll container synthesizes from the
 // block-end margin edge (ForceInlineBaselineSynthesis,
-// physical_box_fragment.h:167-173 @ a9f50e52).
-func atomicInlineBaseline(r *InlineItemResult, display css.DisplayType, blockSize float64, wdm WritingDirectionMode) float64 {
-	if (r.Item.Style != nil && NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm)) ||
-		useLogicalBottomMarginEdgeForInlineBlockBaseline(display, r.Item.Style, r.Item.Node) {
+// physical_box_fragment.h:167-173). An orthogonal fragment has no baseline
+// in the line's writing mode.
+func atomicInlineBaseline(r *InlineItemResult, blockSize float64, wdm WritingDirectionMode) float64 {
+	res := r.LayoutResult
+	if r.Item.Style != nil && NewWritingDirectionMode(r.Item.Style).IsOrthogonalTo(wdm) {
 		return synthesizedInlineBaseline(r, blockSize, wdm, false)
 	}
-	switch display {
-	case css.DisplayInlineFlex, css.DisplayFlex, css.DisplayInlineGrid, css.DisplayGrid,
-		css.DisplayInlineTable, css.DisplayTable:
-		if r.LayoutResult.Baseline > 0 {
-			return r.LayoutResult.Baseline
-		}
+	if !res.UseLastBaselineForInlineBaseline {
+		return res.Baseline
 	}
-	return r.LayoutResult.LastBaseline
+	if r.Item.Style != nil && forceInlineBaselineSynthesis(r.Item.Style, r.Item.Node) {
+		return synthesizedInlineBaseline(r, blockSize, wdm, false)
+	}
+	return res.LastBaseline
 }
 
 // synthesizedInlineBaseline is the baseline, measured from the border-box
@@ -3105,7 +3075,7 @@ func createLineBoxEx(
 					// Replaced elements export no content baseline; see atomicInlineBaseline.
 					var atomicBaseline float64
 					if !isReplaced {
-						atomicBaseline = atomicInlineBaseline(r, display, blockSize, wdm)
+						atomicBaseline = atomicInlineBaseline(r, blockSize, wdm)
 					}
 					if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {
 						var ibAscent float64
@@ -3524,7 +3494,7 @@ func computeLineMetricsEx(line *LineInfo, wdm WritingDirectionMode, fonts text.F
 				// Replaced elements export no content baseline; see atomicInlineBaseline.
 				var atomicBaseline float64
 				if !isReplaced {
-					atomicBaseline = atomicInlineBaseline(r, display, blockSize, wdm)
+					atomicBaseline = atomicInlineBaseline(r, blockSize, wdm)
 				}
 				if isAtomicForBaseline && (atomicBaseline > 0 || !centralBaseline) {
 					var ibAscent float64
