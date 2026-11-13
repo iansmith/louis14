@@ -24,6 +24,12 @@ func TestGridBaselineShimGrowsAutoRows(t *testing.T) {
 		{"second row unaffected", "align-items:baseline;grid-template-rows:auto auto", shifted + `<div>Y</div>`, 60},
 		{"shim in the clamp floor", "align-items:baseline;grid-template-rows:minmax(auto,0px)",
 			`<div style="padding-top:20px">X</div><div style="border-bottom:5px solid">X<br>X<br>X</div>`, 25},
+		// A non-auto min size is the minimum contribution as is: the shim
+		// goes only into the automatic minimum's clamp floor
+		// (CalculateIntrinsicMinimumContribution, grid_layout_utils.cc:
+		// 552-571).
+		{"no shim in a non-auto minimum", "align-items:baseline;grid-template-rows:minmax(auto,0px)",
+			`<div style="padding-top:20px">X</div><div style="min-height:5px">X<br>X<br>X</div>`, 20},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
