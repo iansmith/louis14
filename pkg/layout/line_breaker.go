@@ -372,20 +372,27 @@ func canStartLine(r rune) bool {
 // so a glued run right after a marker still starts the line for this
 // purpose.
 func (lb *LineBreaker) gluedRunStartsLine(line *LineInfo, textStart int) bool {
-	head := textStart
-	for head > 0 {
-		r, size := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:head])
-		if isBreakOpportunityRune(r) {
-			break
-		}
-		head -= size
-	}
+	head := lb.lastBreakOpportunityAtOrBefore(textStart)
 	for _, res := range line.Results {
 		if res.TextEnd > res.TextStart && !isInsideMarkerItem(res.Item) {
 			return head <= res.TextStart
 		}
 	}
 	return true
+}
+
+// lastBreakOpportunityAtOrBefore returns the last offset at or before
+// offset that starts after a break opportunity (startsAfterBreakOpportunity),
+// or 0 when the run reaches the start of the text.
+func (lb *LineBreaker) lastBreakOpportunityAtOrBefore(offset int) int {
+	for offset > 0 {
+		r, size := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:offset])
+		if isBreakOpportunityRune(r) {
+			break
+		}
+		offset -= size
+	}
+	return offset
 }
 
 // NextLine produces the next line of content. Returns false when all
@@ -756,6 +763,101 @@ func (lb *LineBreaker) rewindUnbreakableTail(line *LineInfo) {
 	}
 }
 
+// endLineBeforeItem ends the line before the text item that does not fit.
+// When there is no break opportunity before that item (isContinuation: its
+// first word continues the line's last one, e.g. xx</span>b), the line
+// instead breaks at the last opportunity on it: the results after it move
+// to the next line, as HandleOverflow's walk back to the last result that
+// can break after does (inline/line_breaker.cc:4090-4102 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). With no opportunity on the
+// line the glued run stays and overflows.
+func (lb *LineBreaker) endLineBeforeItem(line *LineInfo, isContinuation bool) {
+	if isContinuation {
+		for i := len(line.Results) - 1; i > 0; i-- {
+			if lb.resultCanBreakAfter(line, i-1) {
+				line.Width -= lb.rewind(line, i)
+				return
+			}
+			if lb.breakTextAtPreviousOpportunity(line, i-1) {
+				return
+			}
+		}
+	}
+	lb.rewindUnbreakableTail(line)
+}
+
+// breakTextAtPreviousOpportunity ends the line inside text result i, at its
+// last break opportunity, when it has one: the results after it move to
+// the next line and it keeps only the text before the opportunity. This is
+// HandleOverflow re-breaking a text item that may break inside
+// (inline/line_breaker.cc:4127-4160 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); the text before the
+// opportunity already fit, so the last opportunity is the one to take.
+func (lb *LineBreaker) breakTextAtPreviousOpportunity(line *LineInfo, i int) bool {
+	r := line.Results[i]
+	if r.Item.Type != InlineItemText {
+		return false
+	}
+	_, size := utf8.DecodeLastRuneInString(lb.itemsData.TextContent[:r.TextEnd])
+	k := lb.lastBreakOpportunityAtOrBefore(r.TextEnd - size)
+	if k <= r.TextStart {
+		return false
+	}
+	before := lb.position
+	if i+1 < len(line.Results) {
+		lb.rewind(line, i+1)
+	}
+	lb.truncateTextResult(&line.Results[i], k)
+	lb.done = false
+	line.IsLastLine = false
+	line.Width -= before - lb.position
+	return true
+}
+
+// truncateTextResult shortens text result r to end at offset end,
+// re-measures it the way handleText measured it (soft hyphens stripped,
+// letter- and word-spacing included), keeps the breaker's position in
+// step, and resumes the next line at end.
+func (lb *LineBreaker) truncateTextResult(r *InlineItemResult, end int) {
+	measureStyle := lb.measuringStyle(r.Item)
+	isVertical := lb.isVerticalMeasurement(r.Item.Style)
+	fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
+	fontPath := resolveFontPath(measureStyle, lb.fonts)
+	features := text.GetFontFeatures(measureStyle)
+	letterSpacing, wordSpacing := 0.0, 0.0
+	if measureStyle != nil {
+		letterSpacing = measureStyle.GetLetterSpacing()
+		wordSpacing = measureStyle.GetWordSpacing()
+	}
+	w := measureTextContent(lb.itemsData.TextContent[r.TextStart:end], fontSize, fontPath, features, letterSpacing, wordSpacing, isVertical)
+	lb.position -= r.InlineSize - w
+	r.TextEnd = end
+	r.InlineSize = w
+	lb.currentItemIndex = r.ItemIndex
+	lb.currentTextOffset = end
+}
+
+// resultCanBreakAfter reports whether the line may break after result i:
+// after text whose next character starts a fresh word, after an atomic
+// inline, and after a close tag when the line could break before it (a
+// close tag carries the opportunity of the result it follows); never after
+// an open tag, whose opportunity belongs to the result before it. Mirrors
+// can_break_after as ComputeCanBreakAfter, HandleCloseTag and
+// HandleOpenTag set it (inline/line_breaker.cc:270-274, :3947-4060 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (lb *LineBreaker) resultCanBreakAfter(line *LineInfo, i int) bool {
+	r := line.Results[i]
+	switch r.Item.Type {
+	case InlineItemText:
+		return r.TextEnd > r.TextStart && lb.startsAfterBreakOpportunity(r.TextEnd)
+	case InlineItemCloseTag:
+		return i > 0 && lb.resultCanBreakAfter(line, i-1)
+	case InlineItemAtomicInline:
+		return true
+	}
+	return false
+}
+
 // breakTextAtWord finds a break point within a text item.
 // Returns true if the line should end.
 func (lb *LineBreaker) breakTextAtWord(
@@ -801,14 +903,10 @@ func (lb *LineBreaker) breakTextAtWord(
 	// word IS the line, so it overflows in place per CSS Text 3 §4.1,
 	// exactly like the single-item unbreakable-first-word case below. When
 	// the glued word starts MID-line (earlier break opportunities exist on
-	// the line), the spec-correct move is rewinding the word's already-
-	// placed head to the next line as a unit; louis14 has no cross-item
-	// break-opportunity rewind yet (rewindUnbreakableTail is marker-only),
-	// so this falls through to the pre-existing end-line-at-item-boundary
-	// behavior — wrong per spec, but identical to master and exercised by
-	// zero corpus tests (verified: forcing inclusion here instead regressed
-	// css-text-decor/text-emphasis-punctuation-1.html from 0-diff to 1.7%).
-	// The rewind gap is tracked as its own spin-out.
+	// the line), its already-placed head moves to the next line as a unit:
+	// endLineBeforeItem rewinds to the line's last break opportunity
+	// (LOU-883). (Forcing inclusion here instead regressed
+	// css-text-decor/text-emphasis-punctuation-1.html.)
 	isContinuation := len(line.Results) > 0 && !lb.startsAfterBreakOpportunity(textStart)
 	glueForcible := isContinuation && lb.gluedRunStartsLine(line, textStart)
 
@@ -825,7 +923,7 @@ func (lb *LineBreaker) breakTextAtWord(
 	// word must stay regardless of overflow (CSS Text 3 §4.1), so fall
 	// through to the word loop instead of ending the line.
 	if remaining <= 0 && line.HasContent && !glueForcible {
-		lb.rewindUnbreakableTail(line)
+		lb.endLineBeforeItem(line, isContinuation)
 		return true
 	}
 
@@ -980,7 +1078,7 @@ func (lb *LineBreaker) breakTextAtWord(
 			usedWidth = measureWord(words[0])
 		} else {
 			// End the line, retry this item on the next line.
-			lb.rewindUnbreakableTail(line)
+			lb.endLineBeforeItem(line, isContinuation)
 			return true
 		}
 	}
@@ -2009,6 +2107,11 @@ func (lb *LineBreaker) rewind(line *LineInfo, end int) float64 {
 	lb.position -= removed
 	lb.currentItemIndex = first.ItemIndex
 	lb.currentTextOffset = first.Item.StartOffset
+	// A text result can start inside its item (the item began on an
+	// earlier line): resume at the result, not the item.
+	if first.Item.Type == InlineItemText {
+		lb.currentTextOffset = first.TextStart
+	}
 	lb.done = false
 	line.IsLastLine = false
 	line.Results = line.Results[:end]
@@ -2100,28 +2203,9 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 		lb.currentTextOffset = r.TextStart
 		line.Results = line.Results[:lastTextIdx]
 	} else {
-		// Trim the item: keep the content before the OP suffix.
-		// Use measureTextContent so that soft hyphens are stripped and
-		// CSS letter-spacing / word-spacing are included — matching the
-		// measurement handleText performed for the original item.
-		trimmed := content[:opStart]
-		measureStyle := lb.measuringStyle(r.Item)
-		isVertical := lb.isVerticalMeasurement(r.Item.Style)
-		fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
-		fontPath := resolveFontPath(measureStyle, lb.fonts)
-		features := text.GetFontFeatures(measureStyle)
-		letterSpacing, wordSpacing := 0.0, 0.0
-		if measureStyle != nil {
-			letterSpacing = measureStyle.GetLetterSpacing()
-			wordSpacing = measureStyle.GetWordSpacing()
-		}
-		newWidth := measureTextContent(trimmed, fontSize, fontPath, features, letterSpacing, wordSpacing, isVertical)
-		r.TextEnd = opWordStart
-		r.InlineSize = newWidth
-		// Reset item cursor to r's item so the next NextLine call re-reads
-		// the OP suffix (from opWordStart) out of the same text item.
-		lb.currentItemIndex = r.ItemIndex
-		lb.currentTextOffset = opWordStart
+		// Trim the item to the content before the OP suffix; the next
+		// line re-reads the suffix from opWordStart.
+		lb.truncateTextResult(r, opWordStart)
 		// Trim line.Results: keep r (now trimmed) but remove anything after it
 		// (non-visible items that will be re-emitted on the next line).
 		line.Results = line.Results[:lastTextIdx+1]
