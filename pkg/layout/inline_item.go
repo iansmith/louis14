@@ -184,6 +184,11 @@ func annotatePaintGroups(data *InlineItemsData) {
 //
 // Ported from Blink's InlineItemsData (inline_items_data.h).
 type InlineItemsData struct {
+	// ContainerStyle is the style of the block container the items were
+	// collected from: the line's style, which the line breaker's current
+	// style starts at (Blink's LineInfo::LineStyle).
+	ContainerStyle *css.Style
+
 	// TextContent is the concatenated text of all inline content.
 	// Text nodes are whitespace-collapsed per CSS white-space.
 	// Atomic inlines are represented as U+FFFC (object replacement).
@@ -207,7 +212,7 @@ type InlineItemsData struct {
 //
 // This is Phase 1a of Blink's inline pre-layout pipeline.
 func CollectInlines(node *LayoutInputNode) *InlineItemsData {
-	data := &InlineItemsData{}
+	data := &InlineItemsData{ContainerStyle: node.Style()}
 	var b strings.Builder
 	collectInlinesRecursive(node, data, &b, true, nil)
 	data.TextContent = b.String()

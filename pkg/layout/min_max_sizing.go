@@ -503,24 +503,8 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 
 	availBlock, blockForPct := nodeChildBlockSizes(node, space)
 
-	// CSS 2.1 §16.6 / CSS Text 4 §3.4: when the inline container suppresses
-	// soft wrapping (`white-space: nowrap | pre`, `text-wrap: nowrap`), the
-	// run has NO soft wrap opportunities — so its min-content equals its
-	// max-content. Mirrors the same nowrap-detection InlineLayoutAlgorithm
-	// applies before invoking the line breaker for real layout (see
-	// inline_layout.go's `lineAvailableWidth = 1e9` path). Without this
-	// override, min mode greedily breaks at every word boundary, yielding
-	// "longest single word" as min-content for nowrap text — wrong per spec
-	// (a nowrap run is one unbreakable unit) and visible on
-	// text-decoration-subelements-002, where the abspos+overflow:hidden ref
-	// shrink-wraps to longest-word width instead of full text width.
-	//
-	// Detection mirrors InlineLayoutAlgorithm.Layout's check: container
-	// style first, then the first inline text item's style as fallback.
-	minAvailable := 0.0
-	if nodeIsNoWrap(node, itemsData) {
-		minAvailable = 1e9
-	}
+	// Nowrap runs stay whole in min-content too: the line breaker never
+	// breaks text whose style does not wrap (auto_wrap_).
 
 	minAvailBlock := Indefinite
 	if blockForPct != Indefinite {
@@ -541,7 +525,7 @@ func measureInlineMinMax(node *LayoutInputNode, ctx *LayoutContext, space Constr
 	// (orthogonalChildBlockSizes), so an atomic is sized against what it is
 	// laid out against: computed on the first atomic that needs them.
 	orthogonal := newLazyOrthogonalSizes(ctx, node.Style(), wdm, space)
-	minSpace := lineSpace(minAvailable)
+	minSpace := lineSpace(0)
 	minLB := NewLineBreaker(itemsData, ctx, minSpace, fonts, LineBreakerMinContent)
 	minLB.orthogonalSizes = orthogonal
 	var minContent float64
@@ -1501,47 +1485,6 @@ func orthogonalFlowRootContribution(ctx *LayoutContext, node *LayoutInputNode, c
 	}
 	ctx.orthogonalContributions[node] = orthogonalContribution{key, contribution}
 	return contribution
-}
-
-// nodeIsNoWrap reports whether an inline-formatting-context node's content
-// should be treated as un-soft-wrappable. Checks the container's style for
-// `white-space: nowrap | pre` or `text-wrap: nowrap`, then falls back to
-// the first inline text item's style — mirroring the same heuristic
-// InlineLayoutAlgorithm.Layout uses to decide between
-// `lineAvailableWidth = contentInlineSize` vs `1e9`.
-//
-// Used by measureInlineMinMax so the intrinsic min-content for nowrap text
-// equals its max-content (CSS Sizing 3 §3.1: a run with no soft wrap
-// opportunities has min-content = max-content). Without this, min mode
-// would greedily break at every word boundary, producing "longest single
-// word" as min-content — a wrong measurement that distorts shrink-to-fit
-// for nowrap abspos/inline-block boxes.
-func nodeIsNoWrap(node *LayoutInputNode, itemsData *InlineItemsData) bool {
-	if style := node.Style(); style != nil {
-		ws := style.GetWhiteSpace()
-		if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
-			return true
-		}
-		if style.GetTextWrap() == "nowrap" {
-			return true
-		}
-	}
-	if itemsData == nil {
-		return false
-	}
-	for _, item := range itemsData.Items {
-		if item.Type == InlineItemText && item.Style != nil {
-			ws := item.Style.GetWhiteSpace()
-			if ws == css.WhiteSpaceNowrap || ws == css.WhiteSpacePre {
-				return true
-			}
-			if item.Style.GetTextWrap() == "nowrap" {
-				return true
-			}
-			return false
-		}
-	}
-	return false
 }
 
 // intrinsicContainerBlockGeometry is a container's geometry while it is

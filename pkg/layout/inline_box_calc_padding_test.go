@@ -39,8 +39,8 @@ func TestInlineBoxCalcPercentEdgesInMaxContent(t *testing.T) {
 
 // In layout an inline box's percentage margins and padding resolve against
 // the containing block's inline size (MarginPaddingPercentageResolutionSize),
-// not the line's available width, which a float narrows and
-// white-space:nowrap makes unbounded (ComputeLineMarginsForSelf /
+// not the line's available width, which a float narrows
+// (ComputeLineMarginsForSelf /
 // ComputeLinePadding, length_utils.h:544-589 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b; LOU-771). The padding also counts
 // towards placement.
