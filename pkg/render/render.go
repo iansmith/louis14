@@ -4635,16 +4635,28 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// run with an invalid font ID before that guard would ever fire.
 		return
 	}
+	// advanceTo is the advance of box.Text up to byte offset k.
+	advanceTo := func(k int) float64 {
+		prefix := box.Text[:k]
+		if strings.Contains(prefix, "\t") {
+			return r.measureSegmentAdvanceWithTabs(prefix, box, fontID, layer)
+		}
+		return r.measureSegmentAdvance(prefix, fontID, layer)
+	}
+	// starts[i] is segment i's advance from the fragment start; the last
+	// entry is the fragment's own inline size, where the last segment ends.
+	starts := make([]float64, len(segs)+1)
+	for i, seg := range segs {
+		starts[i] = advanceTo(seg.start)
+	}
+	starts[len(segs)] = box.Width
+	if layer.IsVerticalText {
+		starts[len(segs)] = box.Height
+	}
 	for i, seg := range segs {
 		segBox := *box
 		segBox.Text = box.Text[seg.start:seg.end]
-		prefix := box.Text[:seg.start]
-		var prefixAdvance float64
-		if strings.Contains(prefix, "\t") {
-			prefixAdvance = r.measureSegmentAdvanceWithTabs(prefix, box, fontID, layer)
-		} else {
-			prefixAdvance = r.measureSegmentAdvance(prefix, fontID, layer)
-		}
+		prefixAdvance := starts[i]
 		// The prefix advance offsets this segment along the ADVANCE axis:
 		// physical X for horizontal text, physical Y for vertical text
 		// (drawTextSegment's own IsVerticalText branch advances box.Y by
@@ -4655,10 +4667,14 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// reference pattern). box.Height (not box.Width) carries the
 		// advance-axis extent under any vertical writing mode, per
 		// pkg/layout/writing_mode_converter.go's ToPhysicalSize.
+		// Each segment box spans its own stretch of the fragment's inline
+		// size, the last one to the fragment's end, so what paints across
+		// a fragment's inline size (its decorations) paints each stretch
+		// once.
 		if layer.IsVerticalText {
-			segBox.Y = box.Y + prefixAdvance
+			segBox.Y, segBox.Height = box.Y+prefixAdvance, starts[i+1]-prefixAdvance
 		} else {
-			segBox.X = box.X + prefixAdvance
+			segBox.X, segBox.Width = box.X+prefixAdvance, starts[i+1]-prefixAdvance
 		}
 
 		// measureSegmentAdvance (not the plain measureTextStr) mirrors
@@ -6365,7 +6381,14 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 
 	metrics := r.dc.GetFontMetrics(fontID)
 	descent := float64(metrics.Descent) / 64.0
+	// textWidth measures the text for the skip-spaces trim below; the lines
+	// themselves span the fragment's laid-out inline size (inlineSize),
+	// justification expansion and letter- and word-spacing included, as
+	// TextDecorationPainter::UpdateDecorationInfo passes
+	// decoration_rect.InlineSize() (core/paint/text_decoration_painter.cc:
+	// 86-96 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	textWidth := r.measureTextStr(text, fontID, layer.featureInputs())
+	inlineSize := box.Width
 
 	// CSS Text Decor 4 §"text-decoration-skip-spaces-property": when
 	// `text-decoration-skip-spaces` enables skipping at the start/end of the
@@ -6417,7 +6440,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// TODO: pass the font's underline-thickness metric here once it's
 		// plumbed through textshape.FontMetrics; 0 makes from-font fall back
 		// to auto (which is correct, just lossy).
-		info := newTextDecorationInfo(box, textWidth, layer.FontSize, ascent, descent, 0)
+		info := newTextDecorationInfo(box, inlineSize, layer.FontSize, ascent, descent, 0)
 		// CSS Text Decor 4 §1.1.5 text-decoration-skip-ink: when `auto`
 		// (default), the under/overline is interrupted where it crosses a
 		// glyph's ink bounding box.
@@ -6436,7 +6459,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 		// Blink references on those.
 		glyphs := r.skipInkGlyphs(layer, text, fontID, box.X)
 		for _, td := range layer.AppliedTextDecorations {
-			r.drawOneAppliedTextDecoration(td, info, box, textWidth, skipStartWidth, skipEndWidth, glyphs, onlyLineThrough)
+			r.drawOneAppliedTextDecoration(td, info, box, inlineSize, skipStartWidth, skipEndWidth, glyphs, onlyLineThrough)
 		}
 		return
 	}
@@ -6491,7 +6514,7 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	}
 
 	legacyXStart := box.X + skipStartWidth
-	legacyXEnd := box.X + textWidth - skipEndWidth
+	legacyXEnd := box.X + inlineSize - skipEndWidth
 	if legacyXEnd <= legacyXStart {
 		return
 	}
