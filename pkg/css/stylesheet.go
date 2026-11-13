@@ -2677,8 +2677,7 @@ func hasBalancedBrackets(s string) bool {
 		c := s[i]
 		switch c {
 		case '"', '\'':
-			// A bad string, or one end of input closes, is no
-			// well-formed value here.
+			// Only a closed string is well formed here (see stringEnd).
 			var end stringEnd
 			if i, end = stringTokenEnd(s, i); end != stringClosed {
 				return false
@@ -3434,8 +3433,7 @@ func isValidDeclarationValue(s string) bool {
 		c := s[i]
 		switch c {
 		case '"', '\'':
-			// A bad string, or one end of input closes, is no
-			// well-formed value here.
+			// Only a closed string is well formed here (see stringEnd).
 			var end stringEnd
 			if i, end = stringTokenEnd(s, i); end != stringClosed {
 				return false
@@ -6337,8 +6335,7 @@ func isValidDeclarationValueTokens(s string, topLevel bool) bool {
 		ch := s[i]
 		switch ch {
 		case '"', '\'':
-			// A <bad-string-token>, or a string end of input closes, is
-			// no well-formed value here.
+			// Only a closed string is well formed here (see stringEnd).
 			end, how := stringTokenEnd(s, i)
 			if how != stringClosed {
 				return false
