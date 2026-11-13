@@ -475,7 +475,7 @@ func (fla *FieldsetLayoutAlgorithm) layoutFieldsetContent(content *LayoutInputNo
 		if result.HasBaseline {
 			fla.containerBuilder.SetBaseline(offsetBlock + result.Baseline)
 		}
-		if result.LastBaseline != 0 || result.HasBaseline {
+		if result.HasLastBaseline {
 			fla.containerBuilder.SetLastBaseline(offsetBlock + result.LastBaseline)
 		}
 		if result.UseLastBaselineForInlineBaseline {

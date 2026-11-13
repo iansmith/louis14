@@ -57,8 +57,12 @@ type BoxFragmentBuilder struct {
 	// Mirrors Blink's FragmentBuilder::unpositioned_list_marker_.
 	unpositionedListMarker *UnpositionedListMarker
 
-	// lastBaseline position (last baseline, for inline-block alignment).
-	lastBaseline float64
+	// lastBaseline position (last baseline, for inline-block alignment),
+	// valid when hasLastBaseline. Mirrors Blink's optional
+	// BoxFragmentBuilder::last_baseline_ (box_fragment_builder.h:624-626,
+	// :830 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	lastBaseline    float64
+	hasLastBaseline bool
 
 	// useLastBaselineForInlineBaseline mirrors Blink's
 	// BoxFragmentBuilder::use_last_baseline_for_inline_baseline_. Set
@@ -390,6 +394,13 @@ func (b *BoxFragmentBuilder) Baseline() (float64, bool) {
 // SetLastBaseline sets the last baseline position.
 func (b *BoxFragmentBuilder) SetLastBaseline(v float64) {
 	b.lastBaseline = v
+	b.hasLastBaseline = true
+}
+
+// LastBaseline returns the current last-baseline value and whether it has
+// been set. Mirrors Blink's BoxFragmentBuilder::LastBaseline().
+func (b *BoxFragmentBuilder) LastBaseline() (float64, bool) {
+	return b.lastBaseline, b.hasLastBaseline
 }
 
 // SetUseLastBaselineForInlineBaseline records that this builder's last baseline
@@ -1508,7 +1519,7 @@ func (b *BoxFragmentBuilder) MoveChildrenInBlockDirection(offset float64) {
 	if b.hasBaseline {
 		b.baseline += offset
 	}
-	if b.lastBaseline != 0 {
+	if b.hasLastBaseline {
 		b.lastBaseline += offset
 	}
 	for i := range b.children {
@@ -1678,8 +1689,8 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 	}
 
 	// Layout containment suppresses the box's baselines: parents synthesize
-	// from the border-box edge instead (existing HasBaseline==false /
-	// LastBaseline==0 fallbacks). Table cells are exempt. Mirrors Blink
+	// from the border-box edge instead (HasBaseline / HasLastBaseline stay
+	// false). Table cells are exempt. Mirrors Blink
 	// physical_box_fragment.cc:442 @ ea697c8865fc20dc39c19d49845a184f6d0ab24c:
 	//   const bool allow_baseline =
 	//       !layout_object_->ShouldApplyLayoutContainment() ||
@@ -1717,6 +1728,7 @@ func (b *BoxFragmentBuilder) Build() *LayoutResult {
 		result.Baseline = b.baseline
 		result.HasBaseline = b.hasBaseline
 		result.LastBaseline = b.lastBaseline
+		result.HasLastBaseline = b.hasLastBaseline
 		result.UseLastBaselineForInlineBaseline = b.useLastBaselineForInlineBaseline
 	}
 	if b.hasMinimalSpaceShortage {

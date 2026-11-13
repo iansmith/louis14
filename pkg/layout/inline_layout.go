@@ -105,9 +105,7 @@ func atomicInlineBaseline(r *InlineItemResult, wdm WritingDirectionMode) (float6
 	if r.Item.Style != nil && forceInlineBaselineSynthesis(r.Item.Style, r.Item.Node) {
 		return 0, false
 	}
-	// louis14 tracks no last-baseline presence, so a last baseline of 0
-	// still reads as none (LOU-1018).
-	return res.LastBaseline, res.LastBaseline > 0
+	return res.LastBaseline, res.HasLastBaseline
 }
 
 // atomicInlineAscent returns the distance from an inline-level box's
@@ -335,7 +333,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	startTextOffset int,
 	segment inlineSegment,
 	context *InlineChildLayoutContext,
-) (blockSizeUsed float64, updatedES *ExclusionSpace, firstLineAscent float64, lastBaselineOffset float64, inlineBreakToken *InlineBreakToken) {
+) (blockSizeUsed float64, updatedES *ExclusionSpace, firstBaselineOffset float64, lastBaselineOffset float64, hasLineBaseline bool, inlineBreakToken *InlineBreakToken) {
 	itemsData, baseDir, isPlaintext := bla.prepareInlineItems(wdm)
 	// The node of this inline formatting context's break tokens: the run of
 	// lines, or the block whose children are all inline (louis14 has no
@@ -345,7 +343,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		inlineNode = bla.node
 	}
 	if len(itemsData.Items) == 0 {
-		return segment.blockStart, exclusionSpace, 0, 0, nil
+		return segment.blockStart, exclusionSpace, 0, 0, false, nil
 	}
 
 	// Phase 1d: Map each OOF item to its innermost positioned-inline
@@ -442,7 +440,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		bii, ok := bla.inlineItemsCache.blockInInline[after]
 		startItemIndex = bii.index + 1
 		if !ok || startItemIndex >= len(itemsData.Items) {
-			return segment.blockStart, exclusionSpace, 0, 0, nil
+			return segment.blockStart, exclusionSpace, 0, 0, false, nil
 		}
 	}
 	if (startItemIndex > 0 || startTextOffset > 0) && startItemIndex < len(itemsData.Items) {
@@ -567,7 +565,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// The first formatted line is the first line of the inline formatting
 	// context, never one after a block-in-inline.
 	isFirstLine := after == nil
-	firstLineAscent = -1.0 // -1 means not yet set
+	firstLineAscent := -1.0 // the first line's ascent, for the list marker; -1 means not yet set
 	// Whether an in-flow child placed so far left a breakpoint before the
 	// next line, giving it container separation (Blink
 	// BlockLayoutAlgorithm::has_break_opportunity_before_next_child_,
@@ -1207,9 +1205,20 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			}
 			firstLineAscent = lineAscent + contentPush
 		}
-		// Track the last line's baseline offset from the content area start.
-		// This is the block offset of the line + the line's ascent.
-		lastBaselineOffset = blockOffset + lineAscent
+		// Track the first and last lines' baseline offsets from the content
+		// area start: the block offset of the line + the line's ascent.
+		// Every line box with content gives one, even at 0
+		// (PropagateBaselineFromLineBox, block_layout_algorithm.cc:3700-3730
+		// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b, skips only empty line
+		// boxes). louis14 marks empty line boxes by zero height, so a
+		// zero-height line with content still counts.
+		if !isEmptyLineBox || line.HasContent {
+			if !hasLineBaseline {
+				firstBaselineOffset = blockOffset + lineAscent
+			}
+			lastBaselineOffset = blockOffset + lineAscent
+			hasLineBaseline = true
+		}
 
 		// text-align moves the line box (SetBfcLineOffset,
 		// inline/inline_layout_algorithm.cc:479-486 @
@@ -1300,10 +1309,7 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// out-of-flow content only, the end of the content) are kept.
 	bla.commitLineFloats(context, bfcBlockOrigin, bfcInlineOrigin)
 
-	if firstLineAscent < 0 {
-		firstLineAscent = 0
-	}
-	return blockOffset, exclusionSpace, firstLineAscent, lastBaselineOffset, inlineBreakToken
+	return blockOffset, exclusionSpace, firstBaselineOffset, lastBaselineOffset, hasLineBaseline, inlineBreakToken
 }
 
 // addAnyClearanceAfterLine returns the clearance to add after a line laid

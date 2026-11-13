@@ -198,9 +198,10 @@ type flexItem struct {
 
 	// baseline is the first-line baseline position relative to the item's border-box top.
 	// Use baselineFromCrossStart for baseline alignment.
-	baseline     float64
-	hasBaseline  bool // true if the layout produced a real baseline
-	lastBaseline float64
+	baseline        float64
+	hasBaseline     bool // true if the layout produced a real baseline
+	lastBaseline    float64
+	hasLastBaseline bool // true if the layout produced a real last baseline
 
 	// propagatedOOF holds OOF candidates that the item's layout couldn't resolve
 	// because the item is not a positioned container.
@@ -296,6 +297,15 @@ func (fi *flexItem) outerMainSize() float64 {
 	return fi.resolvedMain + fi.mainBorderPadding() + fi.mainMarginSum()
 }
 
+// applyLayoutResult records the item's layout: its fragment, baselines and
+// the out-of-flow candidates it could not place.
+func (fi *flexItem) applyLayoutResult(r *LayoutResult) {
+	fi.fragment = r.Fragment
+	fi.baseline, fi.hasBaseline = r.Baseline, r.HasBaseline
+	fi.lastBaseline, fi.hasLastBaseline = r.LastBaseline, r.HasLastBaseline
+	fi.propagatedOOF = r.PropagatedOOFCandidates
+}
+
 // outerHypotheticalMainSize returns the margin-box hypothetical size.
 func (fi *flexItem) outerHypotheticalMainSize() float64 {
 	return fi.hypothetical + fi.mainBorderPadding() + fi.mainMarginSum()
@@ -342,7 +352,7 @@ func (fi *flexItem) baselineFromCrossStart(container WritingDirectionMode, isRow
 func (fi *flexItem) ownOrSynthesizedBaseline(wm WritingMode, blockSize float64, central, isLast bool) float64 {
 	if wm == fi.wdm.WM {
 		switch {
-		case isLast && fi.lastBaseline > 0:
+		case isLast && fi.hasLastBaseline:
 			return fi.lastBaseline
 		case fi.hasBaseline || fi.baseline > 0:
 			return fi.baseline
@@ -729,11 +739,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
 				item.resolvedMain, Indefinite, crossIsFixed)
 			result := layoutElement(fla.ctx, item.node, cs)
-			item.fragment = result.Fragment
-			item.baseline = result.Baseline
-			item.hasBaseline = result.HasBaseline
-			item.lastBaseline = result.LastBaseline
-			item.propagatedOOF = result.PropagatedOOFCandidates
+			item.applyLayoutResult(result)
 			lf := NewLogicalFragment(wdm, item.fragment)
 
 			var itemCross float64
@@ -951,11 +957,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 			cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
 				item.resolvedMain, crossContent2, false)
 			result := layoutElement(fla.ctx, item.node, cs)
-			item.fragment = result.Fragment
-			item.baseline = result.Baseline
-			item.hasBaseline = result.HasBaseline
-			item.lastBaseline = result.LastBaseline
-			item.propagatedOOF = result.PropagatedOOFCandidates
+			item.applyLayoutResult(result)
 			lf := NewLogicalFragment(wdm, item.fragment)
 			if isRow {
 				item.crossSize = lf.BlockSize()
@@ -1068,11 +1070,7 @@ func (fla *FlexLayoutAlgorithm) Layout() *LayoutResult {
 					cs := fla.buildItemConstraintSpace(item, wdm, contentInlineSize, isRow,
 						item.resolvedMain, Indefinite, crossIsFixed)
 					result := layoutElement(fla.ctx, item.node, cs)
-					item.fragment = result.Fragment
-					item.baseline = result.Baseline
-					item.hasBaseline = result.HasBaseline
-					item.lastBaseline = result.LastBaseline
-					item.propagatedOOF = result.PropagatedOOFCandidates
+					item.applyLayoutResult(result)
 					lf := NewLogicalFragment(wdm, item.fragment)
 					if isRow {
 						item.crossSize = lf.BlockSize()
@@ -4357,11 +4355,7 @@ func (fla *FlexLayoutAlgorithm) stretchFlexItems(
 					item.resolvedMain, stretchContent, true)
 			}
 			result := layoutElement(fla.ctx, item.node, cs)
-			item.fragment = result.Fragment
-			item.baseline = result.Baseline
-			item.hasBaseline = result.HasBaseline
-			item.lastBaseline = result.LastBaseline
-			item.propagatedOOF = result.PropagatedOOFCandidates
+			item.applyLayoutResult(result)
 			lf := NewLogicalFragment(wdm, item.fragment)
 			if isRow {
 				item.crossSize = lf.BlockSize()

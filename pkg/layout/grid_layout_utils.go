@@ -109,16 +109,16 @@ func (f gridBaselineFragment) blockSize() float64 {
 // baseline is the fragment's first (or last) baseline, or not ok when it
 // has none in this writing mode: a fragment has baselines only in its own
 // writing mode, and a scroll container's are clamped to its block size.
-// Mirrors LogicalBoxFragment::FirstBaseline / LastBaseline. A louis14
-// LayoutResult with a first baseline has a last one; a zero LastBaseline
-// means the first.
+// Mirrors LogicalBoxFragment::FirstBaseline / LastBaseline. Last baselines
+// are read only when a first exists; a result without a last baseline
+// gives its first.
 func (f gridBaselineFragment) baseline(isLast bool) (float64, bool) {
 	r := f.result
 	if r == nil || !f.own || !r.HasBaseline {
 		return 0, false
 	}
 	b := r.Baseline
-	if isLast && r.LastBaseline > 0 {
+	if isLast && r.HasLastBaseline {
 		b = r.LastBaseline
 	}
 	if f.item.node != nil && isScrollContainerBox(f.item.style, f.item.node.DOMNode) {

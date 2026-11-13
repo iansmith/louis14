@@ -11,7 +11,10 @@ import "testing"
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Each case puts #c on a line
 // after an Ahem "X" and a 30px inline-block in wrapper #w; want is #c's
 // offset from #w and #w's size, from Chrome headless. A last baseline of 0
-// still reads as none (LOU-1018).
+// is real too: BoxFragmentBuilder::last_baseline_ is optional
+// (box_fragment_builder.h:620-636), set by every line box with content
+// (block_layout_algorithm.cc:3700-3730 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func TestAtomicInlineBaseline(t *testing.T) {
 	cases := []struct {
 		name, wStyle, child   string
@@ -29,6 +32,10 @@ func TestAtomicInlineBaseline(t *testing.T) {
 			"height:100px;writing-mode:vertical-lr",
 			`<div id="c" style="display:inline-block;writing-mode:vertical-rl;inline-size:40px;block-size:20px">X</div>`,
 			5, 10, 30, 100},
+		{"horizontal inline-block whose only line puts its last baseline at 0",
+			"width:100px",
+			`<div id="c" style="display:inline-block;width:40px;height:20px"><div style="font-size:0;line-height:0">X</div></div>`,
+			10, 30, 100, 50},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
