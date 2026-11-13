@@ -331,14 +331,19 @@ func (r *Renderer) PaintCollapsedBorders(layer *PaintLayer) {
 	}
 }
 
-// tableBoxHasLayer reports whether a table part paints in a layer of its
-// own, standing in for LayoutBoxModelObject::HasLayer: a positioned box or
-// one that creates a stacking context.
+// tableBoxHasLayer reports whether a table part has a paint layer of its
+// own, LayoutBoxModelObject::HasLayer. LayoutBox::LayerTypeRequired gives a
+// stacked box (positioned, or a stacking context, which a hidden backface
+// makes in louis14) a normal layer and a non-replaced box with non-visible
+// overflow an overflow-clip layer (layout/layout_box.cc:556-568 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a table part is never
+// replaced.
 func tableBoxHasLayer(box *layout.Box) bool {
 	if box == nil || box.Style == nil {
 		return false
 	}
-	return (box.Position != css.PositionStatic && box.Position != "") || box.CreatesStackingContext()
+	return (box.Position != css.PositionStatic && box.Position != "") || box.CreatesStackingContext() ||
+		box.HasNonVisibleOverflow()
 }
 
 // clipTableCellBackground clips a collapsed-border cell's box decorations to
