@@ -4679,16 +4679,13 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		} else {
 			segWidth = r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
 		}
-		// selectionBackgroundRectCrossAxis: use the originating element's
-		// own inline background-fragment box's CROSS-axis origin/extent
-		// when one exists, not box's own (always em-box-sized) cross-axis
-		// origin/extent — see that function's doc comment for why these can
-		// differ (selection-contenteditable-011.html's red sliver,
-		// LOU-344). Cross axis = Y/Height for horizontal text, X/Width for
-		// vertical text (box.Width, not box.Height, carries the
-		// cross/block-progression extent under any vertical writing mode —
-		// see this loop's segBox.Y/segBox.X dispatch above).
-		crossOrigin, crossExtent := selectionBackgroundRectCrossAxis(box, layer.IsVerticalText)
+		// selectionRectCrossAxis: Blink's selection rect, the text
+		// fragment united with its line box in the block direction. Cross
+		// axis = Y/Height for horizontal text, X/Width for vertical text
+		// (box.Width, not box.Height, carries the cross/block-progression
+		// extent under any vertical writing mode — see this loop's
+		// segBox.Y/segBox.X dispatch above).
+		crossOrigin, crossExtent := selectionRectCrossAxis(box, layer.IsVerticalText)
 		// Pixel-snap exactly like drawBackground's element-background rect
 		// (pixelSnap, used throughout render.go for backgrounds/borders) so
 		// the per-segment rect lands on the same pixel grid as an
@@ -4824,7 +4821,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 //
 // segBox/segWidth are this segment's own advance-axis box/measured extent;
 // crossOrigin/crossExtent are the cross-axis origin/extent
-// (selectionBackgroundRectCrossAxis's result, shared with the highlight
+// (selectionRectCrossAxis's result, shared with the highlight
 // fill rect); shadows is the segment's own resolved text-shadow list (nil
 // if none); isFirst/isLast mark the first/last segment of the fragment.
 //
@@ -4832,10 +4829,11 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 // past crossOrigin/crossExtent) rather than clipping tightly to it: Blink's
 // own clip derives its cross-axis bound from the fragment's InkOverflowRect
 // (actual rasterized ink bounds, which for an italic ascender/descender
-// legitimately exceeds the CSS em-box), not from the em-box/line-box
-// geometry selectionBackgroundRectCrossAxis computes for sizing the
+// legitimately exceeds the CSS em-box), not from the fragment/line-box
+// geometry selectionRectCrossAxis computes for sizing the
 // highlight FILL rect. This engine has no per-fragment ink-overflow
-// tracking to mirror that exactly; reusing the tight em-box rect here
+// tracking to mirror that exactly; reusing the tight fragment rect here (as
+// observed before LOU-959, when the fill rect was the em box)
 // clipped off genuine ascender antialiasing at the very top of this test's
 // italic glyphs (confirmed empirically: y=74-76 antialiasing pixels
 // disappeared when the cross axis was clipped to crossOrigin/crossExtent).
