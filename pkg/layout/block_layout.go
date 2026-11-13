@@ -1730,7 +1730,15 @@ func (bla *BlockLayoutAlgorithm) Layout() *LayoutResult {
 			// Flex/grid containers that don't set LastBaseline fall back to
 			// Baseline (first baseline): they export content-derived baseline
 			// regardless of overflow per CSS Align §4.3.
-			if !isOrthogonal {
+			// A table gives an inline-block no baseline: Blink skips table
+			// children when computing an inline-block's baseline
+			// (PropagateBaselineFromBlockChild, block_layout_algorithm.cc:
+			// 3740-3745 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), and the
+			// last baseline here doubles as louis14's inline-block baseline.
+			// TODO(LOU-957): Blink skips it only in kInlineBlock mode; this
+			// also drops a trailing table from flex/fieldset last-baseline
+			// alignment, which reads the same LastBaseline.
+			if !isOrthogonal && !child.IsTable() {
 				childLastBL := childResult.LastBaseline
 				if childLastBL == 0 && childStyle != nil {
 					d := childStyle.GetDisplay()
