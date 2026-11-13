@@ -7,6 +7,29 @@ import (
 	"github.com/dop251/goja"
 )
 
+// queryScope is the :scope of a query run on root (SelectorMatches,
+// core/css/selector_query.cc:102-113; CheckPseudoScope,
+// core/css/selector_checker.cc:3650-3660 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): root itself when it is an
+// element, and nil otherwise, whose :scope is the document element. A
+// fragment's descendants are never the document element, so nothing in a
+// fragment matches :scope, as in Blink.
+func queryScope(root *html.Node) *html.Node {
+	if root.Type != html.ElementNode || root.TagName == "document" {
+		return nil
+	}
+	return root
+}
+
+// parsedSelectors parses each selector of a selector list.
+func parsedSelectors(selectorStr string) []css.Selector {
+	var parsed []css.Selector
+	for _, sel := range css.SplitSelectorGroup(selectorStr) {
+		parsed = append(parsed, css.ParseSelector(sel))
+	}
+	return parsed
+}
+
 // registerQuerySelectors adds querySelector/querySelectorAll to a document object.
 func registerQuerySelectors(ctx *domContext, obj *goja.Object, root *html.Node) {
 	obj.Set("querySelector", querySelectorFn(ctx, root))
@@ -19,17 +42,15 @@ func querySelectorFn(ctx *domContext, root *html.Node) func(goja.FunctionCall) g
 		if len(call.Arguments) == 0 {
 			panic(ctx.vm.NewTypeError("Failed to execute 'querySelector': 1 argument required"))
 		}
-		selectorStr := call.Arguments[0].String()
-		selectors := css.SplitSelectorGroup(selectorStr)
+		selectors, scope := parsedSelectors(call.Arguments[0].String()), queryScope(root)
 
 		var result *html.Node
 		walkTree(root, func(n *html.Node) bool {
 			if n == root {
 				return false // skip root itself
 			}
-			for _, sel := range selectors {
-				parsed := css.ParseSelector(sel)
-				if css.MatchesSelector(n, parsed) {
+			for _, parsed := range selectors {
+				if css.MatchesSelectorInScope(n, parsed, scope) {
 					result = n
 					return true // stop
 				}
@@ -50,17 +71,15 @@ func querySelectorAllFn(ctx *domContext, root *html.Node) func(goja.FunctionCall
 		if len(call.Arguments) == 0 {
 			panic(ctx.vm.NewTypeError("Failed to execute 'querySelectorAll': 1 argument required"))
 		}
-		selectorStr := call.Arguments[0].String()
-		selectors := css.SplitSelectorGroup(selectorStr)
+		selectors, scope := parsedSelectors(call.Arguments[0].String()), queryScope(root)
 
 		var results []*html.Node
 		walkTree(root, func(n *html.Node) bool {
 			if n == root {
 				return false
 			}
-			for _, sel := range selectors {
-				parsed := css.ParseSelector(sel)
-				if css.MatchesSelector(n, parsed) {
+			for _, parsed := range selectors {
+				if css.MatchesSelectorInScope(n, parsed, scope) {
 					results = append(results, n)
 					break // don't add same node twice for multiple matching selectors
 				}
@@ -78,11 +97,8 @@ func matchesFn(ctx *domContext, node *html.Node) func(goja.FunctionCall) goja.Va
 		if len(call.Arguments) == 0 {
 			panic(ctx.vm.NewTypeError("Failed to execute 'matches': 1 argument required"))
 		}
-		selectorStr := call.Arguments[0].String()
-		selectors := css.SplitSelectorGroup(selectorStr)
-		for _, sel := range selectors {
-			parsed := css.ParseSelector(sel)
-			if css.MatchesSelector(node, parsed) {
+		for _, parsed := range parsedSelectors(call.Arguments[0].String()) {
+			if css.MatchesSelectorInScope(node, parsed, node) {
 				return ctx.vm.ToValue(true)
 			}
 		}
@@ -96,16 +112,15 @@ func closestFn(ctx *domContext, node *html.Node) func(goja.FunctionCall) goja.Va
 		if len(call.Arguments) == 0 {
 			panic(ctx.vm.NewTypeError("Failed to execute 'closest': 1 argument required"))
 		}
-		selectorStr := call.Arguments[0].String()
-		selectors := css.SplitSelectorGroup(selectorStr)
-
+		selectors := parsedSelectors(call.Arguments[0].String())
 		for current := node; current != nil; current = current.Parent {
 			if current.Type != html.ElementNode || current.TagName == "document" {
 				continue
 			}
-			for _, sel := range selectors {
-				parsed := css.ParseSelector(sel)
-				if css.MatchesSelector(current, parsed) {
+			for _, parsed := range selectors {
+				// :scope is the element closest was called on
+				// (SelectorQuery::Closest, selector_query.cc:128-143).
+				if css.MatchesSelectorInScope(current, parsed, node) {
 					return ctx.elementProxy(current)
 				}
 			}

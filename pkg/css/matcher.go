@@ -55,12 +55,16 @@ type matchContext struct {
 
 // Phase 17: MatchesSelector returns true if the node matches the complex selector
 func MatchesSelector(node *html.Node, selector Selector) bool {
-	return matchesSelectorInScope(node, selector, nil)
+	return MatchesSelectorInScope(node, selector, nil)
 }
 
-// matchesSelectorInScope matches selector against node with :scope as
-// scope (nil: the document, so the root element).
-func matchesSelectorInScope(node *html.Node, selector Selector, scope *html.Node) bool {
+// MatchesSelectorInScope matches selector against node with :scope as
+// scope (nil: the document, so the root element): the scope of Blink's
+// SelectorChecker context, which a selector query sets to the node it runs
+// on (core/css/selector_query.cc:102-113; CheckPseudoScope,
+// core/css/selector_checker.cc:3650-3660 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func MatchesSelectorInScope(node *html.Node, selector Selector, scope *html.Node) bool {
 	return matchesSelectorCtx(node, selector, matchContext{defaultNamespace: selector.defaultNamespace, scope: scope})
 }
 

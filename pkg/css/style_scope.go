@@ -393,7 +393,7 @@ func elementIsScopingLimit(scope *StyleScope, a styleScopeActivation, element *h
 // :scope as root.
 func matchesWithScope(element *html.Node, selectors []Selector, root *html.Node) bool {
 	return slices.ContainsFunc(selectors, func(sel Selector) bool {
-		return matchesSelectorInScope(element, sel, root)
+		return MatchesSelectorInScope(element, sel, root)
 	})
 }
 
@@ -422,7 +422,7 @@ func matchRule(node *html.Node, rule *Rule, frame *styleScopeFrame) (Rule, bool)
 	}
 	activations := ensureActivations(node, rule.Scope, frame)
 	for i := len(activations) - 1; i >= 0; i-- {
-		if matchesSelectorInScope(node, rule.Selector, activations[i].root) {
+		if MatchesSelectorInScope(node, rule.Selector, activations[i].root) {
 			matched := *rule
 			matched.proximity = activations[i].proximity
 			return matched, true
