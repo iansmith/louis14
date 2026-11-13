@@ -697,8 +697,8 @@ func ComputeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 // times. A nil clock samples every animation at local time 0 and leaves the
 // records alone, for probes that are not the element's style recalc.
 //
-// frame is node's styleScopeFrame during the document's cascade pass, nil
-// for a probe.
+// frame is node's styleScopeFrame during the document's cascade pass (the
+// style keeps it as scopeFrame), nil for a probe.
 func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, ctx *ParserContext, clock *html.AnimationClock, parent *Style, frame *styleScopeFrame) *Style {
 	finalStyle := NewStyle()
 
@@ -1614,6 +1614,11 @@ func ComputeHighlightPseudoElementStyle(node *html.Node, pseudoElement string, s
 
 func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheets []*Stylesheet, viewportWidth, viewportHeight float64, highlightParent *Style, parentStyles ...*Style) *Style {
 	finalStyle := NewStyle()
+	// Match within the originating element's frame (Style.scopeFrame).
+	var frame *styleScopeFrame
+	if len(parentStyles) > 0 {
+		frame = parentStyles[0].scopeFrameOf(node)
+	}
 
 	if highlightParent != nil {
 		seedHighlightInheritance(finalStyle, highlightParent, parentStyles)
@@ -1676,18 +1681,24 @@ func computePseudoElementStyle(node *html.Node, pseudoElement string, stylesheet
 				if actualPseudo == pseudoElement {
 					// For descendant pseudo-elements, check if the node is a descendant of a matching element
 					// (not the matching element itself)
-					ancestor := node.Parent
+					ancestor, ancestorFrame := node.Parent, frame.ancestorFrame(node.Parent)
 					for ancestor != nil {
-						if matched, ok := matchRule(ancestor, &rule, nil); ok {
+						if ancestorFrame != nil && ancestorFrame.element != ancestor {
+							ancestorFrame = nil // off the frame chain (a non-element parent)
+						}
+						if matched, ok := matchRule(ancestor, &rule, ancestorFrame); ok {
 							allRules = append(allRules, matched)
 							break
 						}
 						ancestor = ancestor.Parent
+						if ancestorFrame != nil {
+							ancestorFrame = ancestorFrame.parent // checked against ancestor above
+						}
 					}
 				}
 			} else if rulePseudo == pseudoElement {
 				// Direct pseudo-element match
-				if matched, ok := matchRule(node, &rule, nil); ok {
+				if matched, ok := matchRule(node, &rule, frame); ok {
 					allRules = append(allRules, matched)
 				}
 			}
@@ -3332,6 +3343,7 @@ func applyStylesToNode(node *html.Node, stylesheets []*Stylesheet, styles map[*h
 		frame = newStyleScopeFrame(node, frame)
 		style := computeStyle(node, stylesheets, viewportWidth, viewportHeight, ctx, clock, styles[node.Parent], frame)
 		style.fontSelector = fs
+		style.scopeFrame = frame
 		resolveInheritValues(node, style, styles)
 		ApplyInheritedProperties(node, style, styles)
 		resolveComputedTimeDeclarations(node, style, styles)

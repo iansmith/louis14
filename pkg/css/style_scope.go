@@ -3,6 +3,7 @@ package css
 import (
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"louis14/pkg/html"
 )
@@ -175,10 +176,12 @@ var defaultActivations = []styleScopeActivation{{proximity: unscopedProximity}}
 
 // styleScopeFrame mirrors Blink's StyleScopeFrame
 // (core/css/style_scope_frame.h @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
-// the activations of each scope for one element during one cascade pass,
-// chained to the parent element's frame so CalculateActivations reuses the
-// parent's results instead of walking to the root again. A nil frame
-// caches nothing (a style computed outside the cascade pass).
+// the activations of each scope for one element, computed in one cascade
+// pass and chained to the parent element's frame so CalculateActivations
+// reuses the parent's results instead of walking to the root again. It is
+// a pure cache, valid while the DOM is the one that pass styled: the
+// element's Style keeps it (Style.scopeFrame) for its pseudo-elements'
+// matching after the pass. A nil frame caches nothing.
 type styleScopeFrame struct {
 	element *html.Node
 	parent  *styleScopeFrame
@@ -190,13 +193,16 @@ func newStyleScopeFrame(element *html.Node, parent *styleScopeFrame) *styleScope
 	return &styleScopeFrame{element: element, parent: parent}
 }
 
-// parentFrameFor is the frame of parent, f's element's parent element,
-// when the chain has it (StyleScopeFrame::GetParentFrameOrNull).
-func (f *styleScopeFrame) parentFrameFor(parent *html.Node) *styleScopeFrame {
-	if f == nil || f.parent == nil || f.parent.element != parent {
-		return nil
+// ancestorFrame is ancestor's frame on f's chain, nil when the chain does
+// not reach it (for f's element's parent, StyleScopeFrame::
+// GetParentFrameOrNull).
+func (f *styleScopeFrame) ancestorFrame(ancestor *html.Node) *styleScopeFrame {
+	for ; f != nil; f = f.parent {
+		if f.element == ancestor {
+			return f
+		}
 	}
-	return f.parent
+	return nil
 }
 
 // ensureActivations mirrors SelectorChecker::EnsureActivations
@@ -248,8 +254,14 @@ func (f *styleScopeFrame) store(scope *StyleScope, activations []styleScopeActiv
 	f.data[scope] = activations
 }
 
+// activationsComputed counts computeActivations calls (cache misses), so a
+// test can check the frame cache keeps scoped matching linear in the tree
+// size. No Blink analog: test instrumentation, as layoutAlgorithmRuns is.
+var activationsComputed atomic.Int64
+
 // computeActivations is calculateActivations without the cache.
 func computeActivations(element *html.Node, scope *StyleScope, outer []styleScopeActivation, frame *styleScopeFrame) []styleScopeActivation {
+	activationsComputed.Add(1)
 	if len(outer) == 0 {
 		return nil
 	}
@@ -258,7 +270,7 @@ func computeActivations(element *html.Node, scope *StyleScope, outer []styleScop
 	// activation's root (ActivationCeiling, selector_checker.cc:3896-3905).
 	if element != outer[0].root {
 		if parent := parentElement(element); parent != nil {
-			for _, a := range calculateActivations(parent, scope, outer, frame.parentFrameFor(parent)) {
+			for _, a := range calculateActivations(parent, scope, outer, frame.ancestorFrame(parent)) {
 				if !elementIsScopingLimit(scope, a, element) {
 					activations = append(activations, styleScopeActivation{a.root, a.proximity + 1})
 				}
@@ -412,7 +424,8 @@ func parentElement(element *html.Node) *html.Node {
 // the selector is matched against each activation's root, the most
 // proximate first, and the first match sets the proximity.
 //
-// frame is node's styleScopeFrame during the cascade pass, nil elsewhere.
+// frame is node's styleScopeFrame (the cascade pass's, or the one its Style
+// keeps for pseudo-element matching), or nil.
 func matchRule(node *html.Node, rule *Rule, frame *styleScopeFrame) (Rule, bool) {
 	if rule.Scope == nil {
 		if !MatchesSelector(node, rule.Selector) {
