@@ -63,7 +63,10 @@ type tableRow struct {
 type tableColWidth struct {
 	colIndex int
 	span     int     // number of columns covered
-	width    float64 // resolved width in pixels (0 = not set)
+	width    float64 // resolved width in pixels, when hasWidth
+	// hasWidth: the width is a fixed length, 0 included (a zero-width
+	// column is constrained, InlineSizesFromStyle).
+	hasWidth bool
 	minWidth float64 // resolved min-width in pixels; hasMin false means the value was absent, auto, or a percentage/calc-% (which GetLength rejects)
 	hasMin   bool    // true if min-width is a concrete px length
 	maxWidth float64 // resolved max-width in pixels; hasMax false means the value was absent, auto, or a percentage/calc-% (which GetLength rejects)
@@ -79,9 +82,9 @@ type tableColWidth struct {
 // col/colgroup computed style. Returns the populated spec and true if any
 // concrete constraint is present; (zero, false) otherwise.
 func extractColWidthSpec(style *css.Style, colIndex, span int) (tableColWidth, bool) {
-	w, okWidth := style.GetLength("width")
-	mw, okMin := style.GetLength("min-width")
-	xw, okMax := style.GetLength("max-width")
+	w, okWidth := cellFixedLength(style, "width")
+	mw, okMin := cellFixedLength(style, "min-width")
+	xw, okMax := cellFixedLength(style, "max-width")
 	// A percentage width, read as a cell's is (TableTypes::CreateColumn →
 	// InlineSizesFromStyle, table/table_layout_algorithm_types.cc:24-75,
 	// :86-115 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b); a 0% one is
@@ -89,14 +92,15 @@ func extractColWidthSpec(style *css.Style, colIndex, span int) (tableColWidth, b
 	// Horizontal, as the lengths above are read physically.
 	pct, okPct := cellPercentageInlineSize(style, WritingDirectionMode{})
 	okPct = okPct && pct != 0
-	// Include a spec when ANY of width>0, okMin, okMax or a percentage holds
+	// Include a spec when ANY of a width, okMin, okMax or a percentage holds
 	// — a min-width-only col must still produce a spec
 	// (col-definite-min-size row 1).
-	if (okWidth && w > 0) || okMin || okMax || okPct {
+	if okWidth || okMin || okMax || okPct {
 		return tableColWidth{
 			colIndex:   colIndex,
 			span:       span,
 			width:      w,
+			hasWidth:   okWidth,
 			minWidth:   mw,
 			hasMin:     okMin,
 			maxWidth:   xw,
@@ -243,7 +247,7 @@ func (tla *TableLayoutAlgorithm) Layout() *LayoutResult {
 	// Track which columns have explicit col/colgroup widths (used for orthogonal cell row height).
 	colHasExplicit := make([]bool, numCols)
 	for _, cws := range colWidthSpecs {
-		if !(cws.width > 0 || cws.hasMin || cws.hasMax) {
+		if !(cws.hasWidth || cws.hasMin || cws.hasMax) {
 			continue // a percentage alone gives no length
 		}
 		for s := 0; s < cws.span; s++ {
@@ -1661,10 +1665,10 @@ func cellExplicitInlineSize(cell tableCell, tableWD WritingDirectionMode) (float
 	if cell.style == nil {
 		return 0, false
 	}
-	if w, ok := cellFixedLength(cell.style, logicalInlineSizeProperty(tableWD)); ok && w > 0 {
-		return w, true
-	}
-	return 0, false
+	// A width of 0 is a specified width too (InlineSizesFromStyle,
+	// table/table_layout_algorithm_types.cc:24-75 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	return cellFixedLength(cell.style, logicalInlineSizeProperty(tableWD))
 }
 
 // cellFixedLength returns a cell's prop when it is a fixed length (Blink's
@@ -1755,7 +1759,7 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 					eff = cws.minWidth
 				}
 			}
-			// Fold eff into colMin/colMax exactly as cws.width was (only raise).
+			// Fold eff into colMin/colMax (only raise).
 			if eff > colMin[ci] {
 				colMin[ci] = eff
 			}
@@ -1763,9 +1767,9 @@ func (tla *TableLayoutAlgorithm) computeColumnConstraints(rows []tableRow, numCo
 				colMax[ci] = eff
 			}
 			// Set colConstrained only when the column has an effective constraint:
-			// width>0 OR hasMin (a min-raised column is constrained).
-			// A column with hasMax only and width==0 stays unconstrained (max-width alone is inert).
-			if cws.width > 0 || cws.hasMin {
+			// a width (0 included) OR hasMin (a min-raised column is constrained).
+			// A column with hasMax only and no width stays unconstrained (max-width alone is inert).
+			if cws.hasWidth || cws.hasMin {
 				colConstrained[ci] = true
 				colConstrainedByCol[ci] = true
 			}
