@@ -291,7 +291,6 @@ var cssProperties = append([]cssProperty{
 	{"list-style", false, []string{"list-style-position", "list-style-image", "list-style-type"}},                                                // :9765
 	{"contain-intrinsic-size", false, []string{"contain-intrinsic-width", "contain-intrinsic-height"}},                                           // :9355
 	{"gap", false, []string{"row-gap", "column-gap"}},                                                                                            // :9705
-	{"grid-gap", false, []string{"row-gap", "column-gap"}},                                                                                       // gap's alias
 	{"place-items", false, []string{"align-items", "justify-items"}},                                                                             // :9694
 	{"place-content", false, []string{"align-content", "justify-content"}},                                                                       // :9689
 	{"place-self", false, []string{"align-self", "justify-self"}},                                                                                // :9699

@@ -109,7 +109,7 @@ var (
 		"border-width": true, "border-style": true, "border-color": true,
 	}
 	isTwoValueShorthand = map[string]bool{
-		"gap": true, "grid-gap": true, "inset-block": true, "inset-inline": true,
+		"gap": true, "inset-block": true, "inset-inline": true,
 		"margin-block": true, "margin-inline": true, "padding-block": true,
 		"padding-inline": true, "place-content": true, "place-items": true,
 		"place-self": true,
