@@ -19,6 +19,10 @@ func TestFloatNarrowsTheRestOfItsLine(t *testing.T) {
 		{"text after the float wraps", `aaaa ` + float + ` <span id="n">b</span>`, 50, 0, 0, 10},
 		// Text that fits in what the float leaves stays on the line.
 		{"text after the float fits", `aaa ` + float + `<span id="n">b</span>`, 50, 0, 40, 0},
+		// "aaaaa " and the 5ch float are 11ch, but the space collapses
+		// when the line breaks at the float, so it fits in 10ch
+		// (ShouldPushFloatAfterLine's retry without the trailing space).
+		{"trailing space collapses", `<span id="n">aaaaa</span> ` + float, 50, 0, 0, 0},
 		// The 3ch float fits after "xx aa" and leaves 7ch; "bbb" is glued
 		// to "aa" and no longer fits, so the line rewinds to after "xx ",
 		// past the float, whose exclusion is undone; "aa", the float and

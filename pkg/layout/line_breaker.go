@@ -78,6 +78,17 @@ type InlineItemResult struct {
 	// InlineItemResult::RubyColumn
 	// (`core/layout/inline/inline_item_result_ruby_column.h`).
 	RubyColumn *InlineItemResultRubyColumn
+	// PositionedFloat is set on a float the line breaker positioned on this
+	// line, and ExclusionSpaceBeforePositionFloat is the exclusion space
+	// before it, restored when the line rewinds past it. HasUnpositionedFloats
+	// is set on a float pushed after the line, positioned at its block-end.
+	// Mirror InlineItemResult::positioned_float,
+	// exclusion_space_before_position_float and has_unpositioned_floats
+	// (inline/inline_item_result.h @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	PositionedFloat                   bool
+	ExclusionSpaceBeforePositionFloat *ExclusionSpace
+	HasUnpositionedFloats             bool
 	// Style is a per-line style override. When non-nil, it replaces
 	// Item.Style for THIS line only (the underlying InlineItem is shared
 	// across lines and must not be mutated). Set by applyFirstLineStyles
@@ -216,6 +227,10 @@ type LineBreaker struct {
 	// autoWrapAfter[i] is auto_wrap_ once item i is handled: the current
 	// style wraps (see autoWrapAfterItem). Built on first use.
 	autoWrapAfter []bool
+
+	// floatContext positions the floats of the line being broken; nil when
+	// the breaker only sizes (min/max-content).
+	floatContext *inlineFloatContext
 }
 
 // shouldAutoWrap reports whether style lets its lines wrap: Blink's
@@ -302,6 +317,27 @@ func (lb *LineBreaker) autoWrapsAt(offset int) bool {
 		}
 	}
 	return false
+}
+
+// inlineFloatContext is what the line breaker positions its line's floats
+// with: Blink's LineBreaker holds the exclusion space and the line
+// opportunity itself (inline/line_breaker.cc:3673-3890 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); louis14's inline layout owns
+// them, so layoutInlineChildren hands them in as closures.
+type inlineFloatContext struct {
+	// shouldPush is ShouldPushFloatAfterLine for item's float with position
+	// the inline size of the content before it on the line.
+	shouldPush func(item *InlineItem, position float64) bool
+	// position positions item's float at the line's block-start and
+	// returns the exclusion space before it; ok is false when item has no
+	// float to position.
+	position func(item *InlineItem) (before *ExclusionSpace, ok bool)
+	// rewind returns the exclusion space to before, undoing the floats
+	// positioned from item's on.
+	rewind func(before *ExclusionSpace, item *InlineItem)
+	// available is the line's available width in the current exclusion
+	// space (the line opportunity, less text-indent).
+	available func() float64
 }
 
 // measuringStyle returns the style the breaker should measure item with. On
@@ -2038,13 +2074,97 @@ func (lb *LineBreaker) handleAtomicInline(item *InlineItem, line *LineInfo) bool
 	return false
 }
 
-// handleFloat records a float item. Float positioning is handled by the
-// InlineLayoutAlgorithm, not the line breaker.
+// handleFloat records a float item and, when the breaker lays out lines,
+// positions it: unless it is pushed after the line (it does not fit beside
+// the content before it, clearance moves it down, or an earlier float on
+// the line was pushed), it goes into the exclusion space now and the rest
+// of the line breaks against the narrower opportunity. A float with no
+// content before it is never pushed: the line starts beside it. Mirrors
+// LineBreaker::HandleFloat with ShouldPushFloatAfterLine and
+// UpdateLineOpportunity (inline/line_breaker.cc:3673-3857 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 func (lb *LineBreaker) handleFloat(item *InlineItem, line *LineInfo) {
 	line.Results = append(line.Results, InlineItemResult{
 		Item:      item,
 		ItemIndex: lb.currentItemIndex,
 	})
+	if lb.floatContext == nil {
+		return
+	}
+	r := &line.Results[len(line.Results)-1]
+	pushed := false
+	for _, prev := range line.Results[:len(line.Results)-1] {
+		pushed = pushed || prev.HasUnpositionedFloats
+	}
+	// Trailing spaces collapse when the line breaks at the float, so the
+	// float fits if it fits without them (ShouldPushFloatAfterLine's retry,
+	// inline/line_breaker.cc:3687-3696 @
+	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+	position := lb.position - lb.trailingCollapsibleSpaceWidth(line)
+	if pushed || (lb.position > 0 && lb.floatContext.shouldPush(item, position)) {
+		r.HasUnpositionedFloats = true
+		return
+	}
+	before, ok := lb.floatContext.position(item)
+	if !ok {
+		return
+	}
+	r.PositionedFloat = true
+	r.ExclusionSpaceBeforePositionFloat = before
+	lb.availableWidth = lb.floatContext.available()
+}
+
+// trailingCollapsibleSpaceWidth is the width of the collapsible space that
+// ends the line's last text, which would collapse if the line broke here.
+// Mirrors LineBreaker::TrailingCollapsibleSpaceWidth with
+// ComputeTrailingCollapsibleSpaceHelper (inline/line_breaker.cc:2616-2725
+// @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b): the search skips results
+// that hold no text and stops at the last one that does.
+func (lb *LineBreaker) trailingCollapsibleSpaceWidth(line *LineInfo) float64 {
+	for i := len(line.Results) - 1; i >= 0; i-- {
+		r := &line.Results[i]
+		if r.Item.Type != InlineItemText || r.TextEnd <= r.TextStart {
+			if r.Item.Type == InlineItemAtomicInline {
+				return 0
+			}
+			continue
+		}
+		content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+		last, size := utf8.DecodeLastRuneInString(content)
+		if !isCSSCollapsibleSpace(last) || cssPreservesWhitespace(r.Item.Style) {
+			return 0
+		}
+		measureStyle := lb.measuringStyle(r.Item)
+		fontSize, _, _, _, _ := fontPropsFromStyle(measureStyle)
+		fontPath := resolveFontPath(measureStyle, lb.fonts)
+		features := text.GetFontFeatures(measureStyle)
+		letterSpacing, wordSpacing := 0.0, 0.0
+		if measureStyle != nil {
+			letterSpacing = measureStyle.GetLetterSpacing()
+			wordSpacing = measureStyle.GetWordSpacing()
+		}
+		isVertical := lb.isVerticalMeasurement(r.Item.Style)
+		return r.InlineSize - measureTextContent(content[:len(content)-size], fontSize, fontPath, features, letterSpacing, wordSpacing, isVertical)
+	}
+	return 0
+}
+
+// rewindFloats undoes the floats the line breaker positioned among
+// results[end:], before they are removed from the line: the exclusion space
+// returns to before the first of them and the line's available width with
+// it. Mirrors LineBreaker::RewindFloats (inline/line_breaker.cc:3860-3890 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func (lb *LineBreaker) rewindFloats(line *LineInfo, end int) {
+	if lb.floatContext == nil {
+		return
+	}
+	for _, r := range line.Results[end:] {
+		if r.PositionedFloat {
+			lb.floatContext.rewind(r.ExclusionSpaceBeforePositionFloat, r.Item)
+			lb.availableWidth = lb.floatContext.available()
+			return
+		}
+	}
 }
 
 // isNonVisibleInlineItem reports whether an item type represents a non-visible
@@ -2241,6 +2361,7 @@ func (lb *LineBreaker) rewind(line *LineInfo, end int) float64 {
 	}
 	lb.done = false
 	line.IsLastLine = false
+	lb.rewindFloats(line, end)
 	line.Results = line.Results[:end]
 	return removed
 }
@@ -2328,6 +2449,7 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 		}
 		lb.currentItemIndex = r.ItemIndex
 		lb.currentTextOffset = r.TextStart
+		lb.rewindFloats(line, lastTextIdx)
 		line.Results = line.Results[:lastTextIdx]
 	} else {
 		// Trim the item to the content before the OP suffix; the next
@@ -2335,6 +2457,7 @@ func (lb *LineBreaker) retractTrailingOpenPunct(line *LineInfo) {
 		lb.truncateTextResult(r, opWordStart)
 		// Trim line.Results: keep r (now trimmed) but remove anything after it
 		// (non-visible items that will be re-emitted on the next line).
+		lb.rewindFloats(line, lastTextIdx+1)
 		line.Results = line.Results[:lastTextIdx+1]
 	}
 

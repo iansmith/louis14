@@ -482,6 +482,68 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 	// A raised initial letter shifts only the inline formatting context's
 	// first run of lines.
 	blockOffset := segment.blockStart
+	// lineBoundsBFC is the line's inline extent in BFC coordinates at the
+	// current block offset and exclusion space.
+	lineBoundsBFC := func() (start, end float64) {
+		floatStart, floatEnd := exclusionSpace.FindAvailableInlineSize(bfcBlockOrigin+blockOffset, 0, bfcContainerInlineSize)
+		return computeLineBoundsBFC(bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, floatStart, floatEnd)
+	}
+	// lineTextIndent is the text-indent taken off the line being broken.
+	lineTextIndent := 0.0
+	// lineOpportunityWidth is the inline size of the line's layout
+	// opportunity at the current exclusion space (Blink's
+	// LineLayoutOpportunity::AvailableFloatInlineSize, which nowrap does not
+	// widen).
+	lineOpportunityWidth := func() float64 {
+		start, end := lineBoundsBFC()
+		return max(end-start, 0)
+	}
+	lb.floatContext = &inlineFloatContext{
+		shouldPush: func(item *InlineItem, position float64) bool {
+			pf, ok := pendingFloats[item]
+			if !ok {
+				return false
+			}
+			// Not ported: the retry without the trailing collapsible
+			// space, and the block-start edge alignment test (louis14's
+			// exclusion space keeps no LastFloatBlockStart).
+			lineTopBFC := bfcBlockOrigin + blockOffset
+			canFitFloat := position+pf.marginBoxInlineSize <= lineOpportunityWidth()-lineTextIndent
+			clearType := pf.unpositioned.ClearType()
+			isMovedByClearance := clearType != css.ClearNone &&
+				exclusionSpace.ClearanceOffset(clearType, layoutunit.FromFloat64Round(lineTopBFC), wdm).Float64() > lineTopBFC
+			return !canFitFloat || isMovedByClearance
+		},
+		position: func(item *InlineItem) (*ExclusionSpace, bool) {
+			pf, ok := pendingFloats[item]
+			if !ok {
+				return nil, false
+			}
+			before := exclusionSpace
+			exclusionSpace, _ = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
+			lb.space.ExclusionSpace = exclusionSpace
+			delete(pendingFloats, item)
+			return before, true
+		},
+		rewind: func(before *ExclusionSpace, item *InlineItem) {
+			exclusionSpace = before
+			lb.space.ExclusionSpace = before
+			from := floats[item].itemIndex
+			kept := context.lineFloats[:0]
+			for _, f := range context.lineFloats {
+				if f.start.ItemIndex < from {
+					kept = append(kept, f)
+				} else {
+					fi := itemsData.Items[f.start.ItemIndex]
+					pendingFloats[fi] = floats[fi]
+				}
+			}
+			context.lineFloats = kept
+		},
+		available: func() float64 {
+			return max(lineOpportunityWidth()-lineTextIndent, 0)
+		},
+	}
 	if after == nil {
 		blockOffset += initialLetterAdjust
 	}
@@ -594,11 +656,11 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		lineVisualInline := lineAvailableInline
 
 		// Set available width for the line breaker, including text-indent on first line.
-		if isFirstLine && textIndent != 0 {
-			lb.availableWidth = lineAvailableInline - textIndent
-		} else {
-			lb.availableWidth = lineAvailableInline
+		lineTextIndent = 0
+		if isFirstLine {
+			lineTextIndent = textIndent
 		}
+		lb.availableWidth = lineAvailableInline - lineTextIndent
 
 		// CSS Pseudo 4 §3.2: measure the first formatted line with the
 		// ::first-line font so it breaks at the correct character count when
@@ -652,55 +714,48 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			continue
 		}
 
-		// CSS 2.1 §9.5.2: shortened line box push-down.
-		// If this line contains a pending float (not yet placed) followed by
-		// non-float content that won't fit beside the float in the shortened
-		// line box, place the float first at the current block offset, then
-		// push the remaining content down past the float and re-break the
-		// line. Mirrors Blink's LineBreaker::HandleFloat which commits the
-		// float to the exclusion space before testing line-fit for subsequent
-		// content. Only applies when no committed content precedes the float
-		// on the line — retroactively moving already-positioned content is
-		// handled by a separate path.
-		if containerWraps && exclusionSpace != nil && len(pendingFloats) > 0 {
-			lastPendingFloatIdx := -1
-			contentBeforeFloat := false
+		// CSS 2.1 §9.5.2: shortened line box push-down. The line breaker
+		// positioned the floats that start this line (no content before
+		// them) and broke the rest beside them; when even the first piece
+		// of content after them does not fit beside them, the line goes
+		// below the floats and is broken again there. Blink positions such
+		// leading floats before breaking the line and moves the line to the
+		// next layout opportunity (PositionLeadingFloats; the opportunity
+		// loop of InlineLayoutAlgorithm::Layout, inline/
+		// inline_layout_algorithm.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+		if containerWraps && exclusionSpace != nil {
+			firstLeadingFloatIdx, lastLeadingFloatIdx := -1, -1
+		leading:
 			for i, r := range line.Results {
 				switch r.Item.Type {
 				case InlineItemFloat:
-					if _, ok := pendingFloats[r.Item]; ok && !contentBeforeFloat {
-						lastPendingFloatIdx = i
+					if r.PositionedFloat {
+						if firstLeadingFloatIdx < 0 {
+							firstLeadingFloatIdx = i
+						}
+						lastLeadingFloatIdx = i
 					}
 				case InlineItemText:
-					if lastPendingFloatIdx < 0 {
-						content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
-						if strings.TrimFunc(content, isCSSCollapsibleSpace) != "" {
-							contentBeforeFloat = true
-						}
+					content := lb.itemsData.TextContent[r.TextStart:r.TextEnd]
+					if strings.TrimFunc(content, isCSSCollapsibleSpace) != "" {
+						break leading
 					}
 				case InlineItemAtomicInline:
-					if lastPendingFloatIdx < 0 {
-						contentBeforeFloat = true
-					}
+					break leading
 				}
 			}
 
-			if lastPendingFloatIdx >= 0 {
-				pendingFloatInline := 0.0
-				for i := 0; i <= lastPendingFloatIdx; i++ {
-					r := &line.Results[i]
-					if r.Item.Type != InlineItemFloat {
-						continue
-					}
-					if pf, ok := pendingFloats[r.Item]; ok {
-						pendingFloatInline += pf.marginBoxInlineSize
+			if lastLeadingFloatIdx >= 0 && lastLeadingFloatIdx+1 < len(line.Results) {
+				leadingFloatInline := 0.0
+				for _, r := range line.Results[:lastLeadingFloatIdx+1] {
+					if r.PositionedFloat {
+						leadingFloatInline += floats[r.Item].marginBoxInlineSize
 					}
 				}
 
 				contentAfterFloatWidth := 0.0
 				hasContentAfterFloat := false
-				for i := lastPendingFloatIdx + 1; i < len(line.Results); i++ {
-					r := line.Results[i]
+				for _, r := range line.Results[lastLeadingFloatIdx+1:] {
 					if r.Item.Type == InlineItemFloat || r.Item.Type == InlineItemOutOfFlow {
 						continue
 					}
@@ -716,43 +771,26 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					}
 				}
 
-				shortenedAvail := lineAvailableInline - pendingFloatInline
+				shortenedAvail := lineAvailableInline - leadingFloatInline
 				if shortenedAvail < 0 {
 					shortenedAvail = 0
 				}
 
 				if hasContentAfterFloat && contentAfterFloatWidth > shortenedAvail {
-					placedAny := false
-					for i := 0; i <= lastPendingFloatIdx; i++ {
-						r := &line.Results[i]
-						if r.Item.Type != InlineItemFloat {
-							continue
-						}
-						if pf, ok := pendingFloats[r.Item]; ok {
-							var placed bool
-							exclusionSpace, placed = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
-							placedAny = placedAny || placed
-							delete(pendingFloats, r.Item)
-						}
-					}
+					// The content after the leading floats goes back to
+					// the item stream, undoing any float placed among it.
+					lb.rewind(&line, lastLeadingFloatIdx+1)
 
 					// Past the floats placed here; a float that broke
 					// before takes no space in this fragmentainer, so the
 					// line stays where it is (LineBreaker::HandleFloat
 					// returns before UpdateLineOpportunity, inline/
 					// line_breaker.cc:3834-3836 @ a9f50e522efa).
-					if placedAny {
+					if exclusionSpace != line.Results[firstLeadingFloatIdx].ExclusionSpaceBeforePositionFloat {
 						clearedBfc := exclusionSpace.ClearanceOffset(css.ClearBoth, layoutunit.FromFloat64Round(bfcBlockOrigin+blockOffset), wdm).Float64()
 						if clearedBfc > bfcBlockOrigin+blockOffset {
 							blockOffset = clearedBfc - bfcBlockOrigin
 						}
-					}
-
-					lastFloatItemIdx := line.Results[lastPendingFloatIdx].ItemIndex
-					lb.currentItemIndex = lastFloatItemIdx + 1
-					lb.done = false
-					if lb.currentItemIndex < len(itemsData.Items) {
-						lb.currentTextOffset = itemsData.Items[lb.currentItemIndex].StartOffset
 					}
 					continue
 				}
@@ -823,21 +861,10 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 		// Collect out-of-flow candidates from inline items on this line.
 		// Their static position is (current block offset, inline position
 		// computed from the items preceding them on the line).
-		// Also position floats encountered on this line: place them at the
-		// current line's BFC block offset. Mirrors Blink's
-		// LineBreaker::HandleFloat / InlineLayoutAlgorithm::PlaceFloatingObjects
-		// (inline_layout_algorithm.cc:835-917).
+		// The floats on the line were positioned by the line breaker, or
+		// pushed after the line (positioned below, once its height is known).
 		inlinePos := 0.0
 		floatsPlacedOnLine := false
-		// committedBeforeFloat tracks the inline size of non-float content
-		// committed to this line before the current float, used to decide
-		// whether the float is pushed after the line.
-		committedBeforeFloat := 0.0
-		// trackAvail is the line opportunity's inline size, which nowrap does
-		// not widen (Blink's AvailableFloatInlineSize), decremented per placed
-		// float so that subsequent push-after-line checks use the updated
-		// available space.
-		trackAvail := lineVisualInline
 		// floatsAfterLine are the floats pushed after this line, positioned
 		// at its block-end once its height is known.
 		var floatsAfterLine []*pendingFloat
@@ -888,46 +915,15 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 					}{node: r.Item.LayoutNode, isFixed: isFixed, inlineContainer: positionedInlineMap[r.Item]})
 				}
 			} else if r.Item.Type == InlineItemFloat {
-				if pf, ok := pendingFloats[r.Item]; ok {
-					floatInlineSize := pf.marginBoxInlineSize
-					// Push the float after this line when it does not fit
-					// beside the content committed before it, or clearance
-					// would move it down, or an earlier float on the line
-					// was pushed. Mirrors Blink's LineBreaker::
-					// ShouldPushFloatAfterLine and HandleFloat's
-					// HasUnpositionedFloats check (inline/line_breaker.cc:
-					// 3673-3712, :3800-3806 @
-					// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-					// Not ported: the retry without the trailing collapsible
-					// space, and the block-start edge alignment test
-					// (louis14's exclusion space keeps no LastFloatBlockStart).
-					// With nothing before it the float is at the line start,
-					// where pushing it after the line would not move it.
-					if len(floatsAfterLine) > 0 {
-						floatsAfterLine = append(floatsAfterLine, pf)
-						continue
-					}
-					if committedBeforeFloat > 0 {
-						lineTopBFC := bfcBlockOrigin + blockOffset
-						canFitFloat := committedBeforeFloat+floatInlineSize <= trackAvail
-						clearType := pf.unpositioned.ClearType()
-						isMovedByClearance := clearType != css.ClearNone &&
-							exclusionSpace.ClearanceOffset(clearType, layoutunit.FromFloat64Round(lineTopBFC), wdm).Float64() > lineTopBFC
-						if !canFitFloat || isMovedByClearance {
-							floatsAfterLine = append(floatsAfterLine, pf)
-							continue
-						}
-					}
-					exclusionSpace, _ = placeFloat(pf, bfcBlockOrigin+blockOffset, exclusionSpace)
-					delete(pendingFloats, r.Item)
+				// The line breaker positioned the floats that fit
+				// (LineBreaker.handleFloat); those it pushed after the
+				// line are positioned at its block-end below.
+				if r.PositionedFloat {
 					floatsPlacedOnLine = true
-					trackAvail -= floatInlineSize
-					if trackAvail < 0 {
-						trackAvail = 0
-					}
+				} else if pf, ok := pendingFloats[r.Item]; ok && r.HasUnpositionedFloats {
+					floatsAfterLine = append(floatsAfterLine, pf)
 				}
 			} else {
-				committedBeforeFloat += r.InlineSize
 				// Any non-OOF, non-float item placed on the line causes the
 				// line box to grow — a block-level OOF encountered AFTER this
 				// point must capture its static position at the line's block-end.
@@ -935,14 +931,12 @@ func (bla *BlockLayoutAlgorithm) layoutInlineChildren(
 			}
 			inlinePos += r.InlineSize
 		}
-		// After placing inline floats, re-query the exclusion space so text on
-		// the same line is positioned beside the float rather than at inline=0.
-		// Mirrors Blink's InlineLayoutAlgorithm::PlaceFloatingObjects which
-		// updates ConstraintSpaceForLine after committing floats.
+		// The line box goes in the opportunity left once the line's floats
+		// are positioned (the line breaker's final line_opportunity_,
+		// UpdateLineOpportunity, inline/line_breaker.cc:3844-3857 @
+		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 		if floatsPlacedOnLine && exclusionSpace != nil {
-			bfcBlockNow := bfcBlockOrigin + blockOffset
-			newFloatStart, newFloatEnd := exclusionSpace.FindAvailableInlineSize(bfcBlockNow, 0, bfcContainerInlineSize)
-			newStartBFC, newEndBFC := computeLineBoundsBFC(bfcInlineOrigin, contentInlineSize, bfcContainerInlineSize, newFloatStart, newFloatEnd)
+			newStartBFC, newEndBFC := lineBoundsBFC()
 			lineInlineOffset = newStartBFC - bfcInlineOrigin + appliedTextIndent
 			lineAvailableInline = newEndBFC - newStartBFC - appliedTextIndent
 			if lineAvailableInline < 0 {
