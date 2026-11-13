@@ -38,17 +38,43 @@ var uaBidiIsolateTags = map[string]bool{
 // listed elements and on [dir=ltr i], [dir=rtl i], [dir=auto i];
 // isolate-override on every <bdo>; plaintext on textarea and pre with
 // dir=auto. The dir presentational hint covers the rest of dir=auto
-// (applyPresentationalAttributes).
-func applyUABidiRendering(node *html.Node, style *Style) {
-	dir, hasDir := node.GetAttribute("dir")
+// (applyDirPresentationalHint).
+func applyUABidiRendering(node *html.Node, dir dirAttribute, style *Style) {
+	if node.Type != html.ElementNode || node.NamespaceURI() != html.XHTMLNamespaceURI {
+		return
+	}
 	switch {
 	case node.TagName == "bdo":
 		style.Set("unicode-bidi", "isolate-override")
-	case hasDir && toValidDirValue(dir) == "auto" && (node.TagName == "textarea" || node.TagName == "pre"):
+	case dir.value == "auto" && uaSetsDirAutoBidi(node.TagName):
 		style.Set("unicode-bidi", "plaintext")
-	case uaBidiIsolateTags[node.TagName] || hasDir && toValidDirValue(dir) != "":
+	case uaBidiIsolateTags[node.TagName] || dir.value != "":
 		style.Set("unicode-bidi", "isolate")
 	}
+}
+
+// uaSetsDirAutoBidi reports whether html.css's bidi rules, not the dir
+// presentational hint, give tag its unicode-bidi under dir=auto: bdo,
+// textarea and pre ("These three are handled by the UA stylesheet",
+// HTMLElement::CollectStyleForPresentationAttribute,
+// core/html/html_element.cc:428-432 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func uaSetsDirAutoBidi(tag string) bool {
+	return tag == "bdo" || tag == "textarea" || tag == "pre"
+}
+
+// dirAttribute is an element's dir attribute, read once for both the UA bidi
+// rules and the presentational hint: whether it is present, and its valid
+// keyword (toValidDirValue; "" for an invalid value).
+type dirAttribute struct {
+	present bool
+	value   string
+}
+
+// readDirAttr reads node's dir attribute.
+func readDirAttr(node *html.Node) dirAttribute {
+	raw, ok := node.GetAttribute("dir")
+	return dirAttribute{present: ok, value: toValidDirValue(raw)}
 }
 
 // Phase 17: applyUserAgentStyles applies default browser styles based on element type.
@@ -70,8 +96,6 @@ func applyUserAgentStyles(node *html.Node, style *Style) {
 		}
 		return
 	}
-
-	applyUABidiRendering(node, style)
 
 	// CSS 2.1 §15.3: initial value of font-family is UA-dependent.
 	// Browsers default to serif; set on the root element so all descendants
@@ -747,9 +771,12 @@ func computeStyle(node *html.Node, stylesheets []*Stylesheet, viewportWidth, vie
 
 	// Phase 17: Apply user agent (default browser) styles first
 	applyUserAgentStyles(node, finalStyle)
+	dir := readDirAttr(node)
+	applyUABidiRendering(node, dir, finalStyle)
 
 	// Map HTML presentational attributes to CSS (lower priority than stylesheets)
 	applyPresentationalAttributes(node, finalStyle)
+	applyDirPresentationalHint(node, dir, finalStyle)
 
 	// CSS Cascade 3 §8 (`all` shorthand) + CSS Cascade 4 §6.1.2 (`revert`):
 	// `revert` rolls the cascade back to the previous origin's cascaded value.
@@ -3955,49 +3982,6 @@ func applyPresentationalAttributes(node *html.Node, style *Style) {
 		}
 	}
 
-	// dir attribute → direction (HTML presentational hint), and for
-	// dir=auto unicode-bidi; the UA sheet isolates dir=ltr|rtl
-	// (applyUABidiRendering). A valid value matches ASCII
-	// case-insensitively and untrimmed, as IsValidDirAttribute matches it
-	// (core/html/html_element.cc @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	// As a presentational hint, author CSS can override these values.
-	//
-	// dir="auto" is resolved per HTML §3.2.6 "auto directionality" by
-	// scanning descendant text for the first character with a strong
-	// Unicode bidi class (L → ltr; R or AL → rtl). The shared
-	// elementDirectionality helper (matcher.go) implements that walk and
-	// also handles ancestor fallback when no strong character is found,
-	// matching Blink's Element::ResolveAutoDirectionality
-	// (core/dom/element.cc:6416-6507 @
-	// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	if dirAttr, ok := node.GetAttribute("dir"); ok {
-		// Only a valid value counts, matched as :dir() matches it
-		// (toValidDirValue; CollectStyleForPresentationAttribute checks
-		// IsValidDirAttribute, core/html/html_element.cc:424-445 @
-		// a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		dir := toValidDirValue(dirAttr)
-		switch dir {
-		case "rtl":
-			style.Set("direction", "rtl")
-		case "ltr":
-			style.Set("direction", "ltr")
-		case "auto":
-			if elementDirectionality(node) == DirectionRTL {
-				style.Set("direction", "rtl")
-			} else {
-				style.Set("direction", "ltr")
-			}
-		}
-		// dir=auto's unicode-bidi is the hint's, except on the elements
-		// the UA sheet covers (applyUABidiRendering); dir=ltr|rtl's comes
-		// from the UA sheet alone (CollectStyleForPresentationAttribute /
-		// UnicodeBidiAttributeForDirAuto, core/html/html_element.cc:
-		// 295-315, 424-445 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-		if dir == "auto" && node.TagName != "bdo" && node.TagName != "textarea" && node.TagName != "pre" {
-			style.Set("unicode-bidi", unicodeBidiForDirAuto(node))
-		}
-	}
-
 	// SVG presentation attributes per SVG 1.1 §6.4 / SVG 2 §6.4. For
 	// every SVG element these attribute spellings are equivalent to
 	// the matching CSS property — they participate in the cascade as
@@ -4556,4 +4540,51 @@ func unicodeBidiForDirAuto(node *html.Node) string {
 		}
 	}
 	return "isolate"
+}
+
+// applyDirPresentationalHint maps the dir attribute as a presentational
+// hint. On an HTML element (HTMLElement::CollectStyleForPresentationAttribute,
+// core/html/html_element.cc:424-445 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b): ltr|rtl set direction (their
+// isolate comes from the UA rules, applyUABidiRendering); an invalid value
+// sets direction ltr on <body> only; auto sets unicode-bidi
+// (UnicodeBidiAttributeForDirAuto, :295-315) except where the UA rules do
+// (uaSetsDirAutoBidi). On a MathML element only ltr|rtl set direction
+// (MathMLElement::CollectStyleForPresentationAttribute, core/mathml/
+// mathml_element.cc:35-38, 87-91 @ a9f50e52); other namespaces map nothing.
+// As a presentational hint, author CSS overrides it.
+//
+// dir="auto" also sets direction here from the HTML "auto directionality"
+// walk: the first strong character among the descendants (L → ltr; R or
+// AL → rtl), else the ancestors' (elementDirectionality, matcher.go;
+// Element::ResolveAutoDirectionality, core/dom/element.cc:6416-6507 @
+// a9f50e52).
+func applyDirPresentationalHint(node *html.Node, dir dirAttribute, style *Style) {
+	if node.Type != html.ElementNode || !dir.present {
+		return
+	}
+	switch node.NamespaceURI() {
+	case html.XHTMLNamespaceURI:
+		switch dir.value {
+		case "ltr", "rtl":
+			style.Set("direction", dir.value)
+		case "auto":
+			if elementDirectionality(node) == DirectionRTL {
+				style.Set("direction", "rtl")
+			} else {
+				style.Set("direction", "ltr")
+			}
+			if !uaSetsDirAutoBidi(node.TagName) {
+				style.Set("unicode-bidi", unicodeBidiForDirAuto(node))
+			}
+		case "":
+			if node.TagName == "body" {
+				style.Set("direction", "ltr")
+			}
+		}
+	case html.MathMLNamespaceURI:
+		if dir.value == "ltr" || dir.value == "rtl" {
+			style.Set("direction", dir.value)
+		}
+	}
 }
