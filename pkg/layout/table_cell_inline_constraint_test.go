@@ -30,3 +30,15 @@ func TestTableCellWidthBelowContentMinimum(t *testing.T) {
 		})
 	}
 }
+
+// In a fixed-layout table a cell's width is its column's width whatever
+// its content: CreateCellInlineConstraint measures no content minimum and
+// takes the width as the max (table/table_layout_algorithm_types.cc:
+// 172-199 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). A 10px cell holding
+// 20px of content beside a 20px cell fills a 30px table as 10 and 20.
+func TestTableFixedLayoutCellWidthBelowContent(t *testing.T) {
+	html := `<table id="t" style="table-layout:fixed;border-spacing:0;width:30px"><tr>` +
+		`<td id="c0" style="padding:0;width:10px">` + inlineBlock("20px") + `</td>` +
+		`<td id="c1" style="padding:0;width:20px"></td></tr></table>`
+	checkTwoColumnWidths(t, html, 30, 10, 20)
+}
