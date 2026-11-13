@@ -24,13 +24,10 @@ func TestLineHeightNormal_UnitesUsedFontLeading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fr := text.NewFontRegistry()
-	fr.AddUserFontFaceRules(ss.FontFaces, func(url string) ([]byte, error) { return os.ReadFile("../../fonts/" + url) })
-	if fr.Lookup("SpaceOnly", false, false) == "" {
+	fc := text.DefaultFontConfig().WithUserFontFaces(ss.FontFaces, func(url string) ([]byte, error) { return os.ReadFile("../../fonts/" + url) })
+	if fc.Registry.Lookup("SpaceOnly", false, false) == "" {
 		t.Fatal("SpaceOnly did not load")
 	}
-	fc := text.DefaultFontConfig()
-	fc.Registry = fr
 
 	doc, err := html.Parse(`<!doctype html><style>
 body { margin: 0 }

@@ -171,20 +171,11 @@ func createFileCSSFetcher(resolver wptResourceResolver) html.CSSFetcher {
 // buildFontConfig processes @font-face rules from the document and returns an
 // updated FontConfig with a registry, or false if there are no web fonts.
 func buildFontConfig(doc *html.Document, resolver wptResourceResolver) (text.FontConfig, bool) {
-	var allFaces []css.FontFaceRule
-	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
-		allFaces = append(allFaces, stylesheet.FontFaces...)
-	}
-	if len(allFaces) == 0 {
+	faces := css.DocumentFontFaces(doc)
+	if len(faces) == 0 {
 		return text.FontConfig{}, false
 	}
-
-	registry := text.NewFontRegistry()
-	registry.AddUserFontFaceRules(allFaces, resolver.fetch)
-
-	fc := text.DefaultFontConfig()
-	fc.Registry = registry
-	return fc, true
+	return text.DefaultFontConfig().WithUserFontFaces(faces, resolver.fetch), true
 }
 
 // createFileDocumentFetcher creates a DocumentFetcher that loads HTML

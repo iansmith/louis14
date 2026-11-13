@@ -157,6 +157,17 @@ func (fr *FontRegistry) RegisterFontFace(family, srcURL, format, weight, style s
 	return syntheticFontPath(lowerFamily, variant), nil
 }
 
+// WithUserFontFaces returns fc with a new registry holding faces, fetched
+// through fetcher (AddUserFontFaceRules); with no faces it returns fc as is.
+func (fc FontConfig) WithUserFontFaces(faces []css.FontFaceRule, fetcher FontFetcher) FontConfig {
+	if len(faces) == 0 {
+		return fc
+	}
+	fc.Registry = NewFontRegistry()
+	fc.Registry.AddUserFontFaceRules(faces, fetcher)
+	return fc
+}
+
 // AddUserFontFaceRules registers every @font-face rule's face with its
 // descriptors (unicode-range, metric overrides, font-feature-settings).
 // Mirrors StyleEngine::AddUserFontFaceRules (core/css/style_engine.cc:3612-3629

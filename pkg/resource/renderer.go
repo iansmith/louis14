@@ -218,18 +218,10 @@ func (r *Louis14Renderer) registerWebFonts(doc *html.Document) text.FontConfig {
 		return fc
 	}
 
-	// Collect all @font-face rules
-	var allFaces []css.FontFaceRule
-	for _, stylesheet := range css.ParseDocumentStylesheets(doc) {
-		allFaces = append(allFaces, stylesheet.FontFaces...)
-	}
-
-	if len(allFaces) == 0 {
+	faces := css.DocumentFontFaces(doc)
+	if len(faces) == 0 {
 		return fc
 	}
-
-	// Create registry and fetch fonts
-	registry := text.NewFontRegistry()
 	fontFetcher := stdnet.RequestResource(func(uri string) ([]byte, error) {
 		body, _, err := r.fetcher.Fetch(uri)
 		if err != nil {
@@ -237,11 +229,7 @@ func (r *Louis14Renderer) registerWebFonts(doc *html.Document) text.FontConfig {
 		}
 		return body, nil
 	})
-
-	registry.AddUserFontFaceRules(allFaces, fontFetcher)
-
-	fc.Registry = registry
-	return fc
+	return fc.WithUserFontFaces(faces, fontFetcher)
 }
 
 // Render parses the HTML content, performs layout, and renders onto the target image.
