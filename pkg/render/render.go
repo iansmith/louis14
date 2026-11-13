@@ -4635,28 +4635,28 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// run with an invalid font ID before that guard would ever fire.
 		return
 	}
-	// advanceTo is the advance of box.Text up to byte offset k.
-	advanceTo := func(k int) float64 {
-		prefix := box.Text[:k]
-		if strings.Contains(prefix, "\t") {
-			return r.measureSegmentAdvanceWithTabs(prefix, box, fontID, layer)
-		}
-		return r.measureSegmentAdvance(prefix, fontID, layer)
-	}
-	// starts[i] is segment i's advance from the fragment start; the last
-	// entry is the fragment's own inline size, where the last segment ends.
+	// starts[i] is segment i's advance from the fragment start, each the
+	// last one's plus that segment's own advance; the last entry is the
+	// fragment's own inline size, where the last segment ends. A tab's
+	// advance depends on where it sits, so a segment holding one is
+	// measured as the whole prefix up to its end.
 	starts := make([]float64, len(segs)+1)
-	for i, seg := range segs {
-		starts[i] = advanceTo(seg.start)
+	for i, seg := range segs[:len(segs)-1] {
+		if text := box.Text[seg.start:seg.end]; strings.Contains(text, "\t") {
+			starts[i+1] = r.measureSegmentAdvanceWithTabs(box.Text[:seg.end], box, fontID, layer)
+		} else {
+			starts[i+1] = starts[i] + r.measureSegmentAdvance(text, fontID, layer)
+		}
 	}
-	starts[len(segs)] = box.Width
-	if layer.IsVerticalText {
-		starts[len(segs)] = box.Height
-	}
+	starts[len(segs)] = layer.decorationInlineSize()
 	for i, seg := range segs {
 		segBox := *box
 		segBox.Text = box.Text[seg.start:seg.end]
 		prefixAdvance := starts[i]
+		// stretch is this segment's own stretch of the fragment's inline
+		// size, the last one reaching the fragment's end: what paints
+		// across the inline size (decorations) paints each stretch once.
+		stretch := starts[i+1] - prefixAdvance
 		// The prefix advance offsets this segment along the ADVANCE axis:
 		// physical X for horizontal text, physical Y for vertical text
 		// (drawTextSegment's own IsVerticalText branch advances box.Y by
@@ -4666,39 +4666,15 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// drawTextSegment, not Blink's HighlightPainter, is this fix's
 		// reference pattern). box.Height (not box.Width) carries the
 		// advance-axis extent under any vertical writing mode, per
-		// pkg/layout/writing_mode_converter.go's ToPhysicalSize.
-		// Each segment box spans its own stretch of the fragment's inline
-		// size, the last one to the fragment's end, so what paints across
-		// a fragment's inline size (its decorations) paints each stretch
-		// once.
+		// pkg/layout/writing_mode_converter.go's ToPhysicalSize. The box
+		// keeps its size, so the glyph buffers it sizes still hold the
+		// glyphs' tails.
 		if layer.IsVerticalText {
-			segBox.Y, segBox.Height = box.Y+prefixAdvance, starts[i+1]-prefixAdvance
+			segBox.Y = box.Y + prefixAdvance
 		} else {
-			segBox.X, segBox.Width = box.X+prefixAdvance, starts[i+1]-prefixAdvance
+			segBox.X = box.X + prefixAdvance
 		}
 
-		// measureSegmentAdvance (not the plain measureTextStr) mirrors
-		// drawTextSegment's own per-character advance loop under
-		// letter-spacing/word-spacing — plain string measurement ignores
-		// the extra per-character gap drawTextSegment's letter-spacing path
-		// inserts, which under-measured the highlight rect down to isolated
-		// per-glyph boxes instead of one continuous band spanning the
-		// intercharacter spacing too (selection-intercharacter-011/-012's
-		// whole point: the spacing itself must be highlighted, per CSS
-		// Pseudo-4 §highlight-bounds). CSS Text 3 §4.2: a tab character's
-		// highlighted width is its EXPANDED tab-stop span, not its raw glyph
-		// advance — see measureSegmentVisualWidthWithTabs's doc comment
-		// (active-selection-063.html).
-		//
-		// Computed for EVERY segment (not just selected ones) since it also
-		// bounds the per-segment paint clip below (LOU-348), not just the
-		// selected-segment highlight background rect.
-		var segWidth float64
-		if strings.Contains(segBox.Text, "\t") {
-			segWidth = r.measureSegmentVisualWidthWithTabs(&segBox, fontID, layer)
-		} else {
-			segWidth = r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
-		}
 		// selectionRectCrossAxis: Blink's selection rect, the text
 		// fragment united with its line box in the block direction. Cross
 		// axis = Y/Height for horizontal text, X/Width for vertical text
@@ -4706,39 +4682,10 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// extent under any vertical writing mode — see this loop's
 		// segBox.Y/segBox.X dispatch above).
 		crossOrigin, crossExtent := selectionRectCrossAxis(box, layer.IsVerticalText)
-		// Pixel-snap exactly like drawBackground's element-background rect
-		// (pixelSnap, used throughout render.go for backgrounds/borders) so
-		// the per-segment rect lands on the same pixel grid as an
-		// equivalent real background-color box — without this, sub-pixel
-		// rounding differences between this rect and the WPT reference's
-		// actual `background-color` <div> box left a 1px red fringe on two
-		// edges (active-selection-012).
-		//
-		// Under a vertical writing mode the segment's measured advance-axis
-		// extent (segWidth, despite the horizontal-sounding name — it's the
-		// segment's length along whichever axis is "inline" here) becomes
-		// the rect's HEIGHT, and the cross-axis extent becomes its WIDTH,
-		// mirroring drawTextSegment's own physical-axis swap for vertical
-		// text (box.Width=lineHeight/cross, box.Height=textAdvance/inline —
-		// see the sideways branch's "physical box already has
-		// Width=lineHeight, Height=textAdvance" comment a few hundred lines
-		// below).
-		advanceOrigin, advanceExtent := segBox.X, segWidth
-		if layer.IsVerticalText {
-			advanceOrigin = segBox.Y
-		}
-		if seg.selectsSoftLineBreak {
-			advanceOrigin, advanceExtent = r.widenForSoftLineBreak(box, fontID, advanceOrigin, advanceExtent)
-		}
-		var sx, sy, sw, sh float64
-		if layer.IsVerticalText {
-			sx, sy, sw, sh = pixelSnap(crossOrigin, advanceOrigin, crossExtent, advanceExtent)
-		} else {
-			sx, sy, sw, sh = pixelSnap(advanceOrigin, crossOrigin, advanceExtent, crossExtent)
-		}
-
 		segLayer := *layer
 		segLayer.Box = &segBox
+		segLayer.segmentInlineSize, segLayer.hasSegmentInlineSize = stretch, true
+		segLayer.AppliedTextDecorations = rebaseDecoratingBoxes(layer.AppliedTextDecorations, prefixAdvance)
 		if seg.selected {
 			// Background rect behind the selected glyphs, painted BEFORE
 			// the recursive drawTextSegment call so glyphs/decorations
@@ -4747,7 +4694,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 			// PhaseBackground, text in PhaseForeground).
 			if seg.backgroundColor != nil && seg.backgroundColor.A > 0 {
 				r.setColor(*seg.backgroundColor)
-				r.dc.DrawRectangle(sx, sy, sw, sh)
+				r.dc.DrawRectangle(r.selectionBackgroundRect(box, &segBox, seg, fontID, layer, crossOrigin, crossExtent))
 				r.dc.Fill()
 			}
 			if seg.textColor != nil || seg.decorationColor != nil {
@@ -4817,7 +4764,7 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		// span (LOU-348) — see segmentClipRect's doc comment for the full
 		// Blink-mirroring rationale.
 		clipMinX, clipMinY, clipMaxX, clipMaxY := segmentClipRect(
-			segBox, segWidth, crossOrigin, crossExtent, segLayer.TextShadows,
+			segBox, stretch, crossOrigin, crossExtent, segLayer.TextShadows,
 			layer.IsVerticalText, layer.FontSize, i == 0, i == len(segs)-1)
 		r.dc.Push()
 		r.dc.DrawRectangle(clipMinX, clipMinY, clipMaxX-clipMinX, clipMaxY-clipMinY)
@@ -4825,6 +4772,73 @@ func (r *Renderer) drawText(layer *PaintLayer) {
 		r.drawTextSegment(&segLayer)
 		r.dc.Pop()
 	}
+}
+
+// rebaseDecoratingBoxes returns tds with each decorating box's offset
+// measured from a fragment start advance further along, as a selection
+// segment's box starts: the boxes stay where the fragment put them.
+func rebaseDecoratingBoxes(tds []css.AppliedTextDecoration, advance float64) []css.AppliedTextDecoration {
+	if advance == 0 || !slices.ContainsFunc(tds, func(td css.AppliedTextDecoration) bool { return td.HasDecoratingBox }) {
+		return tds
+	}
+	rebased := slices.Clone(tds)
+	for i := range rebased {
+		if rebased[i].HasDecoratingBox {
+			rebased[i].DecoratingBoxOffsetX -= advance
+		}
+	}
+	return rebased
+}
+
+// selectionBackgroundRect is the pixel-snapped ::selection background rect
+// of a selected segment whose box is segBox, cut from the fragment box.
+func (r *Renderer) selectionBackgroundRect(box, segBox *layout.Box, seg selectionSegment, fontID int32, layer *PaintLayer, crossOrigin, crossExtent float64) (sx, sy, sw, sh float64) {
+	// measureSegmentAdvance (not the plain measureTextStr) mirrors
+	// drawTextSegment's own per-character advance loop under
+	// letter-spacing/word-spacing — plain string measurement ignores
+	// the extra per-character gap drawTextSegment's letter-spacing path
+	// inserts, which under-measured the highlight rect down to isolated
+	// per-glyph boxes instead of one continuous band spanning the
+	// intercharacter spacing too (selection-intercharacter-011/-012's
+	// whole point: the spacing itself must be highlighted, per CSS
+	// Pseudo-4 §highlight-bounds). CSS Text 3 §4.2: a tab character's
+	// highlighted width is its EXPANDED tab-stop span, not its raw glyph
+	// advance — see measureSegmentVisualWidthWithTabs's doc comment
+	// (active-selection-063.html).
+	var segWidth float64
+	if strings.Contains(segBox.Text, "\t") {
+		segWidth = r.measureSegmentVisualWidthWithTabs(segBox, fontID, layer)
+	} else {
+		segWidth = r.measureSegmentVisualWidth(segBox.Text, fontID, layer)
+	}
+	// Pixel-snap exactly like drawBackground's element-background rect
+	// (pixelSnap, used throughout render.go for backgrounds/borders) so
+	// the per-segment rect lands on the same pixel grid as an
+	// equivalent real background-color box — without this, sub-pixel
+	// rounding differences between this rect and the WPT reference's
+	// actual `background-color` <div> box left a 1px red fringe on two
+	// edges (active-selection-012).
+	//
+	// Under a vertical writing mode the segment's measured advance-axis
+	// extent (segWidth, despite the horizontal-sounding name — it's the
+	// segment's length along whichever axis is "inline" here) becomes
+	// the rect's HEIGHT, and the cross-axis extent becomes its WIDTH,
+	// mirroring drawTextSegment's own physical-axis swap for vertical
+	// text (box.Width=lineHeight/cross, box.Height=textAdvance/inline —
+	// see drawTextSegment's sideways branch).
+	advanceOrigin, advanceExtent := segBox.X, segWidth
+	if layer.IsVerticalText {
+		advanceOrigin = segBox.Y
+	}
+	if seg.selectsSoftLineBreak {
+		advanceOrigin, advanceExtent = r.widenForSoftLineBreak(box, fontID, advanceOrigin, advanceExtent)
+	}
+	if layer.IsVerticalText {
+		sx, sy, sw, sh = pixelSnap(crossOrigin, advanceOrigin, crossExtent, advanceExtent)
+	} else {
+		sx, sy, sw, sh = pixelSnap(advanceOrigin, crossOrigin, advanceExtent, crossExtent)
+	}
+	return sx, sy, sw, sh
 }
 
 // widenForSoftLineBreak widens a selected segment's background extent
@@ -4863,7 +4877,10 @@ func (r *Renderer) widenForSoftLineBreak(box *layout.Box, fontID int32, origin, 
 // rect and painting solid opaque orange there instead of leaving the
 // transparent segment's (correctly invisible) pixels alone.
 //
-// segBox/segWidth are this segment's own advance-axis box/measured extent;
+// segBox is this segment's box, its advance-axis origin at the segment's
+// start; stretch is the segment's stretch of the fragment's inline size
+// (drawText's starts), so neighbouring segments' clips meet with no gap
+// between them where one's trailing letter- or word-spacing lies;
 // crossOrigin/crossExtent are the cross-axis origin/extent
 // (selectionRectCrossAxis's result, shared with the highlight
 // fill rect); shadows is the segment's own resolved text-shadow list (nil
@@ -4909,12 +4926,12 @@ func (r *Renderer) widenForSoftLineBreak(box *layout.Box, fontID int32, origin, 
 // segment to bleed into, so there is nothing to protect against by
 // clipping it. Confirmed empirically: without this widening, the
 // unselected "∫∫" run's own trailing glyph's top-hook overhang (past
-// segWidth's right edge, the last segment) was clipped away. INTERIOR
+// the last segment's end) was clipped away. INTERIOR
 // boundaries stay tight at shadowPad (0 when this segment has no shadow) —
 // that boundary is exactly where this bug's cross-segment glyph-ink bleed
 // happens and must stay clipped absent a shadow's own wider requirement.
 //
-// The advance-axis origin/extent used below is segBox.X/segWidth — the
+// The advance-axis origin/extent used below is segBox.X/stretch — the
 // SAME raw (non-pixel-snapped) values drawTextStr positions this segment's
 // glyphs from (drawTextStr's own doc comment: "X is passed through
 // fractionally so the rasterizer's subpixel pen carry... produces
@@ -4924,7 +4941,8 @@ func (r *Renderer) widenForSoftLineBreak(box *layout.Box, fontID int32, origin, 
 // a pixel, clipping one extra antialiased fringe pixel at every INTERIOR
 // segment boundary vs. an unclipped reference (highlight-painting-
 // currentcolor-003a's 13-pixel regression, confirmed empirically:
-// switching this from a pixel-snapped rect to segBox.X/segWidth took it to
+// switching this from a pixel-snapped rect to segBox.X and the segment's
+// extent took it to
 // 0 diff pixels with no change to the main LOU-348 target's result).
 //
 // Finally, mazzy's DrawContextImpl.Clip fast-paths an axis-aligned
@@ -4936,7 +4954,7 @@ func (r *Renderer) widenForSoftLineBreak(box *layout.Box, fontID int32, origin, 
 // to clipRect.Max.X=45, dropping pixel 45 itself). Rounding the min corner
 // down and the max corner up guarantees the integer clip rect always
 // CONTAINS the intended fractional span, never truncates into it.
-func segmentClipRect(segBox layout.Box, segWidth, crossOrigin, crossExtent float64, shadows []css.TextShadow, isVerticalText bool, fontSize float64, isFirst, isLast bool) (minX, minY, maxX, maxY float64) {
+func segmentClipRect(segBox layout.Box, stretch, crossOrigin, crossExtent float64, shadows []css.TextShadow, isVerticalText bool, fontSize float64, isFirst, isLast bool) (minX, minY, maxX, maxY float64) {
 	shadowPad := maxTextShadowExtent(shadows)
 	pad := max(fontSize, shadowPad)
 	advStart, advEnd := shadowPad, shadowPad
@@ -4948,9 +4966,9 @@ func segmentClipRect(segBox layout.Box, segWidth, crossOrigin, crossExtent float
 	}
 	var clipX, clipY, clipW, clipH float64
 	if isVerticalText {
-		clipX, clipY, clipW, clipH = crossOrigin-pad, segBox.Y-advStart, crossExtent+2*pad, segWidth+advStart+advEnd
+		clipX, clipY, clipW, clipH = crossOrigin-pad, segBox.Y-advStart, crossExtent+2*pad, stretch+advStart+advEnd
 	} else {
-		clipX, clipY, clipW, clipH = segBox.X-advStart, crossOrigin-pad, segWidth+advStart+advEnd, crossExtent+2*pad
+		clipX, clipY, clipW, clipH = segBox.X-advStart, crossOrigin-pad, stretch+advStart+advEnd, crossExtent+2*pad
 	}
 	return math.Floor(clipX), math.Floor(clipY), math.Ceil(clipX + clipW), math.Ceil(clipY + clipH)
 }
@@ -5291,7 +5309,9 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		// @ SHA 4883d11fef4a8713e32cd582ecef6dc5457c8c3f.
 		metrics := r.dc.GetFontMetrics(fontID)
 		descent := float64(metrics.Descent) / 64.0
-		textWidth := r.measureTextStr(text, fontID, layer.featureInputs())
+		// The decorations span the fragment's inline size, not the ceiled
+		// buffer width ta.
+		decorationInlineSize := layer.decorationInlineSize()
 
 		// A central-baseline (vertical-*, mixed) run's decorations paint
 		// line-relative after the blit instead (drawLineRelativeTextDecoration).
@@ -5344,8 +5364,8 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 		// limited — see the paint block below for the rationale.
 		underBelow := (rotCW && !underToRight) || (!rotCW && underToRight)
 		if hasDecor && len(layer.AppliedTextDecorations) > 0 {
-			virtualBox := &layout.Box{X: 0, Y: 0, Width: float64(ta), Height: float64(lh)}
-			tmpInfo := newVerticalTextDecorationInfo(virtualBox, textWidth, layer.FontSize, ascent, descent, 0, layer.blockUnderDirection())
+			virtualBox := &layout.Box{X: 0, Y: 0, Width: decorationInlineSize, Height: float64(lh)}
+			tmpInfo := newVerticalTextDecorationInfo(virtualBox, decorationInlineSize, layer.FontSize, ascent, descent, 0, layer.blockUnderDirection())
 			for _, td := range layer.AppliedTextDecorations {
 				if !td.Lines.Has(css.TextDecorationLineUnderline) {
 					continue
@@ -5460,11 +5480,11 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 			// virtualBox X = inlineStartExt anchors the inset math so
 			// drawOneAppliedTextDecoration's
 			//   logicalStart = box.X + Inset.InlineStart
-			//   logicalEnd   = box.X + textWidth - Inset.InlineEnd
+			//   logicalEnd   = box.X + inline size - Inset.InlineEnd
 			// lands the painted rect inside the extended buffer
 			// [0, taExt) — and HasDecoratingBox=true branches anchor
-			// at box.X + DecoratingBoxOffsetX, which Stays valid too.
-			virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
+			// at box.X + DecoratingBoxOffsetX, which stays valid too.
+			virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: decorationInlineSize, Height: float64(lhExt)}
 			r.drawTextDecoration(layer, text, virtualBox, fontID, ascent, false)
 			r.dc = origDC
 			// drawTextDecoration mutates r.dc's color (via r.setColor). Since
@@ -5506,7 +5526,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 			if underBelow {
 				// Phase 1 (underline/overline) already ran before glyph drawing.
 				// Phase 2: line-through only, painted after glyphs so it renders over them.
-				virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: float64(ta), Height: float64(lhExt)}
+				virtualBox := &layout.Box{X: float64(inlineStartExt), Y: float64(textOff), Width: decorationInlineSize, Height: float64(lhExt)}
 				r.drawTextDecoration(layer, text, virtualBox, fontID, ascent, true)
 			} else if len(layer.AppliedTextDecorations) > 0 {
 				// Above-text underline path: paint each rect manually with the
@@ -5517,7 +5537,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 				// fragment flags gate inset application at the decorating-
 				// box edges so interior line breaks don't extend at the line
 				// wrap. Mirrors drawOneAppliedTextDecoration's logic.
-				info := newVerticalTextDecorationInfo(&layout.Box{X: 0, Width: float64(ta)}, textWidth, layer.FontSize, ascent, descent, 0, layer.blockUnderDirection())
+				info := newVerticalTextDecorationInfo(&layout.Box{X: 0, Width: decorationInlineSize}, decorationInlineSize, layer.FontSize, ascent, descent, 0, layer.blockUnderDirection())
 				for _, td := range layer.AppliedTextDecorations {
 					if !td.Lines.Has(css.TextDecorationLineUnderline) {
 						continue
@@ -5526,7 +5546,7 @@ func (r *Renderer) drawTextSegment(layer *PaintLayer) {
 					gap := info.computeUnderlineZeroOffset(td.UnderlinePosition)
 					rectTopSrcY := float64(topExt) - gap - th - td.UnderlineOffset
 					xStart := float64(inlineStartExt)
-					xEnd := float64(inlineStartExt + ta)
+					xEnd := float64(inlineStartExt) + decorationInlineSize
 					// Apply RTL inset swap for all sideways RTL text.
 					// Both sideways-rl and sideways-lr RTL have InlineStart
 					// at high buffer X and InlineEnd at low buffer X,
@@ -6381,14 +6401,9 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 
 	metrics := r.dc.GetFontMetrics(fontID)
 	descent := float64(metrics.Descent) / 64.0
-	// textWidth measures the text for the skip-spaces trim below; the lines
-	// themselves span the fragment's laid-out inline size (inlineSize),
-	// justification expansion and letter- and word-spacing included, as
-	// TextDecorationPainter::UpdateDecorationInfo passes
-	// decoration_rect.InlineSize() (core/paint/text_decoration_painter.cc:
-	// 86-96 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
-	textWidth := r.measureTextStr(text, fontID, layer.featureInputs())
-	inlineSize := box.Width
+	// The lines span the fragment's laid-out inline size
+	// (PaintLayer.decorationInlineSize).
+	inlineSize := layer.decorationInlineSize()
 
 	// CSS Text Decor 4 §"text-decoration-skip-spaces-property": when
 	// `text-decoration-skip-spaces` enables skipping at the start/end of the
@@ -6403,35 +6418,34 @@ func (r *Renderer) drawTextDecoration(layer *PaintLayer, text string, box *layou
 	// Inter-word whitespace remains underlined because it's interior to the
 	// run.
 	//
-	// To avoid sub-pixel drift between measuring the prefix in isolation
-	// versus in context (HarfBuzz shaping can produce slightly different
-	// advances), the leading-width is derived as
-	//   textWidth - measure(text-without-leading-ws)
-	// so the prefix's contribution matches the in-context advance exactly.
-	// The trailing-width is computed the same way against the head segment.
+	// The trims are measured the way the inline size is laid out, letter-
+	// and word-spacing included (measureSegmentAdvance), and each is the
+	// whole text's advance less the rest's, so the whitespace's contribution
+	// matches its in-context advance.
 	var skipStartWidth, skipEndWidth float64
 	if box != nil && box.Style != nil && text != "" {
 		skip := box.Style.GetTextDecorationSkipSpaces()
+		// trimmable reports whether part is whitespace to trim at an end
+		// of text, neither empty nor all of it.
+		trimmable := func(part string) bool { return part != "" && part != text }
+		var leading, trailing string
 		if skip.SkipStart {
-			leading := leadingWhitespacePrefix(text)
-			if leading != "" && leading != text {
-				tail := text[len(leading):]
-				tailWidth := r.measureTextStr(tail, fontID, layer.featureInputs())
-				skipStartWidth = textWidth - tailWidth
-				if skipStartWidth < 0 {
-					skipStartWidth = 0
-				}
-			}
+			leading = leadingWhitespacePrefix(text)
 		}
 		if skip.SkipEnd {
-			trailing := trailingWhitespaceSuffix(text)
-			if trailing != "" && trailing != text {
-				head := text[:len(text)-len(trailing)]
-				headWidth := r.measureTextStr(head, fontID, layer.featureInputs())
-				skipEndWidth = textWidth - headWidth
-				if skipEndWidth < 0 {
-					skipEndWidth = 0
-				}
+			trailing = trailingWhitespaceSuffix(text)
+		}
+		if trimmable(leading) || trimmable(trailing) {
+			textAdvance := r.measureSegmentAdvance(text, fontID, layer)
+			// trimOf is the advance of text beyond rest, a part of it.
+			trimOf := func(rest string) float64 {
+				return max(textAdvance-r.measureSegmentAdvance(rest, fontID, layer), 0)
+			}
+			if trimmable(leading) {
+				skipStartWidth = trimOf(text[len(leading):])
+			}
+			if trimmable(trailing) {
+				skipEndWidth = trimOf(text[:len(text)-len(trailing)])
 			}
 		}
 	}
@@ -6579,16 +6593,16 @@ func applyDecorationInset(start, end float64, td css.AppliedTextDecoration, isRT
 // computeDecorationExtent returns the logical (physical-axis) start and end of
 // the decoration line, with text-decoration-inset applied.
 //   - HasDecoratingBox: the extent spans the layout-stamped decorating-box width.
-//   - Bare (single-fragment fallback): the extent spans [boxX, boxX+textWidth].
+//   - Bare (single-fragment fallback): the extent spans [boxX, boxX+inlineSize].
 //
 // Inset adjustment is delegated to applyDecorationInset.
-func computeDecorationExtent(td css.AppliedTextDecoration, isRTL bool, boxX, textWidth float64) (logicalStart, logicalEnd float64) {
+func computeDecorationExtent(td css.AppliedTextDecoration, isRTL bool, boxX, inlineSize float64) (logicalStart, logicalEnd float64) {
 	if td.HasDecoratingBox {
 		logicalStart = boxX + td.DecoratingBoxOffsetX
 		logicalEnd = logicalStart + td.DecoratingBoxWidth
 	} else {
 		logicalStart = boxX
-		logicalEnd = boxX + textWidth
+		logicalEnd = boxX + inlineSize
 	}
 	return applyDecorationInset(logicalStart, logicalEnd, td, isRTL)
 }
@@ -6630,7 +6644,7 @@ func applySkipSpacesTrim(start, end, skipStart, skipEnd float64, hasDecoratingBo
 //	RTL: inline-start = physical RIGHT (IsFirstFragment), inline-end = LEFT  (IsLastFragment)
 //
 // Returns (xStart, xEnd, skip) where skip=true means the extent collapsed.
-func clampDecorationBounds(logicalStart, logicalEnd float64, td css.AppliedTextDecoration, box *layout.Box) (xStart, xEnd float64, skip bool) {
+func clampDecorationBounds(logicalStart, logicalEnd float64, td css.AppliedTextDecoration, box *layout.Box, inlineSize float64) (xStart, xEnd float64, skip bool) {
 	xStart, xEnd = logicalStart, logicalEnd
 	if td.HasDecoratingBox {
 		// first/last track which fragment edge is free from clamping.
@@ -6643,8 +6657,8 @@ func clampDecorationBounds(logicalStart, logicalEnd float64, td css.AppliedTextD
 		if !first && box.X > xStart {
 			xStart = math.Ceil(box.X)
 		}
-		if !last && box.X+box.Width < xEnd {
-			xEnd = box.X + box.Width
+		if !last && box.X+inlineSize < xEnd {
+			xEnd = box.X + inlineSize
 		}
 		if xEnd <= xStart {
 			return xStart, xEnd, true
@@ -6704,7 +6718,7 @@ func appliedDecorationIsRTL(box *layout.Box, td css.AppliedTextDecoration) bool 
 // onlyLineThrough=true:  draw line-through only (called after text glyphs).
 // Mirrors Blink TextPainter::PaintDecorationsExceptLineThrough /
 // PaintDecorationLineThrough split in text_fragment_painter.cc @ 4883d11f.
-func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, textWidth, skipStartWidth, skipEndWidth float64, glyphs []glyphExtent, onlyLineThrough bool) {
+func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, info textDecorationInfo, box *layout.Box, inlineSize, skipStartWidth, skipEndWidth float64, glyphs []glyphExtent, onlyLineThrough bool) {
 	if td.Lines.IsNone() {
 		return
 	}
@@ -6718,7 +6732,7 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// the inset trim applied only at the decorating box's actual logical
 	// edges. HasDecoratingBox=false → LOU-142 single-fragment fallback.
 	isRTL := appliedDecorationIsRTL(box, td)
-	logicalStart, logicalEnd := computeDecorationExtent(td, isRTL, box.X, textWidth)
+	logicalStart, logicalEnd := computeDecorationExtent(td, isRTL, box.X, inlineSize)
 	logicalStart, logicalEnd = applySkipSpacesTrim(
 		logicalStart, logicalEnd, skipStartWidth, skipEndWidth,
 		td.HasDecoratingBox, td.IsFirstFragment, td.IsLastFragment,
@@ -6730,9 +6744,10 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// Clamp at INTERIOR fragment boundaries only. The first fragment's left
 	// edge and the last fragment's right edge are the decorating box's OUTER
 	// edges where a negative text-decoration-inset (= extension) legitimately
-	// overflows the fragment. Clamp uses box.Width (layout-time) to match
-	// the layout-time DecoratingBoxOffsetX / Width values; clamping by paint-
-	// time textWidth would leak sub-pixel drift between adjacent fragments.
+	// overflows the fragment. Clamp uses the inline size (layout-time) to match
+	// the layout-time DecoratingBoxOffsetX / Width values; clamping by a
+	// paint-time measurement would leak sub-pixel drift between adjacent
+	// fragments.
 	//
 	// Interior left edge: ceil to the next integer pixel boundary. When
 	// adjacent fragments share a sub-pixel boundary (e.g. xEnd=467.5 for
@@ -6742,10 +6757,10 @@ func (r *Renderer) drawOneAppliedTextDecoration(td css.AppliedTextDecoration, in
 	// a child element's decoration that was painted on top of the earlier
 	// fragment's decoration at that same pixel. The previous fragment's right
 	// edge already covers the pixel (its coverage is clamped at box.X +
-	// box.Width ≤ xEnd_ceil), so no visual gap is introduced. Blink avoids
+	// inlineSize ≤ xEnd_ceil), so no visual gap is introduced. Blink avoids
 	// this entirely by painting each decorating box's line in one rect rather
 	// than per fragment; ceil is the louis14-specific equivalent.
-	xStart, xEnd, skip := clampDecorationBounds(logicalStart, logicalEnd, td, box)
+	xStart, xEnd, skip := clampDecorationBounds(logicalStart, logicalEnd, td, box, inlineSize)
 	if skip {
 		return
 	}

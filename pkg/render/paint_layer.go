@@ -271,6 +271,12 @@ type PaintLayer struct {
 	// it supersedes the legacy single-decoration fields above.
 	AppliedTextDecorations []css.AppliedTextDecoration
 
+	// segmentInlineSize, when hasSegmentInlineSize is set, is the stretch of
+	// the fragment's inline size a selection segment's decorations span
+	// (drawText); see decorationInlineSize.
+	segmentInlineSize    float64
+	hasSegmentInlineSize bool
+
 	// TextDecorationSkipInk is the resolved text-decoration-skip-ink property
 	// (CSS Text Decor 4 §1.1.5). When auto (the default), the decoration line
 	// is interrupted where it would otherwise cross over a glyph's extent.
@@ -2648,4 +2654,22 @@ func (r *Renderer) textInkOverflowRect(layer *PaintLayer) geometry.PhysicalRect 
 	}
 	return ink.ExpandEdges(layoutunit.FromFloat64Ceil(top), layoutunit.FromFloat64Ceil(right),
 		layoutunit.FromFloat64Ceil(bottom), layoutunit.FromFloat64Ceil(left))
+}
+
+// decorationInlineSize is the inline size this layer's text decorations
+// span: the fragment's laid-out inline size, justification expansion and
+// letter- and word-spacing included, as TextDecorationPainter::
+// UpdateDecorationInfo passes decoration_rect.InlineSize()
+// (core/paint/text_decoration_painter.cc:86-96 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b). That is box.Height under a
+// vertical writing mode (ToPhysicalSize), and a selection segment's own
+// stretch of it when drawText split the fragment.
+func (layer *PaintLayer) decorationInlineSize() float64 {
+	switch {
+	case layer.hasSegmentInlineSize:
+		return layer.segmentInlineSize
+	case layer.IsVerticalText:
+		return layer.Box.Height
+	}
+	return layer.Box.Width
 }
