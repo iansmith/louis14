@@ -37,18 +37,6 @@ func MakeSizeNaturalSizingInfo(naturalSize geometry.SizeF) NaturalSizingInfo {
 // for the consumers that compare scalar ratios).
 func (n NaturalSizingInfo) ratio() float64 { return n.AspectRatio.Width / n.AspectRatio.Height }
 
-// logicalRatio returns the natural aspect ratio as inline / block in wdm, or
-// 0 when there is none (louis14 helper for the scalar-ratio flex consumers).
-func (n NaturalSizingInfo) logicalRatio(wdm WritingDirectionMode) float64 {
-	if n.AspectRatio.IsEmpty() {
-		return 0
-	}
-	if wdm.IsVertical() {
-		return 1.0 / n.ratio()
-	}
-	return n.ratio()
-}
-
 // ResolveWidthForRatioF / ResolveHeightForRatioF mirror the float overloads
 // in natural_sizing_info.h:61-64, :70-73 @
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b.
