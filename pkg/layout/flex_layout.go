@@ -315,7 +315,8 @@ func (fi *flexItem) outerHypotheticalMainSize() float64 {
 // 33-77 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b). Blink measures an
 // item whose baseline writing mode starts at the cross-end from that end
 // (DetermineBaselineGroup's minor group); louis14 flips it to the
-// cross-start instead, which agrees while a line holds one group.
+// cross-start instead, which agrees while a line holds one group
+// (LOU-1020 ports the groups).
 func (fi *flexItem) baselineFromCrossStart(container WritingDirectionMode, isRow, central, isLast bool) float64 {
 	baselineWDM := WritingDirectionMode{WM: DetermineBaselineWritingMode(container, fi.wdm.WM, isRow)}
 	b := fi.ownOrSynthesizedBaseline(baselineWDM.WM, fi.crossSize, central, isLast)
