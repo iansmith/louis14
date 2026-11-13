@@ -1,6 +1,11 @@
 package render
 
-import "testing"
+import (
+	"testing"
+
+	"louis14/pkg/css"
+	"louis14/pkg/layout"
+)
 
 // TestSidewaysEmphasisMarkScreenX pins where a sideways text fragment's
 // emphasis mark buffer lands on screen. Blink paints the text in its
@@ -39,6 +44,31 @@ func TestSidewaysEmphasisMarkScreenX(t *testing.T) {
 	} {
 		if got := g.screenX(tc.clockwise); got != tc.want {
 			t.Errorf("%s: screenX = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestSidewaysEmphasisCentralBaseline: drawSidewaysEmphasisMarks paints
+// both sideways text and mixed vertical text, which sits on the central
+// baseline. The em-height adjustment takes the item's own baseline
+// (style->GetFontBaseline(), core/layout/inline/ruby_utils.cc:920-929 @
+// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), as layout does.
+func TestSidewaysEmphasisCentralBaseline(t *testing.T) {
+	for _, tc := range []struct {
+		decls map[string]string
+		want  bool
+	}{
+		{map[string]string{"writing-mode": "vertical-rl"}, true},
+		{map[string]string{"writing-mode": "vertical-lr"}, true},
+		{map[string]string{"writing-mode": "vertical-rl", "text-orientation": "sideways"}, false},
+		{map[string]string{"writing-mode": "sideways-rl"}, false},
+	} {
+		s := css.NewStyle()
+		for k, v := range tc.decls {
+			s.Set(k, v)
+		}
+		if got := sidewaysEmphasisCentralBaseline(&layout.Box{Style: s}); got != tc.want {
+			t.Errorf("%v: central baseline = %v, want %v", tc.decls, got, tc.want)
 		}
 	}
 }

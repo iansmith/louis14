@@ -1,6 +1,10 @@
 package render
 
-import "math"
+import (
+	"math"
+
+	"louis14/pkg/layout"
+)
 
 // sidewaysEmphasisGeometry is what places a sideways text fragment's
 // emphasis mark buffer: the fragment's physical left edge and width, and
@@ -42,3 +46,7 @@ func (g sidewaysEmphasisGeometry) screenX(clockwise bool) float64 {
 	}
 	return g.boxLeft + rel - g.markAscent
 }
+
+// sidewaysEmphasisCentralBaseline is a stub; see
+// TestSidewaysEmphasisCentralBaseline.
+func sidewaysEmphasisCentralBaseline(box *layout.Box) bool { return false }
