@@ -1094,7 +1094,7 @@ func (r *Renderer) paintLayerWithMask(layer *PaintLayer) {
 				r.dc = saveDC
 				r.target = saveTarget
 
-				refBox := geometry.NewRectF(box.X, box.Y, box.Width, box.Height)
+				refBox := boxRectF(box)
 				maskBuf := r.rasterizeSVGMask(masker, refBox, bw, bh, bx, by)
 				if maskBuf != nil {
 					applySVGMaskToBuffer(freshBuf, maskBuf, masker.MaskType)
@@ -1248,7 +1248,7 @@ func (r *Renderer) prepareLayerFilter(layer *PaintLayer) (lf *layerFilter, paint
 	// (PaintLayer::UpdateFilterReferenceBox, core/paint/paint_layer.cc:
 	// 2021-2044 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
 	paintBounds := r.localBoundingBoxIncludingSelfPaintingDescendants(layer).ToRectF()
-	borderBox := geometry.NewRectF(box.X, box.Y, box.Width, box.Height)
+	borderBox := boxRectF(box)
 	referenceBox := borderBox
 	if layer.hasFilterThatMovesPixels() {
 		referenceBox = paintBounds
@@ -3010,10 +3010,14 @@ func (r *Renderer) buildRoundedRectPath(x, y, w, h float64, radii css.Elliptical
 	buildRoundedRectPathOnDC(r.dc, x, y, w, h, radii)
 }
 
+// roundedCornerKappa places a cubic Bézier's control points for a quarter
+// ellipse: 4*(sqrt(2)-1)/3 of the radius from each end along its tangent.
+const roundedCornerKappa = 0.5522847498
+
 // buildRoundedRectPathOnDC traces an elliptical rounded rectangle path on any DrawContext.
 // This is the single source of truth for rounded-rect path construction.
 func buildRoundedRectPathOnDC(dc pathBuilder, x, y, w, h float64, radii css.EllipticalRadii) {
-	const k = 0.5522847498 // kappa: 4*(sqrt(2)-1)/3
+	const k = roundedCornerKappa
 	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
 
 	dc.MoveTo(x+tl.Rx, y)
@@ -3035,7 +3039,7 @@ func buildRoundedRectPathOnDC(dc pathBuilder, x, y, w, h float64, radii css.Elli
 // buildRoundedRectPathReverseDC traces a rounded rectangle path in reverse (CCW)
 // on any DrawContext. Used with even-odd fill rule to cut out inner regions.
 func buildRoundedRectPathReverseDC(dc pathBuilder, x, y, w, h float64, radii css.EllipticalRadii) {
-	const k = 0.5522847498 // kappa: 4*(sqrt(2)-1)/3
+	const k = roundedCornerKappa
 	tl, tr, br, bl := radii[0], radii[1], radii[2], radii[3]
 	dc.MoveTo(x+tl.Rx, y)
 	// top-left (reverse: CW to CCW)
@@ -4009,18 +4013,31 @@ func (r *Renderer) drawColumnRuleRect(style string, c css.Color, x, y, w, h floa
 // single even-odd ring (outer rect minus inner rect) via fillOutlineSides,
 // which avoids diagonal seam artifacts from per-side painting.
 
-// outlinePaintRect returns the pixel-snapped rect the outline ring is drawn
-// around. For multi-line inline elements, OutlineBox holds the union bounding
-// box of all line fragments for the element; use it when set (w > 0) so the
-// ring encloses the full inline element, not just one line's box. Mirrors
-// Blink's OutlinePainter::PaintOutline collecting all line boxes for a
-// LayoutInline (outline_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+// outlinePaintRect returns the pixel-snapped rect a non-auto outline ring
+// is drawn around: the bounding box of the layer's outline rects, so a
+// multi-line inline's ring encloses all its line fragments. Blink strokes
+// the rects' united contour instead (OutlinePainter::PaintOutline →
+// ComputeRightAnglePath); louis14 does that only for focus rings
+// (drawFocusRing).
 func outlinePaintRect(layer *PaintLayer) (x, y, w, h float64) {
-	if layer.OutlineBox[2] > 0 {
-		return pixelSnap(layer.OutlineBox[0], layer.OutlineBox[1], layer.OutlineBox[2], layer.OutlineBox[3])
+	rects := layer.outlineRects()
+	u := rects[0]
+	for _, r := range rects[1:] {
+		u = u.Union(r)
 	}
-	box := layer.Box
-	return pixelSnap(box.X, box.Y, box.Width, box.Height)
+	return pixelSnap(u.Origin.X, u.Origin.Y, u.Size.Width, u.Size.Height)
+}
+
+// pixelSnappedOutlineRects returns the layer's outline rects pixel-snapped
+// (Blink's per-rect ToPixelSnappedRect in OutlinePainter::PaintOutline).
+func pixelSnappedOutlineRects(layer *PaintLayer) []image.Rectangle {
+	rects := layer.outlineRects()
+	out := make([]image.Rectangle, 0, len(rects))
+	for _, r := range rects {
+		x, y, w, h := pixelSnap(r.Origin.X, r.Origin.Y, r.Size.Width, r.Size.Height)
+		out = append(out, image.Rect(int(x), int(y), int(x+w), int(y+h)))
+	}
+	return out
 }
 
 // Blink's focus ring geometry (core/paint/outline_painter.cc @
@@ -4039,35 +4056,72 @@ const (
 // a9f50e522efa9005e6ec765a9a785c74f5c2c86b; #101010 in a dark one).
 var focusRingOuterColor = css.Color{R: 255, G: 255, B: 255, A: 1}
 
-// drawFocusRing paints outline-style: auto around the single outline rect
-// (x, y, w, h) as Blink's PaintFocusRing / PaintSingleFocusRing do
+// drawFocusRing paints outline-style: auto around the layer's outline rects
+// as Blink's PaintFocusRing / PaintSingleFocusRing do
 // (outline_painter.cc:813-930 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b):
-// the outline rect is outset by the focus ring offset, an outer white ring
-// is stroked one inner-ring width further out, and the inner ring in
-// outline-color is stroked over it, both 2px wide, centred on their rounded
-// rects (DrawPlatformFocusRing, platform/graphics/platform_focus_ring.cc,
-// same SHA). Not ported: dark color schemes (outer #101010, inner white),
-// zoom scaling, native-appearance radii, and multi-rect contours (LOU-969;
-// consolidateInlineOutlines hands this one rect).
-func (r *Renderer) drawFocusRing(layer *PaintLayer, x, y, w, h float64) {
-	offset := focusRingOffset(layer)
+// for each ring, the rects are outset by its offset and united
+// (rightAnglePath); an outer white ring one inner-ring width further out is
+// stroked first, then the inner ring in outline-color over it, both 2px
+// wide and centred on the contour (DrawPlatformFocusRing,
+// platform/graphics/platform_focus_ring.cc, same SHA). A rectangular union
+// is stroked as a rounded rect; otherwise a uniform corner radius rounds
+// the contour's corners with the corner path effect (cornerPathEffect) and
+// non-uniform radii are baked in (addCornerRadiiToPath). Not ported: dark
+// color schemes (outer #101010, inner white), zoom scaling,
+// native-appearance radii, and corner-shape.
+func (r *Renderer) drawFocusRing(layer *PaintLayer) {
+	// Blink drops empty pixel-snapped rects from a focus ring and paints
+	// nothing when none is left (OutlinePainter::PaintOutlineRects,
+	// outline_painter.cc:956-967).
+	rects := slices.DeleteFunc(pixelSnappedOutlineRects(layer), image.Rectangle.Empty)
+	if len(rects) == 0 {
+		return
+	}
+	offset := int(focusRingOffset(layer))
 	radii := focusRingCornerRadii(layer)
 	for _, ring := range []struct {
-		outset float64
+		outset int
 		color  css.Color
 	}{
-		{offset + math.Ceil(focusRingInnerStrokeWidth), focusRingOuterColor},
+		{offset + int(math.Ceil(focusRingInnerStrokeWidth)), focusRingOuterColor},
 		{offset, layer.OutlineColor},
 	} {
-		// AdjustedOutlineOffset (:77-82): a negative offset never shrinks
-		// the ring below half the rect in each direction.
-		ox := math.Max(ring.outset, -math.Floor(w/2))
-		oy := math.Max(ring.outset, -math.Floor(h/2))
+		contours := rightAnglePath(rects, ring.outset)
+		if len(contours) == 0 {
+			continue
+		}
+		switch radius, uniform := uniformRadius(radii); {
+		case len(contours) == 1 && len(contours[0]) == 4:
+			c := contours[0]
+			r.buildRoundedRectPath(float64(c[0].X), float64(c[0].Y), float64(c[2].X-c[0].X), float64(c[2].Y-c[0].Y), radii)
+		case uniform:
+			for _, c := range contours {
+				cornerPathEffect(r.dc, c, radius)
+			}
+		default:
+			for _, c := range contours {
+				addCornerRadiiToPath(r.dc, c, radii)
+			}
+		}
 		r.setColor(ring.color)
 		r.dc.SetLineWidth(focusRingOuterStrokeWidth)
-		r.buildRoundedRectPath(x-ox, y-oy, w+2*ox, h+2*oy, radii)
 		r.dc.Stroke()
 	}
+}
+
+// uniformRadius is FloatRoundedRect::Radii::UniformRadius: the radius when
+// all four corners are the same circle.
+func uniformRadius(radii css.EllipticalRadii) (float64, bool) {
+	c := radii[0]
+	if c.Rx != c.Ry {
+		return 0, false
+	}
+	for _, o := range radii[1:] {
+		if o != c {
+			return 0, false
+		}
+	}
+	return c.Rx, true
 }
 
 // focusRingOffset is Blink's FocusRingOffset (outline_painter.cc:59-74 @
@@ -4101,11 +4155,11 @@ func focusRingCornerRadii(layer *PaintLayer) css.EllipticalRadii {
 }
 
 func (r *Renderer) drawOutline(layer *PaintLayer) {
-	x, y, w, h := outlinePaintRect(layer)
 	if layer.OutlineStyle == "auto" {
-		r.drawFocusRing(layer, x, y, w, h)
+		r.drawFocusRing(layer)
 		return
 	}
+	x, y, w, h := outlinePaintRect(layer)
 
 	width := layer.OutlineWidth
 	offset := layer.OutlineOffset

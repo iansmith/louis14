@@ -179,15 +179,13 @@ type PaintLayer struct {
 	OutlineWidth  float64
 	OutlineColor  css.Color
 	OutlineOffset float64
-	// OutlineBox overrides the Box geometry used by drawOutline when non-zero.
-	// Set by buildPaintSubtree for the first fragment of a multi-line inline
-	// element: the union bounding box of all line fragments for the same
-	// html.Node, so the outline ring encloses the full inline element.
-	// Subsequent fragments of the same element have their outline suppressed
-	// (OutlineStyle set to "none") so only the first fragment draws the ring.
-	// Mirrors Blink's OutlinePainter collecting all line boxes for a
-	// LayoutInline before calling the outline painter.
-	OutlineBox [4]float64 // [x, y, w, h]; used only when OutlineBox[2] > 0
+	// OutlineRects are the rects the outline is drawn around (Blink's outline
+	// rects, LayoutObject::CollectOutlineRects); empty means the layer's own
+	// box. Set on the first fragment of a multi-line inline element to every
+	// line fragment's box (consolidateInlineOutlines), whose other fragments
+	// have their outline suppressed, and widened with in-flow descendants'
+	// boxes for outline-style: auto (expandAutoOutlinesToInkOverflow).
+	OutlineRects []geometry.RectF
 
 	// Text:
 	TextColor  css.Color
@@ -450,18 +448,10 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	// PaintLayerStackingNode::AncestorStackingContext semantics.
 	reparentZOrderByAncestorSC(rootLayer)
 	rootLayer.sortZLists()
-	// Consolidate outline drawing for multi-line inline elements. A split
-	// inline span generates one PaintLayer per line fragment; each fragment
-	// independently calls drawOutline using only its own fragment box, leaving
-	// gaps in the outline ring between lines. This pass:
-	//   1. Finds groups of FlowChild PaintLayers that share the same html.Node
-	//      and have a visible outline.
-	//   2. Computes the union bounding box of all those fragments.
-	//   3. Sets OutlineBox on the first fragment (so drawOutline draws around
-	//      the full element) and suppresses outline on the rest.
-	// Mirrors Blink's OutlinePainter::PaintOutline, which iterates all line
-	// boxes for a LayoutInline before drawing the outline ring
-	// (outline_painter.cc @ 4883d11fef4a8713e32cd582ecef6dc5457c8c3f).
+	// Consolidate outline drawing for multi-line inline elements: the first
+	// fragment carries every fragment's rect (OutlineRects) and the others
+	// paint no outline. Mirrors Blink's OutlinePainter::PaintOutline, which
+	// collects all line boxes for a LayoutInline before drawing.
 	consolidateInlineOutlines(rootLayer)
 	// Focus-ring (outline-style: auto) outlines enclose the ink overflow of
 	// the element's in-flow content, not just its border box. Mirrors Blink
@@ -474,22 +464,37 @@ func BuildPaintTree(root *layout.Box) *PaintLayer {
 	return rootLayer
 }
 
-// expandAutoOutlinesToInkOverflow widens OutlineBox on outline-style:auto
-// layers to the union of the element's box (or existing OutlineBox) and the
-// border boxes of all in-flow descendant fragments. Out-of-flow positioned
-// descendants are excluded — they are not part of the element's ink
-// overflow for focus-ring purposes.
+// boxRectF is b's border box as a RectF.
+func boxRectF(b *layout.Box) geometry.RectF {
+	return geometry.NewRectF(b.X, b.Y, b.Width, b.Height)
+}
+
+// outlineRects returns the layer's outline rects: OutlineRects, or its own
+// box when that is empty.
+func (l *PaintLayer) outlineRects() []geometry.RectF {
+	if len(l.OutlineRects) > 0 {
+		return l.OutlineRects
+	}
+	return []geometry.RectF{boxRectF(l.Box)}
+}
+
+// expandAutoOutlinesToInkOverflow adds the border boxes of all in-flow
+// descendant fragments to an outline-style: auto layer's outline rects.
+// Out-of-flow positioned descendants are excluded — they are not part of
+// the element's ink overflow for focus-ring purposes.
 func expandAutoOutlinesToInkOverflow(l *PaintLayer) {
 	if l == nil {
 		return
 	}
 	if l.OutlineStyle == "auto" && l.OutlineWidth > 0 && l.Box != nil {
-		x0, y0 := l.Box.X, l.Box.Y
-		x1, y1 := x0+l.Box.Width, y0+l.Box.Height
-		if l.OutlineBox[2] > 0 {
-			x0, y0 = l.OutlineBox[0], l.OutlineBox[1]
-			x1, y1 = x0+l.OutlineBox[2], y0+l.OutlineBox[3]
-		}
+		rects := l.outlineRects()
+		// A descendant rect inside the layer's own box leaves the union,
+		// and so the ring, unchanged when outline-offset outsets every
+		// rect alike; skipping it keeps the region small. A negative
+		// offset is clamped per rect (AdjustedOutlineOffset), so there
+		// every rect counts.
+		own := boxRectF(l.Box)
+		pruneContained := l.OutlineOffset >= 0
 		var walk func(b *layout.Box)
 		walk = func(b *layout.Box) {
 			for _, c := range b.Children {
@@ -500,16 +505,15 @@ func expandAutoOutlinesToInkOverflow(l *PaintLayer) {
 					continue
 				}
 				if c.Width > 0 && c.Height > 0 {
-					x0 = min(x0, c.X)
-					y0 = min(y0, c.Y)
-					x1 = max(x1, c.X+c.Width)
-					y1 = max(y1, c.Y+c.Height)
+					if cr := boxRectF(c); !pruneContained || own.Union(cr) != own {
+						rects = append(rects, cr)
+					}
 				}
 				walk(c)
 			}
 		}
 		walk(l.Box)
-		l.OutlineBox = [4]float64{x0, y0, x1 - x0, y1 - y0}
+		l.OutlineRects = rects
 	}
 	for _, list := range [][]*PaintLayer{l.NegativeZ, l.AutoZero, l.PositiveZ, l.FlowChildren, l.FloatChildren} {
 		for _, c := range list {
@@ -706,9 +710,9 @@ func hasUnrootedBackdropFilter(l *PaintLayer) bool {
 // inline elements. A non-atomic inline element (display:inline) that spans
 // multiple lines produces one PaintLayer per line fragment, each with its own
 // outline. Drawn independently, the outlines leave gaps between lines. This
-// pass unions the bounding boxes of all FlowChild layers that share the same
-// html.Node and have a visible outline, stores the union on the first
-// fragment's OutlineBox, and suppresses the outline on all other fragments.
+// pass collects the boxes of all FlowChild layers that share the same
+// html.Node and have a visible outline into the first fragment's
+// OutlineRects, and suppresses the outline on all other fragments.
 //
 // Only FlowChildren are inspected — z-ordered layers are self-painting contexts
 // that manage their own outlines and don't participate in the inline flow.
@@ -749,34 +753,18 @@ func consolidateInlineOutlines(root *PaintLayer) {
 			byNode[n] = append(byNode[n], child)
 		}
 
-		// For each node with 2+ outline fragments, union the boxes and
+		// For each node with 2+ outline fragments, collect the boxes and
 		// suppress outline on all but the first fragment.
 		for _, n := range nodeOrder {
 			layers := byNode[n]
 			if len(layers) < 2 {
 				continue
 			}
-			// Compute the union bounding box.
 			first := layers[0]
-			uX := first.Box.X
-			uY := first.Box.Y
-			uR := first.Box.X + first.Box.Width
-			uB := first.Box.Y + first.Box.Height
-			for _, l := range layers[1:] {
-				if l.Box.X < uX {
-					uX = l.Box.X
-				}
-				if l.Box.Y < uY {
-					uY = l.Box.Y
-				}
-				if r := l.Box.X + l.Box.Width; r > uR {
-					uR = r
-				}
-				if b := l.Box.Y + l.Box.Height; b > uB {
-					uB = b
-				}
+			first.OutlineRects = make([]geometry.RectF, 0, len(layers))
+			for _, l := range layers {
+				first.OutlineRects = append(first.OutlineRects, boxRectF(l.Box))
 			}
-			first.OutlineBox = [4]float64{uX, uY, uR - uX, uB - uY}
 			// Suppress outline on all subsequent fragments.
 			for _, l := range layers[1:] {
 				l.OutlineStyle = "none"
@@ -1743,7 +1731,7 @@ func (g *PaintLayer) addInlineBoxFragment(frag *layout.Box) {
 
 // fragmentRect is a box's border box as an enclosing PhysicalRect.
 func fragmentRect(b *layout.Box) geometry.PhysicalRect {
-	return geometry.PhysicalRectEnclosingRect(geometry.NewRectF(b.X, b.Y, b.Width, b.Height))
+	return geometry.PhysicalRectEnclosingRect(boxRectF(b))
 }
 
 // isLayoutInline reports whether the layer is a non-atomic inline's
