@@ -880,3 +880,27 @@ func TestNthChildOf_PseudoElementBranch(t *testing.T) {
 		}
 	}
 }
+
+// A pseudo-element in :has()'s argument makes the selector invalid: :has()
+// always disallows pseudo-elements and its relative list is not forgiving
+// (CSSSelectorParser::ConsumePseudo kPseudoHas, css_selector_parser.cc:
+// 1728-1737 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so the whole rule,
+// its other selectors included, is dropped. A pseudo-element in :is() keeps
+// the selector valid: that :is() matches nothing (TestMatchesIsWithPseudoElement),
+// and the rule's other selectors still apply.
+func TestPseudoElementInHasInvalidatesRule(t *testing.T) {
+	for _, tc := range []struct{ rule, want string }{
+		{`.t, .t:has(::before) { color: red }`, "green"},
+		{`.t, .t:has(.a, ::before) { color: red }`, "green"},
+		{`.t, .t:has(> ::before) { color: red }`, "green"},
+		{`.t, .t:is(::before) { color: blue }`, "blue"},
+	} {
+		t.Run(tc.rule, func(t *testing.T) {
+			styles := cascadeHTML(t, `<style>.t { color: green } `+tc.rule+`</style>
+			<div class="t" id="t"></div>`, nil)
+			if got := colorOf(t, styles, "t"); got != tc.want {
+				t.Errorf("#t color = %q, want %s", got, tc.want)
+			}
+		})
+	}
+}

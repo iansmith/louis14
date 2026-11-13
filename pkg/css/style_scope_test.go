@@ -430,3 +430,19 @@ func TestScopeBoundaryAllowsColonsInStrings(t *testing.T) {
 		})
 	}
 }
+
+// A pseudo-element nested in a scope limit's :is() or :where() does not
+// drop the rule, as the limit's own pseudo-element does: such a limit is
+// valid and matches nothing (TestMatchesIsWithPseudoElement), so the scope
+// has no effective limit.
+func TestScopeLimitWithNestedPseudoElementApplies(t *testing.T) {
+	for _, prelude := range []string{`(.r) to (.l:is(::before))`, `(.r) to (:where(::after))`} {
+		t.Run(prelude, func(t *testing.T) {
+			styles := cascadeHTML(t, `<style>@scope `+prelude+` { .t { color: green } }</style>
+			<div class="r"><div class="l"><div class="t" id="t"></div></div></div>`, nil)
+			if got := colorOf(t, styles, "t"); got != "green" {
+				t.Errorf("#t color = %q, want green: @scope %s must apply", got, prelude)
+			}
+		})
+	}
+}
