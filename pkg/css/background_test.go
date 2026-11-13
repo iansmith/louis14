@@ -1,6 +1,7 @@
 package css
 
 import (
+	"slices"
 	"testing"
 
 	"louis14/pkg/geometry/layoutunit"
@@ -376,4 +377,33 @@ func resolveFillPositionAxis(l Length, farEdge bool, available float64) float64 
 		v = avail.Sub(v)
 	}
 	return v.Float64()
+}
+
+// A background layer list splits at commas outside parentheses and string
+// tokens: a `)` inside a quoted url() is string text, not the url's end
+// (CSSTokenizer::ConsumeStringTokenUntil, core/css/parser/css_tokenizer.cc:
+// 393-435 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b), so it does not merge
+// the layers after it.
+func TestBackgroundLayersSplitOutsideStrings(t *testing.T) {
+	s := NewStyle()
+	s.Set("background-image", `url("a).png"), url(b.png)`)
+	var urls []string
+	for l := s.GetBackgroundLayers(); l != nil; l = l.Next {
+		if l.Image != nil {
+			urls = append(urls, l.Image.Data.Relative)
+		}
+	}
+	if want := []string{"a).png", "b.png"}; !slices.Equal(urls, want) {
+		t.Errorf("layer images = %q, want %q", urls, want)
+	}
+}
+
+// Each <image> layer is validated alone: a `)` inside a quoted url() does not
+// hide the comma after it, so a non-image second layer still invalidates the
+// list (CSSTokenizer::ConsumeStringTokenUntil, core/css/parser/css_tokenizer.cc:
+// 393-435 @ a9f50e522efa9005e6ec765a9a785c74f5c2c86b).
+func TestImageValueLayersSplitOutsideStrings(t *testing.T) {
+	if v := `url("a).png"), 12px`; isValidImageValue(v) {
+		t.Errorf("isValidImageValue(%q) = true, want false", v)
+	}
 }
