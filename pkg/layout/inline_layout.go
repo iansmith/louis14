@@ -2979,10 +2979,15 @@ func createLineBoxEx(
 					rootAsc, rootDesc = inlineBoxAsDesc(rStyle)
 				}
 			}
-			switch wdm.lineToBlockVerticalAlign(effectiveVA) {
-			case css.VerticalAlignTop:
+			// top / bottom align to the line box's line-over / line-under
+			// edge (ApplyPendingPositions,
+			// core/layout/inline/inline_box_state.cc:1185-1209 @
+			// a9f50e522efa9005e6ec765a9a785c74f5c2c86b), mapped to block sides.
+			atBlockStart, atBlockEnd := lineToBlockSides(wdm, effectiveVA == css.VerticalAlignTop, effectiveVA == css.VerticalAlignBottom)
+			switch {
+			case atBlockStart:
 				blockPos = rootAsc - ascent
-			case css.VerticalAlignBottom:
+			case atBlockEnd:
 				blockPos = lineHeight - rootDesc - ascent
 			}
 
@@ -3158,20 +3163,23 @@ func createLineBoxEx(
 					va = r.Item.Style.GetVerticalAlign()
 				}
 
-				switch wdm.lineToBlockVerticalAlign(va) {
-				case css.VerticalAlignTop:
+				// top / bottom align to the line-over / line-under edge,
+				// mapped to block sides as for text above.
+				atBlockStart, atBlockEnd := lineToBlockSides(wdm, va == css.VerticalAlignTop, va == css.VerticalAlignBottom)
+				switch {
+				case atBlockStart:
 					// CSS 2.1 §10.8.1: align the margin box's block-start edge
 					// with the line box's (line-over, or line-under in
 					// vertical-lr). The border box starts after the block-start margin.
 					blockPos = r.Margins.BlockStart
-				case css.VerticalAlignBottom:
+				case atBlockEnd:
 					// CSS 2.1 §10.8.1: align the margin box's block-end edge with
 					// the line box's (line-under, or line-over in vertical-lr).
 					blockPos = lineHeight - blockSize - r.Margins.BlockEnd
 					if blockPos < 0 {
 						blockPos = 0
 					}
-				case css.VerticalAlignMiddle:
+				case va == css.VerticalAlignMiddle:
 					// CSS 2.1 §10.8.1: Center the margin-box vertically within the
 					// line box. Mirrors the lineHeight-relative pattern used by
 					// VerticalAlignBottom above (same WPT line-construction).

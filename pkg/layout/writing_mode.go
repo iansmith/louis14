@@ -102,33 +102,19 @@ func (wdm WritingDirectionMode) IsFlippedLines() bool {
 }
 
 // lineToBlock maps a line-relative pair (over, under) onto the line's
+// block-start and block-end sides (lineToBlockSides).
+func (wdm WritingDirectionMode) lineToBlock(over, under float64) (blockStart, blockEnd float64) {
+	return lineToBlockSides(wdm, over, under)
+}
+
+// lineToBlockSides maps a line-relative pair (over, under) onto the line's
 // block-start and block-end sides: over is block-start except in the
 // flipped-lines mode, where it is block-end.
-func (wdm WritingDirectionMode) lineToBlock(over, under float64) (blockStart, blockEnd float64) {
+func lineToBlockSides[T any](wdm WritingDirectionMode, over, under T) (blockStart, blockEnd T) {
 	if wdm.IsFlippedLines() {
 		return under, over
 	}
 	return over, under
-}
-
-// lineToBlockVerticalAlign maps vertical-align top / bottom, which align to
-// the line box's line-over / line-under edge, onto louis14's block-start
-// (VerticalAlignTop) / block-end (VerticalAlignBottom) placement. Blink aligns
-// them to line-relative ascent / descent (InlineLayoutStateStack::
-// ApplyPendingPositions, core/layout/inline/inline_box_state.cc:1185-1209 @
-// a9f50e522efa9005e6ec765a9a785c74f5c2c86b); in block terms they swap in
-// flipped lines, as lineToBlock does. Other values pass through.
-func (wdm WritingDirectionMode) lineToBlockVerticalAlign(va css.VerticalAlign) css.VerticalAlign {
-	if !wdm.IsFlippedLines() {
-		return va
-	}
-	switch va {
-	case css.VerticalAlignTop:
-		return css.VerticalAlignBottom
-	case css.VerticalAlignBottom:
-		return css.VerticalAlignTop
-	}
-	return va
 }
 
 // IsSideways returns true for sideways-rl and sideways-lr writing modes.
