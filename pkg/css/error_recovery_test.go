@@ -368,6 +368,9 @@ func TestStrayCloseBraceJoinsNextPrelude(t *testing.T) {
 		{"double }", `a{width:1px}} c{width:2px} d{width:3px}`, []string{"a", "d"}},
 		{"stray ;", `a{width:1px} ;b,c{width:2px}`, []string{"a"}},
 		{"; inside a prelude", `a{width:1px} b ; c{width:2px} d{width:3px}`, []string{"a", "d"}},
+		// A `)` that does not close the innermost `{` is a plain token, so the
+		// `(` stays open to EOF (CSSTokenizer::BlockEnd).
+		{"{ inside an open (", `a{width:1px} @supports (b: { ) {} c{width:2px}`, []string{"a"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ss := mustParseSheet(t, tc.css, nil)
