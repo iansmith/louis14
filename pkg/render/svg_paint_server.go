@@ -276,13 +276,7 @@ func (r *Renderer) strokePathWithShader(pctx *svgPaintContext, path *svg.Path, s
 	case css.SVGLineJoinBevel, css.SVGLineJoinMiter:
 		childDC.SetLineJoin(textshape.LineJoinBevel)
 	}
-	dashes := style.GetStrokeDashArray()
-	if len(dashes) > 0 {
-		if len(dashes)%2 == 1 {
-			dashes = append(append([]float64(nil), dashes...), dashes...)
-		}
-		childDC.SetDash(dashes...)
-	}
+	setLineDash(childDC, style.GetStrokeDashArray(), style.GetStrokeDashOffset())
 	if !buildPathOnDC(childDC, path) {
 		return
 	}

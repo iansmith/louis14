@@ -247,7 +247,7 @@ func (s *Style) GetStrokeMiterLimit() float64 {
 // resolved user-unit lengths, or nil for `none` / unparsed. Per SVG
 // 1.1 §11.4, the value is a comma-or-space-separated list of
 // non-negative `<length>`s; an odd-count list is duplicated to make
-// it even (the painter handles that).
+// it even (pkg/render setLineDash does that).
 func (s *Style) GetStrokeDashArray() []float64 {
 	v, ok := s.Get("stroke-dasharray")
 	if !ok {
